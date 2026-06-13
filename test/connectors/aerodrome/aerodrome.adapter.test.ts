@@ -3,8 +3,10 @@ import {
   executeAerodromeAddLiquidity,
   executeAerodromeRemoveLiquidity,
   executeAerodromeSwap,
+  quoteAerodrome,
 } from '../../../src/connectors/aerodrome/aerodrome.adapter';
 
+const quoteAerodromeForGateway = jest.fn();
 const planAerodromeGatewaySwap = jest.fn();
 const executeAerodromeGatewaySwapPlan = jest.fn();
 const planAddLiquidity = jest.fn();
@@ -27,7 +29,7 @@ jest.mock(
 jest.mock(
   'hummingbot-aerodrome-gateway-connector/gateway-adapter',
   () => ({
-    quoteAerodromeForGateway: jest.fn(),
+    quoteAerodromeForGateway: (...args: unknown[]) => quoteAerodromeForGateway(...args),
     planAerodromeGatewaySwap: (...args: unknown[]) => planAerodromeGatewaySwap(...args),
     executeAerodromeGatewaySwapPlan: (...args: unknown[]) => executeAerodromeGatewaySwapPlan(...args),
   }),
@@ -48,6 +50,32 @@ jest.mock(
 describe('Aerodrome Gateway adapter', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.AERODROME_GATEWAY_TIMEOUT_MS;
+  });
+
+  it('fails closed when quote planning times out', async () => {
+    process.env.AERODROME_GATEWAY_TIMEOUT_MS = '5';
+    (Ethereum.getInstance as jest.Mock).mockResolvedValue({
+      provider: {},
+      getToken: jest.fn(async (symbol: string) => ({
+        symbol,
+        address: symbol === 'WETH' ? '0x4200000000000000000000000000000000000006' : '0xusdc',
+        decimals: symbol === 'USDC' ? 6 : 18,
+      })),
+    });
+    quoteAerodromeForGateway.mockReturnValue(new Promise(() => undefined));
+
+    await expect(
+      quoteAerodrome('base', {
+        baseToken: 'WETH',
+        quoteToken: 'USDC',
+        amount: 1,
+        side: 'SELL',
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 504,
+      message: 'Aerodrome quote timed out after 5ms',
+    });
   });
 
   it('executes planned transactions through the Gateway Ethereum wallet', async () => {

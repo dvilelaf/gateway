@@ -6,6 +6,7 @@ import { httpErrors } from '../../services/error-handler';
 const AERODROME_PACKAGE = 'hummingbot-aerodrome-gateway-connector/gateway-adapter';
 const AERODROME_ROOT_PACKAGE = 'hummingbot-aerodrome-gateway-connector';
 const AERODROME_LIQUIDITY_PACKAGE = 'hummingbot-aerodrome-gateway-connector/liquidity';
+const DEFAULT_AERODROME_TIMEOUT_MS = 60_000;
 
 type AerodromeGatewayModule = {
   quoteAerodromeForGateway: (
@@ -64,13 +65,16 @@ type TokenInfo = {
 export async function quoteAerodrome(network: string, request: unknown): Promise<unknown> {
   const adapter = loadAerodromeGatewayAdapter();
   const connector = await getAerodromeConnector(network);
-  return adapter.quoteAerodromeForGateway(connector, request, tokenResolver(network));
+  return withAerodromeTimeout(adapter.quoteAerodromeForGateway(connector, request, tokenResolver(network)), 'quote');
 }
 
 export async function executeAerodromeSwap(network: string, request: unknown): Promise<unknown> {
   const adapter = loadAerodromeGatewayAdapter();
   const connector = await getAerodromeConnector(network);
-  const plan = await adapter.planAerodromeGatewaySwap(connector, request, tokenResolver(network));
+  const plan = await withAerodromeTimeout(
+    adapter.planAerodromeGatewaySwap(connector, request, tokenResolver(network)),
+    'swap plan',
+  );
   return adapter.executeAerodromeGatewaySwapPlan(plan, createGatewayWalletExecutor(network));
 }
 
@@ -82,21 +86,21 @@ export async function executeAerodromeQuote(
   throw missingWalletExecutorError();
 }
 
-export async function executeAerodromeAddLiquidity(
-  network: string,
-  request: any,
-): Promise<unknown> {
+export async function executeAerodromeAddLiquidity(network: string, request: any): Promise<unknown> {
   const planner = await getAerodromeLiquidityPlanner(network);
-  const plan = await planner.planAddLiquidity(await liquidityRequestToPlannerRequest(network, request));
+  const plan = await withAerodromeTimeout(
+    planner.planAddLiquidity(await liquidityRequestToPlannerRequest(network, request)),
+    'add liquidity plan',
+  );
   return executeLiquidityPlan(network, 'add', plan);
 }
 
-export async function executeAerodromeRemoveLiquidity(
-  network: string,
-  request: any,
-): Promise<unknown> {
+export async function executeAerodromeRemoveLiquidity(network: string, request: any): Promise<unknown> {
   const planner = await getAerodromeLiquidityPlanner(network);
-  const plan = await planner.planRemoveLiquidity(await liquidityRequestToPlannerRequest(network, request));
+  const plan = await withAerodromeTimeout(
+    planner.planRemoveLiquidity(await liquidityRequestToPlannerRequest(network, request)),
+    'remove liquidity plan',
+  );
   return executeLiquidityPlan(network, 'remove', plan);
 }
 
@@ -191,11 +195,7 @@ async function liquidityRequestToPlannerRequest(network: string, request: any): 
   };
 }
 
-async function executeLiquidityPlan(
-  network: string,
-  action: 'add' | 'remove',
-  plan: LiquidityPlan,
-): Promise<unknown> {
+async function executeLiquidityPlan(network: string, action: 'add' | 'remove', plan: LiquidityPlan): Promise<unknown> {
   const executor = createGatewayWalletExecutor(network) as {
     executeTransaction: (transaction: PlannedTransaction) => Promise<BroadcastTransaction>;
   };
@@ -240,6 +240,33 @@ function slippagePctToBps(slippagePct: number | undefined): number | undefined {
   return Math.round(slippagePct * 100);
 }
 
+async function withAerodromeTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
+  const timeoutMs = aerodromeTimeoutMs();
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(httpErrors.transactionTimeout(`Aerodrome ${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function aerodromeTimeoutMs(): number {
+  const configured = Number(process.env.AERODROME_GATEWAY_TIMEOUT_MS);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured);
+  }
+  return DEFAULT_AERODROME_TIMEOUT_MS;
+}
+
 function missingWalletExecutorError(): Error {
   return httpErrors.serviceUnavailable(
     'Aerodrome execution requires a Gateway wallet executor that can submit planned transactions and return transaction hashes.',
@@ -257,10 +284,7 @@ function createGatewayWalletExecutor(network: string): unknown {
         throw missingWalletExecutorErrorWithCause(error);
       }
 
-      const gasOptions = await ethereum.prepareGasOptions(
-        undefined,
-        gasEstimateToNumber(transaction.gasEstimate),
-      );
+      const gasOptions = await ethereum.prepareGasOptions(undefined, gasEstimateToNumber(transaction.gasEstimate));
       const txResponse = await wallet.sendTransaction({
         to: transaction.to,
         data: transaction.data,

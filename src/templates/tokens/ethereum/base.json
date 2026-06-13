@@ -1,6 +1,13 @@
 [
   {
     "chainId": 8453,
+    "name": "Aerodrome",
+    "symbol": "AERO",
+    "address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+    "decimals": 18
+  },
+  {
+    "chainId": 8453,
     "name": "Coinbase Wrapped BTC",
     "symbol": "cbBTC",
     "address": "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
