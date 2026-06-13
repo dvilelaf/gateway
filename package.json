@@ -103,6 +103,7 @@
     "fastify": "^4.29.0",
     "fastify-type-provider-zod": "^2.1.0",
     "fs-extra": "^10.1.0",
+    "hummingbot-aerodrome-gateway-connector": "github:dvilelaf/hummingbot-dex-connectors#1b26011270a06a02c0cac8d508cf89966bb4196b&path:aerodrome",
     "level": "^8.0.1",
     "mathjs": "^10.6.4",
     "minimist": "^1.2.8",
@@ -180,5 +181,6 @@
     "**/*.json": [
       "prettier --write"
     ]
-  }
+  },
+  "packageManager": "pnpm@9.15.0+sha512.76e2379760a4328ec4415815bcd6628dee727af3779aaa4c914e3944156c4299921a89f976381ee107d41f12cfa4b66681ca9c718f0668fa0831ed4c6d8ba56c"
 }
