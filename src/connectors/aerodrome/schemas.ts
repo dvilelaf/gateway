@@ -28,7 +28,7 @@ export const AerodromeQuoteSwapRequest = Type.Object({
   }),
   side: Type.String({
     description: 'Trade direction. Aerodrome currently supports SELL swaps only.',
-    enum: ['BUY', 'SELL'],
+    enum: ['SELL'],
   }),
   slippagePct: Type.Optional(
     Type.Number({
