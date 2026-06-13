@@ -54,7 +54,7 @@ describe('Aerodrome Routes', () => {
     });
   });
 
-  it('registers Aerodrome router routes even when the optional package is absent', async () => {
+  it('registers only executable Aerodrome router routes when the optional package is absent', async () => {
     const quote = await fastify.inject({
       method: 'GET',
       url: '/connectors/aerodrome/router/quote-swap?network=base&baseToken=WETH&quoteToken=USDC&amount=1&side=SELL',
@@ -69,15 +69,6 @@ describe('Aerodrome Routes', () => {
         quoteToken: 'USDC',
         amount: 1,
         side: 'SELL',
-      },
-    });
-    const executeQuote = await fastify.inject({
-      method: 'POST',
-      url: '/connectors/aerodrome/router/execute-quote',
-      payload: {
-        network: 'base',
-        walletAddress: '0x1111111111111111111111111111111111111111',
-        quoteId: 'quote-1',
       },
     });
     const addLiquidity = await fastify.inject({
@@ -108,9 +99,22 @@ describe('Aerodrome Routes', () => {
 
     expect(quote.statusCode).not.toBe(404);
     expect(executeSwap.statusCode).not.toBe(404);
-    expect(executeQuote.statusCode).not.toBe(404);
     expect(addLiquidity.statusCode).not.toBe(404);
     expect(removeLiquidity.statusCode).not.toBe(404);
+  });
+
+  it('does not expose Aerodrome execute-quote until quote cache execution is wired', async () => {
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/connectors/aerodrome/router/execute-quote',
+      payload: {
+        network: 'base',
+        walletAddress: '0x1111111111111111111111111111111111111111',
+        quoteId: 'quote-1',
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
   });
 
   it('fails quote closed with 503 when the optional package is absent', async () => {
