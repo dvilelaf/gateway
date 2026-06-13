@@ -54,7 +54,7 @@ export const AerodromeQuoteSwapRequest = Type.Object({
     Type.Number({
       description: 'Maximum Aerodrome route hops',
       enum: [1, 2],
-      default: 2,
+      default: 1,
     }),
   ),
 });
