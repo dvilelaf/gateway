@@ -76,6 +76,19 @@ export const SignMessageResponseSchema = Type.Object({
   signature: Type.String(),
 });
 
+export const SignTypedDataRequestSchema = Type.Object({
+  chain: Type.Literal('ethereum'),
+  network: Type.String(),
+  address: WalletAddressSchema,
+  domain: Type.Record(Type.String(), Type.Any()),
+  types: Type.Record(Type.String(), Type.Array(Type.Record(Type.String(), Type.String()))),
+  value: Type.Record(Type.String(), Type.Any()),
+});
+
+export const SignTypedDataResponseSchema = Type.Object({
+  signature: Type.String(),
+});
+
 // Hardware wallet schemas
 export const AddHardwareWalletRequestSchema = Type.Object({
   chain: Type.String({
@@ -166,6 +179,8 @@ export type RemoveWalletRequest = Static<typeof RemoveWalletRequestSchema>;
 export type RemoveWalletResponse = Static<typeof RemoveWalletResponseSchema>;
 export type SignMessageRequest = Static<typeof SignMessageRequestSchema>;
 export type SignMessageResponse = Static<typeof SignMessageResponseSchema>;
+export type SignTypedDataRequest = Static<typeof SignTypedDataRequestSchema>;
+export type SignTypedDataResponse = Static<typeof SignTypedDataResponseSchema>;
 export type GetWalletResponse = Static<typeof GetWalletResponseSchema>;
 export type AddHardwareWalletRequest = Static<typeof AddHardwareWalletRequestSchema>;
 export type AddHardwareWalletResponse = Static<typeof AddHardwareWalletResponseSchema>;

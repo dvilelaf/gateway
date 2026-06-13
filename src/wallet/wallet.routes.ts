@@ -9,6 +9,7 @@ import { removeWalletRoute } from './routes/removeWallet';
 import { sendTransactionRoute } from './routes/sendTransaction';
 import { setDefaultRoute } from './routes/setDefault';
 import { showPrivateKeyRoute } from './routes/showPrivateKey';
+import { signTypedDataRoute } from './routes/signTypedData';
 
 export const walletRoutes: FastifyPluginAsync = async (fastify) => {
   // Register fastify-sensible for httpErrors
@@ -23,6 +24,7 @@ export const walletRoutes: FastifyPluginAsync = async (fastify) => {
   await fastify.register(setDefaultRoute);
   await fastify.register(showPrivateKeyRoute);
   await fastify.register(sendTransactionRoute);
+  await fastify.register(signTypedDataRoute);
 };
 
 export default walletRoutes;
