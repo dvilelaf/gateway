@@ -202,6 +202,50 @@ describe('runtime guard', () => {
       }),
     ).toThrow(/network mismatch/);
   });
+
+  it.each([
+    ['connector id', { expectedConnectorId: 'uniswap' }, /connector id mismatch/],
+    ['wallet address', { expectedWalletAddress: '0xdef' }, /wallet address mismatch/],
+    ['notional', { expectedNotional: '2' }, /notional mismatch/],
+    ['gas', { expectedGas: '0.002' }, /gas mismatch/],
+    ['slippage bps', { expectedSlippageBps: '50' }, /slippage bps mismatch/],
+  ])('rejects authorization artifacts for the wrong signed %s cap', (_name, expectedFields, error) => {
+    process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+
+    const input = {
+      chain: 'ethereum',
+      liveActionAuthorization: approvedAuthorization({
+        gatewayLiveFlags: ['GATEWAY_LIVE_SWAP_ENABLED'],
+        network: 'mainnet',
+      }),
+      network: 'mainnet',
+      operation: 'swap',
+      ...expectedFields,
+    };
+
+    expect(() => assertMainnetMutationAllowed(input)).toThrow(error);
+  });
+
+  it('accepts numerically equivalent signed cap values', () => {
+    process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedGas: 0.001,
+        expectedNotional: 1,
+        expectedSlippageBps: 25,
+        liveActionAuthorization: approvedAuthorization({
+          gatewayLiveFlags: ['GATEWAY_LIVE_SWAP_ENABLED'],
+          network: 'mainnet',
+        }),
+        network: 'mainnet',
+        operation: 'swap',
+      }),
+    ).not.toThrow();
+  });
 });
 
 function approvedAuthorization({
@@ -231,6 +275,7 @@ function approvedAuthorization({
     slippage_bps: '25',
     status: 'approved',
     version: 'live-action-authorization-v1',
+    wallet_address: '0xabc',
   };
   authorization.signature = signature(authorization);
   return authorization;

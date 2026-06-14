@@ -7,6 +7,12 @@ const SAFE_NETWORK_MARKERS = ['testnet', 'devnet', 'sepolia', 'goerli', 'amoy', 
 
 export interface MainnetMutationGuardInput {
   chain: string;
+  expectedAccountAddress?: unknown;
+  expectedConnectorId?: unknown;
+  expectedGas?: unknown;
+  expectedNotional?: unknown;
+  expectedSlippageBps?: unknown;
+  expectedWalletAddress?: unknown;
   liveActionAuthorization?: LiveActionAuthorization;
   network: string;
   operation: string;
@@ -15,12 +21,18 @@ export interface MainnetMutationGuardInput {
 export interface LiveActionAuthorization {
   action?: unknown;
   blockers?: unknown;
+  account_address?: unknown;
+  connector_id?: unknown;
   expires_at_utc?: unknown;
+  gas?: unknown;
   gateway_live_flags?: unknown;
   network?: unknown;
+  notional?: unknown;
   signature?: unknown;
+  slippage_bps?: unknown;
   status?: unknown;
   version?: unknown;
+  wallet_address?: unknown;
 }
 
 export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): void {
@@ -30,9 +42,15 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
   const operationEnv = liveOperationEnv(input.operation);
   if (envFlagEnabled(operationEnv)) {
     assertLiveActionAuthorization(input.liveActionAuthorization, {
+      expectedAccountAddress: input.expectedAccountAddress,
       expectedActions: liveOperationActions(input.operation),
+      expectedConnectorId: input.expectedConnectorId,
+      expectedGas: input.expectedGas,
       expectedGatewayFlag: operationEnv,
       expectedNetwork: input.network,
+      expectedNotional: input.expectedNotional,
+      expectedSlippageBps: input.expectedSlippageBps,
+      expectedWalletAddress: input.expectedWalletAddress,
     });
     return;
   }
@@ -66,13 +84,25 @@ function liveOperationEnv(operation: string): string {
 function assertLiveActionAuthorization(
   authorization: LiveActionAuthorization | undefined,
   {
+    expectedAccountAddress,
     expectedActions,
+    expectedConnectorId,
+    expectedGas,
     expectedGatewayFlag,
     expectedNetwork,
+    expectedNotional,
+    expectedSlippageBps,
+    expectedWalletAddress,
   }: {
+    expectedAccountAddress?: unknown;
     expectedActions: string[];
+    expectedConnectorId?: unknown;
+    expectedGas?: unknown;
     expectedGatewayFlag: string;
     expectedNetwork: string;
+    expectedNotional?: unknown;
+    expectedSlippageBps?: unknown;
+    expectedWalletAddress?: unknown;
   },
 ): void {
   if (authorization === undefined) {
@@ -100,10 +130,43 @@ function assertLiveActionAuthorization(
   ) {
     throw new Error('live action authorization Gateway flag mismatch');
   }
+  assertExpectedAuthorizationField(authorization.connector_id, expectedConnectorId, 'connector id');
+  assertExpectedAuthorizationField(authorization.wallet_address, expectedWalletAddress, 'wallet address');
+  assertExpectedAuthorizationField(authorization.account_address, expectedAccountAddress, 'account address');
+  assertExpectedAuthorizationDecimalField(authorization.notional, expectedNotional, 'notional');
+  assertExpectedAuthorizationDecimalField(authorization.gas, expectedGas, 'gas');
+  assertExpectedAuthorizationDecimalField(authorization.slippage_bps, expectedSlippageBps, 'slippage bps');
   const expiresAt = parseUtcDate(authorization.expires_at_utc);
   if (expiresAt.getTime() <= Date.now()) {
     throw new Error('live action authorization expired');
   }
+}
+
+function assertExpectedAuthorizationField(actual: unknown, expected: unknown, label: string): void {
+  if (expected !== undefined && actual !== expected) {
+    throw new Error(`live action authorization ${label} mismatch`);
+  }
+}
+
+function assertExpectedAuthorizationDecimalField(actual: unknown, expected: unknown, label: string): void {
+  if (expected === undefined) {
+    return;
+  }
+  if (normalizeDecimal(actual) !== normalizeDecimal(expected)) {
+    throw new Error(`live action authorization ${label} mismatch`);
+  }
+}
+
+function normalizeDecimal(value: unknown): string {
+  const text = String(value).trim();
+  const match = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(text);
+  if (match === null) {
+    return text;
+  }
+  const sign = match[1] === '-' ? '-' : '';
+  const integer = match[2].replace(/^0+(?=\d)/, '');
+  const fraction = (match[3] ?? '').replace(/0+$/, '');
+  return `${sign}${integer}${fraction === '' ? '' : `.${fraction}`}`;
 }
 
 function assertAuthorizationSignature(authorization: LiveActionAuthorization): void {
