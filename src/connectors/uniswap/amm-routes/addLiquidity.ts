@@ -142,6 +142,11 @@ async function addLiquidity(
     }
 
     // Add liquidity ETH + Token
+    // Convert gasPrice from wei to gwei if provided
+    const gasPriceGwei = gasPrice ? parseFloat(utils.formatUnits(gasPrice, 'gwei')) : undefined;
+    const gasOptions = await ethereum.prepareGasOptions(gasPriceGwei, maxGas || AMM_ADD_LIQUIDITY_GAS_LIMIT);
+    gasOptions.value = quote.rawBaseTokenAmount;
+
     tx = await router.addLiquidityETH(
       quote.quoteTokenObj.address,
       quote.rawQuoteTokenAmount,
@@ -149,10 +154,7 @@ async function addLiquidity(
       baseTokenMinAmount,
       walletAddress,
       deadline,
-      {
-        value: quote.rawBaseTokenAmount,
-        gasLimit: 300000,
-      },
+      gasOptions,
     );
   } else if (quote.quoteTokenObj.symbol === 'WETH') {
     // Check allowance for base token

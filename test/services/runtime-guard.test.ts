@@ -118,4 +118,17 @@ describe('runtime guard wiring', () => {
     expect(source.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(source.indexOf('ethereum.getWallet('));
     expect(source.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(source.indexOf('wallet._signTypedData('));
   });
+
+  it('routes AMM ETH add-liquidity branches through Ethereum gas preparation', () => {
+    for (const connector of ['uniswap', 'pancakeswap']) {
+      const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/amm-routes/addLiquidity.ts`), 'utf8');
+      const ethBranch = source.slice(
+        source.indexOf("if (quote.baseTokenObj.symbol === 'WETH')"),
+        source.indexOf("} else if (quote.quoteTokenObj.symbol === 'WETH')"),
+      );
+
+      expect(ethBranch).toContain('ethereum.prepareGasOptions(');
+      expect(ethBranch).not.toContain('gasLimit: 300000');
+    }
+  });
 });
