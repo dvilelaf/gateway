@@ -370,7 +370,6 @@ export class UniversalRouterService {
    * Estimate gas for the swap
    */
   private async estimateGas(calldata: string, value: string, from: string): Promise<BigNumber> {
-    const ethereum = await this.getEthereum();
     const routerAddress = UNIVERSAL_ROUTER_ADDRESS(UniversalRouterVersion.V2_0, this.chainId);
 
     logger.info(`[UniversalRouter] Estimating gas...`);
@@ -380,17 +379,12 @@ export class UniversalRouterService {
     logger.info(`[UniversalRouter] Calldata length: ${calldata.length}`);
 
     try {
-      // Get gas options from Ethereum
-      const gasOptions = await ethereum.prepareGasOptions(undefined, 500000);
-      logger.info(`[UniversalRouter] Gas options: ${JSON.stringify(gasOptions)}`);
-
       const gasEstimate = await this.provider.estimateGas({
         to: routerAddress,
         data: calldata,
         value,
         from,
         gasLimit: BigNumber.from(600000), // Increase gas limit for estimation
-        ...gasOptions, // Include gas price options
       });
 
       logger.info(`[UniversalRouter] Gas estimation successful: ${gasEstimate.toString()}`);

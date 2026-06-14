@@ -459,6 +459,20 @@ describe('runtime guard wiring', () => {
     }
   });
 
+  it('does not require live authorization for universal-router gas estimates', () => {
+    for (const connector of ['uniswap', 'pancakeswap']) {
+      const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/universal-router.ts`), 'utf8');
+      const estimateGas = source.slice(
+        source.indexOf('private async estimateGas'),
+        source.indexOf('\n  }\n}', source.indexOf('private async estimateGas')),
+      );
+
+      expect(estimateGas).toContain('this.provider.estimateGas');
+      expect(estimateGas).not.toContain('prepareGasOptions');
+      expect(estimateGas).not.toContain('assertMainnetMutationAllowed');
+    }
+  });
+
   it('passes live action authorization through Jupiter router execution', () => {
     const schemas = readFileSync(path.join(ROOT, 'src/connectors/jupiter/schemas.ts'), 'utf8');
     const executeQuoteSchema = schemas.slice(
