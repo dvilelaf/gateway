@@ -370,9 +370,10 @@ describe('Wallet New Routes', () => {
     const recipientSolanaAddress = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
     const recipientEthAddress = '0x1234567890123456789012345678901234567890';
     const originalLiveMutationsEnabled = process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+    const originalLiveWalletSendEnabled = process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED;
 
     beforeEach(() => {
-      process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = 'true';
+      process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED = 'true';
 
       // Add wallets to mock storage
       mockWallets.solana.add(testSolanaAddress);
@@ -426,6 +427,11 @@ describe('Wallet New Routes', () => {
         delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
       } else {
         process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = originalLiveMutationsEnabled;
+      }
+      if (originalLiveWalletSendEnabled === undefined) {
+        delete process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED;
+      } else {
+        process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED = originalLiveWalletSendEnabled;
       }
     });
 

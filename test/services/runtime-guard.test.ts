@@ -7,12 +7,18 @@ const ROOT = path.resolve(__dirname, '../..');
 
 describe('runtime guard', () => {
   const originalEnv = process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+  const originalSwapEnv = process.env.GATEWAY_LIVE_SWAP_ENABLED;
 
   afterEach(() => {
     if (originalEnv === undefined) {
       delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
     } else {
       process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = originalEnv;
+    }
+    if (originalSwapEnv === undefined) {
+      delete process.env.GATEWAY_LIVE_SWAP_ENABLED;
+    } else {
+      process.env.GATEWAY_LIVE_SWAP_ENABLED = originalSwapEnv;
     }
   });
 
@@ -49,11 +55,25 @@ describe('runtime guard', () => {
         network: 'mainnet-beta',
         operation: 'wallet_send',
       }),
-    ).toThrow(/GATEWAY_LIVE_MUTATIONS_ENABLED=true/);
+    ).toThrow(/GATEWAY_LIVE_WALLET_SEND_ENABLED=true/);
   });
 
-  it('allows mainnet mutations only when explicitly enabled', () => {
+  it('does not allow mainnet mutations with only the broad flag enabled', () => {
     process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = 'true';
+    delete process.env.GATEWAY_LIVE_SWAP_ENABLED;
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        network: 'mainnet',
+        operation: 'swap',
+      }),
+    ).toThrow(/GATEWAY_LIVE_SWAP_ENABLED=true/);
+  });
+
+  it('allows mainnet mutations only when the operation is explicitly enabled', () => {
+    delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+    process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
 
     expect(() =>
       assertMainnetMutationAllowed({

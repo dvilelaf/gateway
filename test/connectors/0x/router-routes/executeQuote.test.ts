@@ -87,6 +87,7 @@ const mockQuoteData = {
 describe('POST /execute-quote', () => {
   let server: any;
   const originalLiveMutationsEnabled = process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+  const originalLiveZeroXExecuteQuoteEnabled = process.env.GATEWAY_LIVE_0X_EXECUTE_QUOTE_ENABLED;
 
   beforeAll(async () => {
     server = await buildApp();
@@ -99,7 +100,7 @@ describe('POST /execute-quote', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     quoteCache.clear();
-    process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = 'true';
+    process.env.GATEWAY_LIVE_0X_EXECUTE_QUOTE_ENABLED = 'true';
 
     // Mock TokenService
     const mockTokenService = {
@@ -123,6 +124,11 @@ describe('POST /execute-quote', () => {
       delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
     } else {
       process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = originalLiveMutationsEnabled;
+    }
+    if (originalLiveZeroXExecuteQuoteEnabled === undefined) {
+      delete process.env.GATEWAY_LIVE_0X_EXECUTE_QUOTE_ENABLED;
+    } else {
+      process.env.GATEWAY_LIVE_0X_EXECUTE_QUOTE_ENABLED = originalLiveZeroXExecuteQuoteEnabled;
     }
   });
 
@@ -242,6 +248,7 @@ describe('POST /execute-quote', () => {
 
   it('should block mainnet execution before loading the wallet when live mutations are disabled', async () => {
     delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+    delete process.env.GATEWAY_LIVE_0X_EXECUTE_QUOTE_ENABLED;
     const quoteId = 'test-quote-id';
     quoteCache.set(quoteId, mockQuoteData);
     const mockEthereumInstance = {

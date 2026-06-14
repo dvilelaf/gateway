@@ -12,12 +12,13 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
   if (!isMainnetNetwork(input.network)) {
     return;
   }
-  if (envFlagEnabled(LIVE_MUTATIONS_ENV)) {
+  const operationEnv = liveOperationEnv(input.operation);
+  if (envFlagEnabled(operationEnv)) {
     return;
   }
   throw new Error(
     `mainnet mutation disabled for ${input.chain}/${input.network}/${input.operation}; ` +
-      `set ${LIVE_MUTATIONS_ENV}=true only behind Marlin live gates`,
+      `set ${operationEnv}=true only behind Marlin live gates`,
   );
 }
 
@@ -31,4 +32,13 @@ export function isMainnetNetwork(network: string): boolean {
 
 function envFlagEnabled(name: string): boolean {
   return ['1', 'true', 'yes', 'on'].includes((process.env[name] ?? '').trim().toLowerCase());
+}
+
+function liveOperationEnv(operation: string): string {
+  const normalized = operation
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `GATEWAY_LIVE_${normalized}_ENABLED`;
 }
