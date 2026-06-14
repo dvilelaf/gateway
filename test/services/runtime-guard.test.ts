@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { readFileSync } from 'fs';
 import path from 'path';
 
@@ -8,6 +9,7 @@ const ROOT = path.resolve(__dirname, '../..');
 describe('runtime guard', () => {
   const originalEnv = process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
   const originalSwapEnv = process.env.GATEWAY_LIVE_SWAP_ENABLED;
+  const originalAuthSecret = process.env.MARLIN_LIVE_ACTION_AUTH_SECRET;
 
   afterEach(() => {
     if (originalEnv === undefined) {
@@ -19,6 +21,11 @@ describe('runtime guard', () => {
       delete process.env.GATEWAY_LIVE_SWAP_ENABLED;
     } else {
       process.env.GATEWAY_LIVE_SWAP_ENABLED = originalSwapEnv;
+    }
+    if (originalAuthSecret === undefined) {
+      delete process.env.MARLIN_LIVE_ACTION_AUTH_SECRET;
+    } else {
+      process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = originalAuthSecret;
     }
   });
 
@@ -74,6 +81,7 @@ describe('runtime guard', () => {
   it('rejects mainnet mutations when operation is enabled but authorization is missing', () => {
     delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
     process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
 
     expect(() =>
       assertMainnetMutationAllowed({
@@ -84,9 +92,48 @@ describe('runtime guard', () => {
     ).toThrow(/live action authorization missing/);
   });
 
+  it('rejects unsigned live action authorization artifacts', () => {
+    process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+    const authorization = approvedAuthorization({
+      gatewayLiveFlags: ['GATEWAY_LIVE_SWAP_ENABLED'],
+      network: 'mainnet',
+    });
+    delete authorization.signature;
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: authorization,
+        network: 'mainnet',
+        operation: 'swap',
+      }),
+    ).toThrow(/signature missing/);
+  });
+
+  it('rejects tampered live action authorization artifacts', () => {
+    process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+    const authorization = approvedAuthorization({
+      gatewayLiveFlags: ['GATEWAY_LIVE_SWAP_ENABLED'],
+      network: 'mainnet',
+    });
+    authorization.notional = '1000';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: authorization,
+        network: 'mainnet',
+        operation: 'swap',
+      }),
+    ).toThrow(/signature mismatch/);
+  });
+
   it('allows mainnet mutations only when operation and authorization are explicitly enabled', () => {
     delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
     process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
 
     expect(() =>
       assertMainnetMutationAllowed({
@@ -103,6 +150,7 @@ describe('runtime guard', () => {
 
   it('rejects expired live action authorization artifacts', () => {
     process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
 
     expect(() =>
       assertMainnetMutationAllowed({
@@ -121,6 +169,7 @@ describe('runtime guard', () => {
 
   it('rejects authorization artifacts missing the required operation flag', () => {
     process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
 
     expect(() =>
       assertMainnetMutationAllowed({
@@ -138,6 +187,7 @@ describe('runtime guard', () => {
 
   it('rejects authorization artifacts for the wrong network', () => {
     process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
 
     expect(() =>
       assertMainnetMutationAllowed({
@@ -164,8 +214,8 @@ function approvedAuthorization({
   expiresAtUtc?: string;
   gatewayLiveFlags: string[];
   network: string;
-}) {
-  return {
+}): Record<string, unknown> {
+  const authorization: Record<string, unknown> = {
     action,
     api_live_flag: 'TRADING_SAFETY_LIVE_GATEWAY_SWAP_EXECUTE_ENABLED',
     blockers: [],
@@ -182,6 +232,16 @@ function approvedAuthorization({
     status: 'approved',
     version: 'live-action-authorization-v1',
   };
+  authorization.signature = signature(authorization);
+  return authorization;
+}
+
+function signature(authorization: Record<string, unknown>): string {
+  const payload = { ...authorization };
+  delete payload.signature;
+  return createHmac('sha256', 'test-secret')
+    .update(JSON.stringify(payload, Object.keys(payload).sort()))
+    .digest('hex');
 }
 
 describe('runtime guard wiring', () => {

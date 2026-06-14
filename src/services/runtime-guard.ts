@@ -1,4 +1,7 @@
+import { createHmac, timingSafeEqual } from 'crypto';
+
 export const LIVE_MUTATIONS_ENV = 'GATEWAY_LIVE_MUTATIONS_ENABLED';
+export const LIVE_ACTION_AUTH_SECRET_ENV = 'MARLIN_LIVE_ACTION_AUTH_SECRET';
 
 const SAFE_NETWORK_MARKERS = ['testnet', 'devnet', 'sepolia', 'goerli', 'amoy', 'fuji', 'local'];
 
@@ -15,6 +18,7 @@ export interface LiveActionAuthorization {
   expires_at_utc?: unknown;
   gateway_live_flags?: unknown;
   network?: unknown;
+  signature?: unknown;
   status?: unknown;
   version?: unknown;
 }
@@ -83,6 +87,7 @@ function assertLiveActionAuthorization(
   if (!Array.isArray(authorization.blockers) || authorization.blockers.length > 0) {
     throw new Error('live action authorization has blockers');
   }
+  assertAuthorizationSignature(authorization);
   if (typeof authorization.action !== 'string' || !expectedActions.includes(authorization.action)) {
     throw new Error('live action authorization action mismatch');
   }
@@ -98,6 +103,25 @@ function assertLiveActionAuthorization(
   const expiresAt = parseUtcDate(authorization.expires_at_utc);
   if (expiresAt.getTime() <= Date.now()) {
     throw new Error('live action authorization expired');
+  }
+}
+
+function assertAuthorizationSignature(authorization: LiveActionAuthorization): void {
+  const secret = (process.env[LIVE_ACTION_AUTH_SECRET_ENV] ?? '').trim();
+  if (secret === '') {
+    throw new Error('live action authorization secret missing');
+  }
+  if (typeof authorization.signature !== 'string' || authorization.signature.trim() === '') {
+    throw new Error('live action authorization signature missing');
+  }
+  const { signature, ...payload } = authorization;
+  const expected = createHmac('sha256', secret)
+    .update(JSON.stringify(payload, Object.keys(payload).sort()))
+    .digest('hex');
+  const received = new Uint8Array(Buffer.from(signature, 'hex'));
+  const expectedBuffer = new Uint8Array(Buffer.from(expected, 'hex'));
+  if (received.length !== expectedBuffer.length || !timingSafeEqual(received, expectedBuffer)) {
+    throw new Error('live action authorization signature mismatch');
   }
 }
 
