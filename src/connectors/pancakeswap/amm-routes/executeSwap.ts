@@ -26,6 +26,7 @@ export async function executeAmmSwap(
   amount: number,
   side: 'BUY' | 'SELL',
   slippagePct: number = PancakeswapConfig.config.slippagePct,
+  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<SwapExecuteResponseType> {
   const ethereum = await Ethereum.getInstance(network);
   await ethereum.init();
@@ -138,7 +139,7 @@ export async function executeAmmSwap(
       }
 
       // Get gas options using estimateGasPrice
-      const gasOptions = await ethereum.prepareGasOptions(undefined, AMM_SWAP_GAS_LIMIT);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, AMM_SWAP_GAS_LIMIT, liveActionAuthorization);
 
       // Build unsigned transaction with gas parameters
       const unsignedTx = {
@@ -172,7 +173,7 @@ export async function executeAmmSwap(
       const routerContract = new Contract(routerAddress, IPancakeswapV2Router02ABI.abi, wallet);
 
       // Get gas options using estimateGasPrice
-      const gasOptions = await ethereum.prepareGasOptions(undefined, AMM_SWAP_GAS_LIMIT);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, AMM_SWAP_GAS_LIMIT, liveActionAuthorization);
       const txOptions: any = { ...gasOptions };
 
       logger.info(`Using gas options: ${JSON.stringify(txOptions)}`);
@@ -309,6 +310,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           quoteToken,
           amount,
           side = 'SELL',
+          liveActionAuthorization,
           slippagePct,
         } = request.body as typeof PancakeswapAmmExecuteSwapRequest._type;
 
@@ -320,6 +322,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           amount,
           side as 'BUY' | 'SELL',
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e) {
         if (e.statusCode) throw e;

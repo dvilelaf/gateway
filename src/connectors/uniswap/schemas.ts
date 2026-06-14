@@ -197,6 +197,11 @@ export const UniswapAmmAddLiquidityRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live AMM liquidity add',
+    }),
+  ),
 });
 
 // Uniswap AMM Remove Liquidity Request
@@ -231,6 +236,11 @@ export const UniswapAmmRemoveLiquidityRequest = Type.Object({
     Type.Number({
       description: 'Maximum gas limit for the transaction',
       examples: [300000],
+    }),
+  ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live AMM liquidity remove',
     }),
   ),
 });
@@ -280,6 +290,11 @@ export const UniswapAmmExecuteSwapRequest = Type.Object({
       maximum: 100,
       description: 'Maximum acceptable slippage percentage',
       default: UniswapConfig.config.slippagePct,
+    }),
+  ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live AMM swap',
     }),
   ),
 });

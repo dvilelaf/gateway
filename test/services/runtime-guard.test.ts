@@ -320,4 +320,33 @@ describe('runtime guard wiring', () => {
       expect(ethBranch).not.toContain('gasLimit: 300000');
     }
   });
+
+  it('passes live action authorization through EVM AMM swap and liquidity routes', () => {
+    for (const connector of ['uniswap', 'pancakeswap']) {
+      const schemas = readFileSync(path.join(ROOT, `src/connectors/${connector}/schemas.ts`), 'utf8');
+      for (const [start, end] of [
+        [
+          `export const ${connector === 'uniswap' ? 'Uniswap' : 'Pancakeswap'}AmmAddLiquidityRequest`,
+          `export const ${connector === 'uniswap' ? 'Uniswap' : 'Pancakeswap'}AmmRemoveLiquidityRequest`,
+        ],
+        [
+          `export const ${connector === 'uniswap' ? 'Uniswap' : 'Pancakeswap'}AmmRemoveLiquidityRequest`,
+          `export const ${connector === 'uniswap' ? 'Uniswap' : 'Pancakeswap'}AmmExecuteSwapRequest`,
+        ],
+        [
+          `export const ${connector === 'uniswap' ? 'Uniswap' : 'Pancakeswap'}AmmExecuteSwapRequest`,
+          `export const ${connector === 'uniswap' ? 'Uniswap' : 'Pancakeswap'}ExecuteSwapRequest`,
+        ],
+      ]) {
+        const schema = schemas.slice(schemas.indexOf(start), schemas.indexOf(end));
+        expect(schema).toContain('liveActionAuthorization');
+      }
+
+      for (const file of ['addLiquidity.ts', 'removeLiquidity.ts', 'executeSwap.ts']) {
+        const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/amm-routes/${file}`), 'utf8');
+        expect(source).toContain('liveActionAuthorization');
+        expect(source).toContain('prepareGasOptions(');
+      }
+    }
+  });
 });

@@ -32,6 +32,7 @@ async function addLiquidity(
   slippagePct: number = UniswapConfig.config.slippagePct,
   gasPrice?: string,
   maxGas?: number,
+  liveActionAuthorization?: Static<typeof UniswapAmmAddLiquidityRequest>['liveActionAuthorization'],
 ): Promise<AddLiquidityResponseType> {
   const networkToUse = network;
 
@@ -47,7 +48,13 @@ async function addLiquidity(
 
     logger.info(`ETH detected as base token, wrapping ${baseTokenAmount} ETH to WETH first`);
 
-    const wrapResult = await wrapEthereum(fastify, networkToUse, walletAddress, baseTokenAmount.toString());
+    const wrapResult = await wrapEthereum(
+      fastify,
+      networkToUse,
+      walletAddress,
+      baseTokenAmount.toString(),
+      liveActionAuthorization,
+    );
     baseWrapTxHash = wrapResult.signature;
     actualBaseToken = 'WETH';
 
@@ -66,7 +73,13 @@ async function addLiquidity(
 
     logger.info(`ETH detected as quote token, wrapping ${quoteTokenAmount} ETH to WETH first`);
 
-    const wrapResult = await wrapEthereum(fastify, networkToUse, walletAddress, quoteTokenAmount.toString());
+    const wrapResult = await wrapEthereum(
+      fastify,
+      networkToUse,
+      walletAddress,
+      quoteTokenAmount.toString(),
+      liveActionAuthorization,
+    );
     quoteWrapTxHash = wrapResult.signature;
     actualQuoteToken = 'WETH';
 
@@ -144,7 +157,11 @@ async function addLiquidity(
     // Add liquidity ETH + Token
     // Convert gasPrice from wei to gwei if provided
     const gasPriceGwei = gasPrice ? parseFloat(utils.formatUnits(gasPrice, 'gwei')) : undefined;
-    const gasOptions = await ethereum.prepareGasOptions(gasPriceGwei, maxGas || AMM_ADD_LIQUIDITY_GAS_LIMIT);
+    const gasOptions = await ethereum.prepareGasOptions(
+      gasPriceGwei,
+      maxGas || AMM_ADD_LIQUIDITY_GAS_LIMIT,
+      liveActionAuthorization,
+    );
     gasOptions.value = quote.rawBaseTokenAmount;
 
     tx = await router.addLiquidityETH(
@@ -184,7 +201,11 @@ async function addLiquidity(
     // Add liquidity Token + ETH
     // Convert gasPrice from wei to gwei if provided
     const gasPriceGwei = gasPrice ? parseFloat(utils.formatUnits(gasPrice, 'gwei')) : undefined;
-    const gasOptions = await ethereum.prepareGasOptions(gasPriceGwei, maxGas || AMM_ADD_LIQUIDITY_GAS_LIMIT);
+    const gasOptions = await ethereum.prepareGasOptions(
+      gasPriceGwei,
+      maxGas || AMM_ADD_LIQUIDITY_GAS_LIMIT,
+      liveActionAuthorization,
+    );
     gasOptions.value = quote.rawQuoteTokenAmount;
 
     tx = await router.addLiquidityETH(
@@ -246,7 +267,11 @@ async function addLiquidity(
     // Add liquidity Token + Token
     // Convert gasPrice from wei to gwei if provided
     const gasPriceGwei = gasPrice ? parseFloat(utils.formatUnits(gasPrice, 'gwei')) : undefined;
-    const gasOptions = await ethereum.prepareGasOptions(gasPriceGwei, maxGas || AMM_ADD_LIQUIDITY_GAS_LIMIT);
+    const gasOptions = await ethereum.prepareGasOptions(
+      gasPriceGwei,
+      maxGas || AMM_ADD_LIQUIDITY_GAS_LIMIT,
+      liveActionAuthorization,
+    );
 
     tx = await router.addLiquidity(
       quote.baseTokenObj.address,
@@ -312,6 +337,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           slippagePct,
           walletAddress: requestedWalletAddress,
           gasPrice,
+          liveActionAuthorization,
           maxGas,
         } = request.body;
 
@@ -354,6 +380,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           slippagePct,
           gasPrice,
           maxGas,
+          liveActionAuthorization,
         );
       } catch (e) {
         logger.error(e);

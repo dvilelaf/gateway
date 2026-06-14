@@ -44,6 +44,7 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           percentageToRemove,
           walletAddress: requestedWalletAddress,
           gasPrice,
+          liveActionAuthorization,
           maxGas,
         } = request.body;
 
@@ -149,7 +150,11 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
         // Prepare gas options
         // Convert gasPrice from wei to gwei if provided
         const gasPriceGwei = gasPrice ? parseFloat(utils.formatUnits(gasPrice, 'gwei')) : undefined;
-        const gasOptions = await ethereum.prepareGasOptions(gasPriceGwei, maxGas || AMM_REMOVE_LIQUIDITY_GAS_LIMIT);
+        const gasOptions = await ethereum.prepareGasOptions(
+          gasPriceGwei,
+          maxGas || AMM_REMOVE_LIQUIDITY_GAS_LIMIT,
+          liveActionAuthorization,
+        );
 
         // Check if one of the tokens is WETH
         if (baseTokenObj.symbol === 'WETH') {
