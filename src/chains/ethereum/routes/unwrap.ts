@@ -52,7 +52,13 @@ async function getWrappedTokenInfo(
   };
 }
 
-export async function unwrapEthereum(fastify: FastifyInstance, network: string, address: string, amount: string) {
+export async function unwrapEthereum(
+  fastify: FastifyInstance,
+  network: string,
+  address: string,
+  amount: string,
+  liveActionAuthorization?: UnwrapRequestType['liveActionAuthorization'],
+) {
   // Get Ethereum instance for the specified network
   const ethereum = await Ethereum.getInstance(network);
   await ethereum.init();
@@ -99,7 +105,7 @@ export async function unwrapEthereum(fastify: FastifyInstance, network: string, 
       const data = iface.encodeFunctionData('withdraw', [amountInWei]);
 
       // Get gas options using estimateGasPrice
-      const gasOptions = await ethereum.prepareGasOptions(undefined, UNWRAP_GAS_LIMIT);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, UNWRAP_GAS_LIMIT, liveActionAuthorization);
 
       // Build unsigned transaction with gas parameters
       const unsignedTx = {
@@ -145,7 +151,7 @@ export async function unwrapEthereum(fastify: FastifyInstance, network: string, 
       }
 
       // Prepare gas options for unwrap transaction
-      const gasOptions = await ethereum.prepareGasOptions(undefined, UNWRAP_GAS_LIMIT);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, UNWRAP_GAS_LIMIT, liveActionAuthorization);
       const params: any = {
         ...gasOptions,
         nonce: await ethereum.provider.getTransactionCount(wallet.address),
@@ -224,9 +230,9 @@ export const unwrapRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request) => {
-      const { network, address, amount } = request.body;
+      const { network, address, amount, liveActionAuthorization } = request.body;
 
-      return await unwrapEthereum(fastify, network, address, amount);
+      return await unwrapEthereum(fastify, network, address, amount, liveActionAuthorization);
     },
   );
 };

@@ -52,7 +52,13 @@ async function getWrappedTokenInfo(
   };
 }
 
-export async function wrapEthereum(fastify: FastifyInstance, network: string, address: string, amount: string) {
+export async function wrapEthereum(
+  fastify: FastifyInstance,
+  network: string,
+  address: string,
+  amount: string,
+  liveActionAuthorization?: WrapRequestType['liveActionAuthorization'],
+) {
   // Get Ethereum instance for the specified network
   const ethereum = await Ethereum.getInstance(network);
   await ethereum.init();
@@ -90,7 +96,7 @@ export async function wrapEthereum(fastify: FastifyInstance, network: string, ad
       const data = iface.encodeFunctionData('deposit');
 
       // Get gas options using estimateGasPrice
-      const gasOptions = await ethereum.prepareGasOptions(undefined, WRAP_GAS_LIMIT);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, WRAP_GAS_LIMIT, liveActionAuthorization);
 
       // Build unsigned transaction with gas parameters
       const unsignedTx = {
@@ -129,7 +135,7 @@ export async function wrapEthereum(fastify: FastifyInstance, network: string, ad
       const wrappedContract = new ethers.Contract(wrappedInfo.address, WETH9ABI, wallet);
 
       // Prepare gas options for wrap transaction
-      const gasOptions = await ethereum.prepareGasOptions(undefined, WRAP_GAS_LIMIT);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, WRAP_GAS_LIMIT, liveActionAuthorization);
       const params: any = {
         ...gasOptions,
         nonce: await ethereum.provider.getTransactionCount(wallet.address),
@@ -207,9 +213,9 @@ export const wrapRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request) => {
-      const { network, address, amount } = request.body;
+      const { network, address, amount, liveActionAuthorization } = request.body;
 
-      return await wrapEthereum(fastify, network, address, amount);
+      return await wrapEthereum(fastify, network, address, amount, liveActionAuthorization);
     },
   );
 };

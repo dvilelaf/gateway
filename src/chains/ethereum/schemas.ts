@@ -99,6 +99,11 @@ export const ApproveRequestSchema = Type.Object({
       default: '',
     }),
   ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live token approval',
+    }),
+  ),
 });
 
 // Approve response schema
@@ -126,6 +131,11 @@ export const WrapRequestSchema = Type.Object({
     description: 'The amount of native token to wrap (e.g., ETH, BNB, AVAX)',
     examples: [EXAMPLE_AMOUNT],
   }),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live wrap',
+    }),
+  ),
 });
 
 // Wrap response schema
@@ -154,6 +164,11 @@ export const UnwrapRequestSchema = Type.Object({
     description: 'The amount of wrapped token to unwrap (e.g., WETH, WBNB, WAVAX)',
     examples: [EXAMPLE_AMOUNT],
   }),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live unwrap',
+    }),
+  ),
 });
 
 // Unwrap response schema

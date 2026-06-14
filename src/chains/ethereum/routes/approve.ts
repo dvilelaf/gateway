@@ -22,6 +22,7 @@ export async function approveEthereumToken(
   spender: string,
   token: string,
   amount?: string,
+  liveActionAuthorization?: ApproveRequestType['liveActionAuthorization'],
 ) {
   const ethereum = await Ethereum.getInstance(network);
   await ethereum.init();
@@ -156,7 +157,7 @@ export async function approveEthereumToken(
         const data = iface.encodeFunctionData('approve', [spenderAddress, amountBigNumber]);
 
         // Get gas options using estimateGasPrice
-        const gasOptions = await ethereum.prepareGasOptions(undefined, APPROVE_GAS_LIMIT);
+        const gasOptions = await ethereum.prepareGasOptions(undefined, APPROVE_GAS_LIMIT, liveActionAuthorization);
 
         // Build unsigned transaction with gas parameters
         const unsignedTx = {
@@ -270,7 +271,7 @@ export async function approveEthereumToken(
         ]);
 
         // Get gas options
-        const gasOptions = await ethereum.prepareGasOptions(undefined, APPROVE_GAS_LIMIT);
+        const gasOptions = await ethereum.prepareGasOptions(undefined, APPROVE_GAS_LIMIT, liveActionAuthorization);
 
         // Build unsigned transaction
         const unsignedTx = {
@@ -312,7 +313,7 @@ export async function approveEthereumToken(
         );
 
         // Prepare gas options for Permit2 approval transaction
-        const gasOptions = await ethereum.prepareGasOptions(undefined, APPROVE_GAS_LIMIT);
+        const gasOptions = await ethereum.prepareGasOptions(undefined, APPROVE_GAS_LIMIT, liveActionAuthorization);
 
         const permit2Tx = await permit2Contract.approve(
           fullToken.address,
@@ -392,9 +393,9 @@ export const approveRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request) => {
-      const { network, address, spender, token, amount } = request.body;
+      const { network, address, spender, token, amount, liveActionAuthorization } = request.body;
 
-      return await approveEthereumToken(fastify, network, address, spender, token, amount);
+      return await approveEthereumToken(fastify, network, address, spender, token, amount, liveActionAuthorization);
     },
   );
 };

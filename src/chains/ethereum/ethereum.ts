@@ -10,6 +10,7 @@ import { ConfigManagerCertPassphrase } from '../../services/config-manager-cert-
 import { ConfigManagerV2 } from '../../services/config-manager-v2';
 import { logger, redactUrl } from '../../services/logger';
 import { assertMainnetMutationAllowed } from '../../services/runtime-guard';
+import type { LiveActionAuthorization } from '../../services/runtime-guard';
 import { TokenService } from '../../services/token-service';
 import { walletPath, isHardwareWallet as checkIsHardwareWallet } from '../../wallet/utils';
 
@@ -302,9 +303,14 @@ export class Ethereum {
    * @param gasLimit Gas limit (optional, defaults to 300000)
    * @returns Gas options object for ethers.js transaction
    */
-  public async prepareGasOptions(gasPrice?: number, gasLimit?: number): Promise<any> {
+  public async prepareGasOptions(
+    gasPrice?: number,
+    gasLimit?: number,
+    liveActionAuthorization?: LiveActionAuthorization,
+  ): Promise<any> {
     assertMainnetMutationAllowed({
       chain: 'ethereum',
+      liveActionAuthorization,
       network: this.network,
       operation: 'ethereum_transaction',
     });

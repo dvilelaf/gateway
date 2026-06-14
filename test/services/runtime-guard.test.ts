@@ -226,6 +226,25 @@ describe('runtime guard wiring', () => {
     expect(prepareGasOptions.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(
       prepareGasOptions.indexOf('const gasOptions'),
     );
+    expect(prepareGasOptions).toContain('liveActionAuthorization');
+  });
+
+  it('passes live action authorization through Ethereum approve wrap and unwrap routes', () => {
+    const schemas = readFileSync(path.join(ROOT, 'src/chains/ethereum/schemas.ts'), 'utf8');
+    for (const [start, end] of [
+      ['export const ApproveRequestSchema', 'export const ApproveResponseSchema'],
+      ['export const WrapRequestSchema', 'export const WrapResponseSchema'],
+      ['export const UnwrapRequestSchema', 'export const UnwrapResponseSchema'],
+    ]) {
+      const schema = schemas.slice(schemas.indexOf(start), schemas.indexOf(end));
+      expect(schema).toContain('liveActionAuthorization');
+    }
+
+    for (const file of ['approve.ts', 'wrap.ts', 'unwrap.ts']) {
+      const source = readFileSync(path.join(ROOT, `src/chains/ethereum/routes/${file}`), 'utf8');
+      expect(source).toContain('liveActionAuthorization');
+      expect(source).toContain('prepareGasOptions');
+    }
   });
 
   it('checks Solana send helpers before raw transaction submission', () => {
