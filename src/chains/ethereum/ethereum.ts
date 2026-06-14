@@ -9,6 +9,7 @@ import { TokenValue, tokenValueToString } from '../../services/base';
 import { ConfigManagerCertPassphrase } from '../../services/config-manager-cert-passphrase';
 import { ConfigManagerV2 } from '../../services/config-manager-v2';
 import { logger, redactUrl } from '../../services/logger';
+import { assertMainnetMutationAllowed } from '../../services/runtime-guard';
 import { TokenService } from '../../services/token-service';
 import { walletPath, isHardwareWallet as checkIsHardwareWallet } from '../../wallet/utils';
 
@@ -302,6 +303,12 @@ export class Ethereum {
    * @returns Gas options object for ethers.js transaction
    */
   public async prepareGasOptions(gasPrice?: number, gasLimit?: number): Promise<any> {
+    assertMainnetMutationAllowed({
+      chain: 'ethereum',
+      network: this.network,
+      operation: 'ethereum_transaction',
+    });
+
     const gasOptions: any = {};
 
     // Set default gas limit if not provided

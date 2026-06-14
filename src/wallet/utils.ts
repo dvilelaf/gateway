@@ -24,6 +24,7 @@ import {
   getSupportedChains,
 } from '../services/connection-manager';
 import { logger } from '../services/logger';
+import { assertMainnetMutationAllowed } from '../services/runtime-guard';
 
 import {
   AddWalletRequest,
@@ -599,6 +600,12 @@ export async function sendTransaction(
   if (isHardware) {
     throw fastify.httpErrors.badRequest('Send from hardware wallet not supported via API');
   }
+
+  assertMainnetMutationAllowed({
+    chain: req.chain,
+    network: req.network,
+    operation: 'wallet_send',
+  });
 
   if (req.chain.toLowerCase() === 'solana') {
     return await sendSolanaTransaction(fastify, req, validatedFromAddress, validatedToAddress);

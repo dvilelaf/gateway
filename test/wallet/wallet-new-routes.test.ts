@@ -369,8 +369,11 @@ describe('Wallet New Routes', () => {
   describe('POST /wallet/send', () => {
     const recipientSolanaAddress = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
     const recipientEthAddress = '0x1234567890123456789012345678901234567890';
+    const originalLiveMutationsEnabled = process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
 
     beforeEach(() => {
+      process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = 'true';
+
       // Add wallets to mock storage
       mockWallets.solana.add(testSolanaAddress);
       mockWallets.ethereum.add(testEthAddress);
@@ -416,6 +419,14 @@ describe('Wallet New Routes', () => {
           blockNumber: 12345,
         }));
       });
+    });
+
+    afterEach(() => {
+      if (originalLiveMutationsEnabled === undefined) {
+        delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+      } else {
+        process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = originalLiveMutationsEnabled;
+      }
     });
 
     it('should send native SOL successfully', async () => {

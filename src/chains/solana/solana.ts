@@ -39,6 +39,7 @@ import { ConfigManagerCertPassphrase } from '../../services/config-manager-cert-
 import { ConfigManagerV2 } from '../../services/config-manager-v2';
 import { httpErrors } from '../../services/error-handler';
 import { logger, redactUrl } from '../../services/logger';
+import { assertMainnetMutationAllowed } from '../../services/runtime-guard';
 import { TokenService } from '../../services/token-service';
 import { getSafeWalletFilePath, isHardwareWallet as isHardwareWalletUtil } from '../../wallet/utils';
 
@@ -1229,6 +1230,12 @@ export class Solana {
     signers: Signer[] = [],
     priorityFeePerCU?: number,
   ): Promise<{ signature: string; fee: number }> {
+    assertMainnetMutationAllowed({
+      chain: 'solana',
+      network: this.network,
+      operation: 'solana_transaction',
+    });
+
     // Use provided priority fee or estimate it
     const currentPriorityFee = priorityFeePerCU ?? (await this.estimateGasPrice());
 
@@ -1457,6 +1464,12 @@ export class Solana {
   async sendAndConfirmRawTransaction(
     transaction: VersionedTransaction | Transaction,
   ): Promise<{ confirmed: boolean; signature: string; txData: any }> {
+    assertMainnetMutationAllowed({
+      chain: 'solana',
+      network: this.network,
+      operation: 'solana_raw_transaction',
+    });
+
     // Convert Transaction to VersionedTransaction if necessary
     if (!(transaction instanceof VersionedTransaction)) {
       // Ensure transaction is properly prepared
