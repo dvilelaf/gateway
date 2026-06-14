@@ -66,6 +66,11 @@ export const AerodromeExecuteSwapRequest = Type.Intersect([
       description: 'Wallet address that will execute the swap',
       default: ethereumChainConfig.defaultWallet,
     }),
+    liveActionAuthorization: Type.Optional(
+      Type.Any({
+        description: 'Marlin live-action-authorization-v1 artifact for live Aerodrome swap execution',
+      }),
+    ),
   }),
 ]);
 
@@ -155,6 +160,11 @@ const AerodromeLiquidityBaseRequest = Type.Object({
   deadline: Type.Optional(
     Type.Number({
       description: 'Unix timestamp deadline',
+    }),
+  ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Aerodrome liquidity execution',
     }),
   ),
 });
