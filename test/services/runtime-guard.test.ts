@@ -349,4 +349,56 @@ describe('runtime guard wiring', () => {
       }
     }
   });
+
+  it('passes live action authorization through unified swap execution routes', () => {
+    const source = readFileSync(path.join(ROOT, 'src/trading/swap/execute.ts'), 'utf8');
+
+    const schema = source.slice(
+      source.indexOf('const UnifiedExecuteSwapRequestSchema'),
+      source.indexOf('type UnifiedExecuteSwapRequest'),
+    );
+    expect(schema).toContain('liveActionAuthorization');
+
+    const route = source.slice(
+      source.indexOf('async (request, reply) =>'),
+      source.indexOf('logger.error(`[UnifiedSwap] Execute error'),
+    );
+    expect(route).toContain('liveActionAuthorization');
+    expect(route).toContain('connector,');
+    expect(route).toContain('liveActionAuthorization,');
+
+    for (const connector of [
+      'jupiterRouterExecuteSwap',
+      'uniswapRouterExecuteSwap',
+      'uniswapAmmExecuteSwap',
+      'uniswapClmmExecuteSwap',
+      'pancakeswapRouterExecuteSwap',
+      'pancakeswapAmmExecuteSwap',
+      'pancakeswapClmmExecuteSwap',
+      'zeroXRouterExecuteSwap',
+    ]) {
+      const index = source.indexOf(`return await ${connector}(`);
+      const call = source.slice(index, source.indexOf(');', index));
+      expect(call).toContain('liveActionAuthorization');
+    }
+  });
+
+  it('passes live action authorization through Jupiter router execution', () => {
+    const schemas = readFileSync(path.join(ROOT, 'src/connectors/jupiter/schemas.ts'), 'utf8');
+    const executeQuoteSchema = schemas.slice(
+      schemas.indexOf('export const JupiterExecuteQuoteRequest'),
+      schemas.indexOf('// Jupiter-specific execute-swap request'),
+    );
+    const executeSwapSchema = schemas.slice(schemas.indexOf('export const JupiterExecuteSwapRequest'));
+    expect(executeQuoteSchema).toContain('liveActionAuthorization');
+    expect(executeSwapSchema).toContain('liveActionAuthorization');
+
+    const executeQuote = readFileSync(path.join(ROOT, 'src/connectors/jupiter/router-routes/executeQuote.ts'), 'utf8');
+    expect(executeQuote).toContain('liveActionAuthorization');
+    expect(executeQuote).toMatch(/sendAndConfirmRawTransaction\(\s*transaction,\s*liveActionAuthorization,\s*\)/);
+
+    const executeSwap = readFileSync(path.join(ROOT, 'src/connectors/jupiter/router-routes/executeSwap.ts'), 'utf8');
+    expect(executeSwap).toContain('liveActionAuthorization');
+    expect(executeSwap).toContain('liveActionAuthorization,');
+  });
 });

@@ -4,7 +4,7 @@ import { FastifyPluginAsync } from 'fastify';
 
 import { Solana } from '../../../chains/solana/solana';
 import { getSolanaChainConfig } from '../../../chains/solana/solana.config';
-import { ExecuteSwapResponseType, ExecuteSwapResponse } from '../../../schemas/clmm-schema';
+import { ExecuteSwapRequestType, ExecuteSwapResponseType, ExecuteSwapResponse } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import { sanitizeErrorMessage } from '../../../services/sanitize';
@@ -23,6 +23,7 @@ export async function executeSwap(
   side: 'BUY' | 'SELL',
   poolAddress: string,
   slippagePct: number = MeteoraConfig.config.slippagePct,
+  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<ExecuteSwapResponseType> {
   const solana = await Solana.getInstance(network);
   const wallet = await solana.getWallet(address);
@@ -64,7 +65,12 @@ export async function executeSwap(
   logger.info('Transaction simulated successfully, sending to network...');
 
   // Send and confirm transaction using sendAndConfirmTransaction which handles signing
-  const { signature, fee } = await solana.sendAndConfirmTransaction(swapTx, [wallet]);
+  const { signature, fee } = await solana.sendAndConfirmTransaction(
+    swapTx,
+    [wallet],
+    undefined,
+    liveActionAuthorization,
+  );
 
   logger.info(`Transaction sent with signature: ${signature}`);
 

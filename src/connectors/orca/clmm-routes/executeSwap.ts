@@ -17,7 +17,7 @@ import { FastifyPluginAsync } from 'fastify';
 
 import { Solana } from '../../../chains/solana/solana';
 import { getSolanaChainConfig } from '../../../chains/solana/solana.config';
-import { ExecuteSwapResponseType, ExecuteSwapResponse } from '../../../schemas/clmm-schema';
+import { ExecuteSwapRequestType, ExecuteSwapResponseType, ExecuteSwapResponse } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import { Orca } from '../orca';
@@ -33,6 +33,7 @@ export async function executeSwap(
   side: 'BUY' | 'SELL',
   poolAddress: string,
   slippagePct: number = 1,
+  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<ExecuteSwapResponseType> {
   const solana = await Solana.getInstance(network);
   const orca = await Orca.getInstance(network);
@@ -241,7 +242,12 @@ export async function executeSwap(
   // Build, simulate, and send transaction
   const txPayload = await builder.build();
   await solana.simulateWithErrorHandling(txPayload.transaction);
-  const { signature, fee } = await solana.sendAndConfirmTransaction(txPayload.transaction, [wallet]);
+  const { signature, fee } = await solana.sendAndConfirmTransaction(
+    txPayload.transaction,
+    [wallet],
+    undefined,
+    liveActionAuthorization,
+  );
 
   // Calculate balance changes based on side
   const amountIn = Number(quote.estimatedAmountIn) / Math.pow(10, inputDecimals);

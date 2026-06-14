@@ -4,7 +4,7 @@ import BN from 'bn.js';
 import { FastifyPluginAsync } from 'fastify';
 
 import { Solana } from '../../../chains/solana/solana';
-import { ExecuteSwapResponse, ExecuteSwapResponseType } from '../../../schemas/clmm-schema';
+import { ExecuteSwapRequestType, ExecuteSwapResponse, ExecuteSwapResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import { PancakeswapSol } from '../pancakeswap-sol';
@@ -26,6 +26,7 @@ export async function executeSwap(
   side: 'BUY' | 'SELL',
   poolAddress?: string,
   slippagePct?: number,
+  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<ExecuteSwapResponseType> {
   // Get quote first - this contains all the slippage calculations and pool lookup
   const { quoteSwap } = await import('./quoteSwap');
@@ -144,7 +145,10 @@ export async function executeSwap(
   await solana.simulateWithErrorHandling(transaction);
 
   // Send and confirm transaction
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   if (confirmed && txData) {
     const totalFee = txData.meta.fee;

@@ -10,7 +10,12 @@ import { logger } from '../../../services/logger';
 import { quoteCache } from '../../../services/quote-cache';
 import { PancakeswapExecuteQuoteRequest } from '../schemas';
 
-async function executeQuote(walletAddress: string, network: string, quoteId: string): Promise<SwapExecuteResponseType> {
+async function executeQuote(
+  walletAddress: string,
+  network: string,
+  quoteId: string,
+  liveActionAuthorization?: ExecuteQuoteRequestType['liveActionAuthorization'],
+): Promise<SwapExecuteResponseType> {
   // Retrieve cached quote
   const cached = quoteCache.get(quoteId);
   if (!cached) {
@@ -66,7 +71,7 @@ async function executeQuote(walletAddress: string, network: string, quoteId: str
 
       // Get gas options with increased gas limit for Universal Router V2
       const gasLimit = 500000; // Increased for Universal Router V2
-      const gasOptions = await ethereum.prepareGasOptions(undefined, gasLimit);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, gasLimit, liveActionAuthorization);
 
       // Build unsigned transaction with gas parameters
       const unsignedTx = {
@@ -99,7 +104,7 @@ async function executeQuote(walletAddress: string, network: string, quoteId: str
       // Get gas options with increased gas limit for Universal Router V2
       // Pancakeswap Universal Router V2 swaps typically use between 200k-500k gas
       const gasLimit = 500000; // Increased for Universal Router V2
-      const gasOptions = await ethereum.prepareGasOptions(undefined, gasLimit);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, gasLimit, liveActionAuthorization);
       logger.info(`Using gas limit: ${gasOptions.gasLimit?.toString() || gasLimit}`);
 
       // Build transaction parameters with gas options
@@ -229,9 +234,10 @@ export const executeQuoteRoute: FastifyPluginAsync = async (fastify) => {
           walletAddress = getEthereumChainConfig().defaultWallet,
           network = getEthereumChainConfig().defaultNetwork,
           quoteId,
+          liveActionAuthorization,
         } = request.body as typeof PancakeswapExecuteQuoteRequest._type;
 
-        return await executeQuote(walletAddress, network, quoteId);
+        return await executeQuote(walletAddress, network, quoteId, liveActionAuthorization);
       } catch (e) {
         if (e.statusCode) throw e;
         logger.error('Error executing quote:', e);

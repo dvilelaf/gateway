@@ -27,6 +27,7 @@ export async function executeClmmSwap(
   amount: number,
   side: 'BUY' | 'SELL',
   slippagePct: number = UniswapConfig.config.slippagePct,
+  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<SwapExecuteResponseType> {
   const ethereum = await Ethereum.getInstance(network);
   await ethereum.init();
@@ -162,7 +163,7 @@ export async function executeClmmSwap(
       }
 
       // Get gas options using estimateGasPrice
-      const gasOptions = await ethereum.prepareGasOptions(undefined, CLMM_SWAP_GAS_LIMIT);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, CLMM_SWAP_GAS_LIMIT, liveActionAuthorization);
 
       // Build unsigned transaction with gas parameters
       const unsignedTx = {
@@ -196,7 +197,7 @@ export async function executeClmmSwap(
       const routerContract = new Contract(routerAddress, ISwapRouter02ABI, wallet);
 
       // Use Ethereum's gas options
-      const txOptions = await ethereum.prepareGasOptions(undefined, CLMM_SWAP_GAS_LIMIT);
+      const txOptions = await ethereum.prepareGasOptions(undefined, CLMM_SWAP_GAS_LIMIT, liveActionAuthorization);
 
       let tx;
       if (side === 'SELL') {
@@ -336,7 +337,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, network, baseToken, quoteToken, amount, side, slippagePct } =
+        const { walletAddress, network, baseToken, quoteToken, amount, side, slippagePct, liveActionAuthorization } =
           request.body as typeof UniswapExecuteSwapRequest._type;
 
         return await executeClmmSwap(
@@ -347,6 +348,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           amount,
           side as 'BUY' | 'SELL',
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e) {
         if (e.statusCode) throw e;

@@ -22,6 +22,7 @@ export async function executeSwap(
   side: 'BUY' | 'SELL',
   poolAddress: string,
   slippagePct: number = RaydiumConfig.config.slippagePct,
+  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<ExecuteSwapResponseType> {
   const solana = await Solana.getInstance(network);
   const raydium = await Raydium.getInstance(network);
@@ -151,7 +152,10 @@ export async function executeSwap(
   // Simulate transaction with proper error handling
   await solana.simulateWithErrorHandling(transaction as VersionedTransaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   // Handle confirmation status
   const result = await solana.handleConfirmation(

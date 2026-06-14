@@ -346,6 +346,11 @@ export const ExecuteSwapRequest = Type.Object(
       enum: ['BUY', 'SELL'],
     }),
     slippagePct: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+    liveActionAuthorization: Type.Optional(
+      Type.Any({
+        description: 'Marlin live-action-authorization-v1 artifact for live CLMM swap execution',
+      }),
+    ),
   },
   { $id: 'ClmmExecuteSwapRequest' },
 );

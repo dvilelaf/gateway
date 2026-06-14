@@ -80,6 +80,11 @@ const UnifiedExecuteSwapRequestSchema = Type.Object({
       default: 1,
     }),
   ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live swap execution',
+    }),
+  ),
 });
 
 type UnifiedExecuteSwapRequest = Static<typeof UnifiedExecuteSwapRequestSchema>;
@@ -120,6 +125,7 @@ async function executeSolanaSwap(
   side: 'BUY' | 'SELL',
   slippagePct?: number,
   connector?: string,
+  liveActionAuthorization?: UnifiedExecuteSwapRequest['liveActionAuthorization'],
 ): Promise<any> {
   try {
     const networkConfig = getSolanaNetworkConfig(network);
@@ -162,6 +168,7 @@ async function executeSolanaSwap(
         slippagePct,
         undefined, // priorityLevel
         undefined, // maxLamports
+        liveActionAuthorization,
       );
     } else if (providerKey === 'raydium/amm') {
       return await raydiumAmmExecuteSwap(
@@ -173,6 +180,7 @@ async function executeSolanaSwap(
         side,
         poolAddress!,
         slippagePct,
+        liveActionAuthorization,
       );
     } else if (providerKey === 'raydium/clmm') {
       return await raydiumClmmExecuteSwap(
@@ -184,6 +192,7 @@ async function executeSolanaSwap(
         side,
         poolAddress!,
         slippagePct,
+        liveActionAuthorization,
       );
     } else if (providerKey === 'meteora/clmm') {
       return await meteoraClmmExecuteSwap(
@@ -195,6 +204,7 @@ async function executeSolanaSwap(
         side,
         poolAddress!,
         slippagePct,
+        liveActionAuthorization,
       );
     } else if (providerKey === 'pancakeswap-sol/clmm') {
       return await pancakeswapSolClmmExecuteSwap(
@@ -206,6 +216,7 @@ async function executeSolanaSwap(
         side,
         poolAddress,
         slippagePct,
+        liveActionAuthorization,
       );
     } else if (providerKey === 'orca/clmm') {
       return await orcaClmmExecuteSwap(
@@ -217,6 +228,7 @@ async function executeSolanaSwap(
         side,
         poolAddress!,
         slippagePct,
+        liveActionAuthorization,
       );
     }
 
@@ -242,6 +254,7 @@ async function executeEthereumSwap(
   side: 'BUY' | 'SELL',
   slippagePct?: number,
   connector?: string,
+  liveActionAuthorization?: UnifiedExecuteSwapRequest['liveActionAuthorization'],
 ): Promise<any> {
   try {
     const networkConfig = getEthereumNetworkConfig(network);
@@ -274,11 +287,38 @@ async function executeEthereumSwap(
     const providerKey = swapProvider;
 
     if (providerKey === 'uniswap/router') {
-      return await uniswapRouterExecuteSwap(walletAddress, network, baseToken, quoteToken, amount, side, slippagePct);
+      return await uniswapRouterExecuteSwap(
+        walletAddress,
+        network,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        liveActionAuthorization,
+      );
     } else if (providerKey === 'uniswap/amm') {
-      return await uniswapAmmExecuteSwap(walletAddress, network, baseToken, quoteToken, amount, side, slippagePct);
+      return await uniswapAmmExecuteSwap(
+        walletAddress,
+        network,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        liveActionAuthorization,
+      );
     } else if (providerKey === 'uniswap/clmm') {
-      return await uniswapClmmExecuteSwap(walletAddress, network, baseToken, quoteToken, amount, side, slippagePct);
+      return await uniswapClmmExecuteSwap(
+        walletAddress,
+        network,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        liveActionAuthorization,
+      );
     } else if (providerKey === 'pancakeswap/router') {
       return await pancakeswapRouterExecuteSwap(
         walletAddress,
@@ -288,13 +328,43 @@ async function executeEthereumSwap(
         amount,
         side,
         slippagePct,
+        liveActionAuthorization,
       );
     } else if (providerKey === 'pancakeswap/amm') {
-      return await pancakeswapAmmExecuteSwap(walletAddress, network, baseToken, quoteToken, amount, side, slippagePct);
+      return await pancakeswapAmmExecuteSwap(
+        walletAddress,
+        network,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        liveActionAuthorization,
+      );
     } else if (providerKey === 'pancakeswap/clmm') {
-      return await pancakeswapClmmExecuteSwap(walletAddress, network, baseToken, quoteToken, amount, side, slippagePct);
+      return await pancakeswapClmmExecuteSwap(
+        walletAddress,
+        network,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        liveActionAuthorization,
+      );
     } else if (providerKey === '0x/router') {
-      return await zeroXRouterExecuteSwap(walletAddress, network, baseToken, quoteToken, amount, side, slippagePct);
+      return await zeroXRouterExecuteSwap(
+        walletAddress,
+        network,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        undefined,
+        undefined,
+        liveActionAuthorization,
+      );
     }
 
     throw httpErrors.badRequest(`Unsupported swap provider: ${swapProvider}`);
@@ -319,6 +389,7 @@ export async function executeUnifiedSwap(
   side: 'BUY' | 'SELL',
   slippagePct?: number,
   connector?: string,
+  liveActionAuthorization?: UnifiedExecuteSwapRequest['liveActionAuthorization'],
 ): Promise<any> {
   const { chain, network } = parseChainNetwork(chainNetwork);
 
@@ -328,10 +399,30 @@ export async function executeUnifiedSwap(
 
   switch (chain.toLowerCase()) {
     case 'ethereum':
-      return executeEthereumSwap(network, walletAddress, baseToken, quoteToken, amount, side, slippagePct, connector);
+      return executeEthereumSwap(
+        network,
+        walletAddress,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        connector,
+        liveActionAuthorization,
+      );
 
     case 'solana':
-      return executeSolanaSwap(network, walletAddress, baseToken, quoteToken, amount, side, slippagePct, connector);
+      return executeSolanaSwap(
+        network,
+        walletAddress,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        connector,
+        liveActionAuthorization,
+      );
 
     default:
       throw httpErrors.badRequest(`Unsupported chain: ${chain}`);
@@ -356,8 +447,17 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const { chainNetwork, walletAddress, baseToken, quoteToken, amount, side, slippagePct, connector } =
-        request.body as UnifiedExecuteSwapRequest;
+      const {
+        chainNetwork,
+        walletAddress,
+        baseToken,
+        quoteToken,
+        amount,
+        side,
+        slippagePct,
+        connector,
+        liveActionAuthorization,
+      } = request.body as UnifiedExecuteSwapRequest;
 
       try {
         const result = await executeUnifiedSwap(
@@ -369,6 +469,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           side as 'BUY' | 'SELL',
           slippagePct,
           connector,
+          liveActionAuthorization,
         );
         return reply.code(200).send(result);
       } catch (error: any) {

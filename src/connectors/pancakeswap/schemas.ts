@@ -153,6 +153,11 @@ export const PancakeswapExecuteQuoteRequest = Type.Object({
     description: 'ID of the quote to execute',
     examples: ['123e4567-e89b-12d3-a456-426614174000'],
   }),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live quote execution',
+    }),
+  ),
 });
 
 // Pancakeswap AMM Add Liquidity Request
@@ -340,6 +345,11 @@ export const PancakeswapExecuteSwapRequest = Type.Object({
       description: 'Maximum acceptable slippage percentage',
       default: PancakeswapConfig.config.slippagePct,
       examples: [1],
+    }),
+  ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live swap execution',
     }),
   ),
 });

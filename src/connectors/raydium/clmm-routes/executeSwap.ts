@@ -4,7 +4,7 @@ import BN from 'bn.js';
 import { FastifyPluginAsync } from 'fastify';
 
 import { Solana } from '../../../chains/solana/solana';
-import { ExecuteSwapResponse, ExecuteSwapResponseType } from '../../../schemas/clmm-schema';
+import { ExecuteSwapRequestType, ExecuteSwapResponse, ExecuteSwapResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import { sanitizeErrorMessage } from '../../../services/sanitize';
@@ -23,6 +23,7 @@ export async function executeSwap(
   side: 'BUY' | 'SELL',
   poolAddress: string,
   slippagePct: number = RaydiumConfig.config.slippagePct,
+  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<ExecuteSwapResponseType> {
   const solana = await Solana.getInstance(network);
   const raydium = await Raydium.getInstance(network);
@@ -166,7 +167,10 @@ export async function executeSwap(
   await solana.simulateWithErrorHandling(transaction as VersionedTransaction);
 
   // Send and confirm - keep retry loop here for retrying same tx hash
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   // Handle confirmation status
   const result = await solana.handleConfirmation(
