@@ -1149,8 +1149,7 @@ export class Ethereum {
             balances[token.symbol] = 0;
           }
         } else {
-          logger.warn(`Token not recognized: ${symbolOrAddress}`);
-          balances[symbolOrAddress] = 0;
+          throw new Error(`Token not recognized: ${symbolOrAddress}`);
         }
       }),
     );

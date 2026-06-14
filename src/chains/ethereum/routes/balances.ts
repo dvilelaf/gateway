@@ -17,6 +17,11 @@ export async function getEthereumBalances(
     return { balances };
   } catch (error) {
     logger.error(`Error getting balances: ${error.message}`);
+
+    if (error.message?.startsWith('Token not recognized: ')) {
+      throw fastify.httpErrors.badRequest(error.message);
+    }
+
     throw fastify.httpErrors.internalServerError(`Failed to get balances: ${error.message}`);
   }
 }
@@ -30,7 +35,7 @@ export const balancesRoute: FastifyPluginAsync = async (fastify) => {
     {
       schema: {
         description:
-          'Get Ethereum balances. If no tokens specified or empty array provided, returns native token (ETH) and only non-zero balances for tokens from the token list. If specific tokens are requested, returns those exact tokens with their balances, including zeros.',
+          'Get Ethereum balances. If no tokens specified or empty array provided, returns native token (ETH) and only non-zero balances for tokens from the token list. If specific tokens are requested, returns those exact tokens with their balances; unknown requested tokens are rejected.',
         tags: ['/chain/ethereum'],
         body: EthereumBalanceRequest,
         response: {
