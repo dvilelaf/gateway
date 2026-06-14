@@ -7,6 +7,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { OpenPositionResponse, OpenPositionResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { PancakeswapSol } from '../pancakeswap-sol';
 import { PancakeswapSolConfig } from '../pancakeswap-sol.config';
 import { priceToTick, roundTickToSpacing, parsePoolTickSpacing } from '../pancakeswap-sol.parser';
@@ -24,6 +25,7 @@ export async function openPosition(
   baseTokenAmount?: number,
   quoteTokenAmount?: number,
   slippagePct?: number,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<OpenPositionResponseType> {
   logger.info(`=== OpenPosition Request ===`);
   logger.info(`Network: ${network}`);
@@ -141,7 +143,10 @@ export async function openPosition(
 
   await solana.simulateWithErrorHandling(transaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   if (confirmed && txData) {
     const totalFee = txData.meta.fee;
@@ -206,6 +211,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         } = request.body;
 
         return await openPosition(
@@ -217,6 +223,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e: any) {
         logger.error('Open position error:', e);

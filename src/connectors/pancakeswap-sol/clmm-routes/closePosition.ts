@@ -7,6 +7,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { ClosePositionResponse, ClosePositionResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { PancakeswapSol, PANCAKESWAP_CLMM_PROGRAM_ID } from '../pancakeswap-sol';
 import { buildDecreaseLiquidityV2Instruction, buildClosePositionInstruction } from '../pancakeswap-sol.instructions';
 import { parsePositionData } from '../pancakeswap-sol.parser';
@@ -17,6 +18,7 @@ export async function closePosition(
   network: string,
   walletAddress: string,
   positionAddress: string,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<ClosePositionResponseType> {
   const solana = await Solana.getInstance(network);
   const pancakeswapSol = await PancakeswapSol.getInstance(network);
@@ -96,7 +98,10 @@ export async function closePosition(
   transaction.sign([wallet]);
   await solana.simulateWithErrorHandling(transaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   if (confirmed && txData) {
     const totalFee = txData.meta.fee;
@@ -153,9 +158,9 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network = 'mainnet-beta', walletAddress, positionAddress } = request.body;
+        const { network = 'mainnet-beta', walletAddress, positionAddress, liveActionAuthorization } = request.body;
 
-        return await closePosition(network, walletAddress!, positionAddress);
+        return await closePosition(network, walletAddress!, positionAddress, liveActionAuthorization);
       } catch (e: any) {
         logger.error('Close position error:', e);
         // Re-throw httpErrors as-is

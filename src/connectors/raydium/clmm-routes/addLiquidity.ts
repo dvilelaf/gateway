@@ -8,6 +8,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { AddLiquidityResponse, AddLiquidityResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Raydium } from '../raydium';
 import { RaydiumConfig } from '../raydium.config';
 import { RaydiumClmmAddLiquidityRequest } from '../schemas';
@@ -21,6 +22,7 @@ export async function addLiquidity(
   baseTokenAmount: number,
   quoteTokenAmount: number,
   slippagePct: number = RaydiumConfig.config.slippagePct,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<AddLiquidityResponseType> {
   const solana = await Solana.getInstance(network);
   const raydium = await Raydium.getInstance(network);
@@ -85,7 +87,10 @@ export async function addLiquidity(
   )) as VersionedTransaction;
   await solana.simulateWithErrorHandling(transaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   if (confirmed && txData) {
     const totalFee = txData.meta.fee;
@@ -155,8 +160,15 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress, positionAddress, baseTokenAmount, quoteTokenAmount, slippagePct } =
-          request.body;
+        const {
+          network,
+          walletAddress,
+          positionAddress,
+          baseTokenAmount,
+          quoteTokenAmount,
+          slippagePct,
+          liveActionAuthorization,
+        } = request.body;
 
         return await addLiquidity(
           network,
@@ -165,6 +177,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e) {
         logger.error(e);

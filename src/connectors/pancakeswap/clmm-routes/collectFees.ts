@@ -25,6 +25,7 @@ export async function collectFees(
   network: string,
   walletAddress: string,
   positionAddress: string,
+  liveActionAuthorization?: CollectFeesRequestType['liveActionAuthorization'],
 ): Promise<CollectFeesResponseType> {
   if (!positionAddress) {
     throw httpErrors.badRequest('Missing required parameters');
@@ -91,7 +92,7 @@ export async function collectFees(
     wallet,
   );
 
-  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_COLLECT_FEES_GAS_LIMIT);
+  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_COLLECT_FEES_GAS_LIMIT, liveActionAuthorization);
   txParams.value = BigNumber.from(value.toString());
   const tx = await positionManagerWithSigner.multicall([calldata], txParams);
   const receipt = await ethereum.handleTransactionExecution(tx);
@@ -147,7 +148,12 @@ export const collectFeesRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress: requestedWalletAddress, positionAddress } = request.body;
+        const {
+          network,
+          walletAddress: requestedWalletAddress,
+          positionAddress,
+          liveActionAuthorization,
+        } = request.body;
 
         let walletAddress = requestedWalletAddress;
         if (!walletAddress) {
@@ -158,7 +164,7 @@ export const collectFeesRoute: FastifyPluginAsync = async (fastify) => {
           }
         }
 
-        return await collectFees(network, walletAddress, positionAddress);
+        return await collectFees(network, walletAddress, positionAddress, liveActionAuthorization);
       } catch (e: any) {
         logger.error('Failed to collect fees:', e);
         if (e.statusCode) {

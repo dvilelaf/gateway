@@ -4,6 +4,7 @@ import { FastifyPluginAsync } from 'fastify';
 import { CollectFeesResponse, CollectFeesResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { PancakeswapSolClmmCollectFeesRequest } from '../schemas';
 
 import { removeLiquidity } from './removeLiquidity';
@@ -12,12 +13,19 @@ async function collectFees(
   network: string,
   walletAddress: string,
   positionAddress: string,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<CollectFeesResponseType> {
   logger.info(`Collecting fees from position ${positionAddress} by removing 1% liquidity`);
 
   // Use the clever Raydium approach: remove 1% of liquidity to collect fees
   // This withdraws a tiny amount of liquidity + all accumulated fees
-  const removeLiquidityResponse = await removeLiquidity(network, walletAddress, positionAddress, 1);
+  const removeLiquidityResponse = await removeLiquidity(
+    network,
+    walletAddress,
+    positionAddress,
+    1,
+    liveActionAuthorization,
+  );
 
   if (removeLiquidityResponse.status !== 1 || !removeLiquidityResponse.data) {
     return {
@@ -64,9 +72,9 @@ export const collectFeesRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network = 'mainnet-beta', walletAddress, positionAddress } = request.body;
+        const { network = 'mainnet-beta', walletAddress, positionAddress, liveActionAuthorization } = request.body;
 
-        return await collectFees(network, walletAddress!, positionAddress);
+        return await collectFees(network, walletAddress!, positionAddress, liveActionAuthorization);
       } catch (e: any) {
         logger.error('Collect fees error:', e);
         // Re-throw httpErrors as-is

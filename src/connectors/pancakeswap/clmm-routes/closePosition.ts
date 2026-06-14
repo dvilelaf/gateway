@@ -25,6 +25,7 @@ export async function closePosition(
   network: string,
   walletAddress: string,
   positionAddress: string,
+  liveActionAuthorization?: ClosePositionRequestType['liveActionAuthorization'],
 ): Promise<ClosePositionResponseType> {
   if (!positionAddress) {
     throw httpErrors.badRequest('Missing required parameters');
@@ -116,7 +117,7 @@ export async function closePosition(
     wallet,
   );
 
-  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_CLOSE_POSITION_GAS_LIMIT);
+  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_CLOSE_POSITION_GAS_LIMIT, liveActionAuthorization);
   txParams.value = BigNumber.from(value.toString());
   const tx = await positionManagerWithSigner.multicall([calldata], txParams);
   const receipt = await ethereum.handleTransactionExecution(tx);
@@ -168,7 +169,12 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress: requestedWalletAddress, positionAddress } = request.body;
+        const {
+          network,
+          walletAddress: requestedWalletAddress,
+          positionAddress,
+          liveActionAuthorization,
+        } = request.body;
 
         let walletAddress = requestedWalletAddress;
         if (!walletAddress) {
@@ -179,7 +185,7 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
           }
         }
 
-        return await closePosition(network, walletAddress, positionAddress);
+        return await closePosition(network, walletAddress, positionAddress, liveActionAuthorization);
       } catch (e: any) {
         logger.error('Failed to close position:', e);
         if (e.statusCode) {

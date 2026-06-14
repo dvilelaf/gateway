@@ -17,6 +17,13 @@ const QUOTE_TOKEN_AMOUNT = 2;
 const LOWER_PRICE_BOUND = 150;
 const UPPER_PRICE_BOUND = 250;
 const CLMM_POOL_ADDRESS_EXAMPLE = '2sf5NYcY4zUPXUSmG6f66mskb24t5F8S11pC1Nz5nQT3';
+const liveActionAuthorizationFields = {
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Gateway mutation',
+    }),
+  ),
+};
 
 // Meteora Router-specific extensions for quote-swap
 export const MeteoraQuoteSwapRequest = Type.Object({
@@ -168,6 +175,7 @@ export const MeteoraClmmExecuteSwapRequest = Type.Object({
       examples: [MeteoraConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Export the type for ExecuteSwapRequest
@@ -229,6 +237,7 @@ export const MeteoraClmmOpenPositionRequest = Type.Object({
       enum: Object.values(StrategyType).filter((x) => typeof x === 'number'),
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Meteora CLMM Add Liquidity Request
@@ -279,6 +288,7 @@ export const MeteoraClmmAddLiquidityRequest = Type.Object({
       enum: Object.values(StrategyType).filter((x) => typeof x === 'number'),
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Meteora CLMM Remove Liquidity Request
@@ -310,6 +320,7 @@ export const MeteoraClmmRemoveLiquidityRequest = Type.Object({
       examples: [100],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Meteora CLMM Close Position Request
@@ -332,6 +343,7 @@ export const MeteoraClmmClosePositionRequest = Type.Object({
     description: 'Position NFT address',
     examples: ['<sample-position-address>'],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 // Meteora CLMM Collect Fees Request
@@ -354,6 +366,7 @@ export const MeteoraClmmCollectFeesRequest = Type.Object({
     description: 'Position NFT address',
     examples: ['<sample-position-address>'],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 // Meteora CLMM Fetch Pools Request

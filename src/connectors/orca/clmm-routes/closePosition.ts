@@ -16,6 +16,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { ClosePositionResponse, ClosePositionResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Orca } from '../orca';
 import { extractInnerTransferAmounts, getTickArrayPubkeys, handleWsolAta } from '../orca.utils';
 import { OrcaClmmClosePositionRequest } from '../schemas';
@@ -24,6 +25,7 @@ export async function closePosition(
   network: string,
   address: string,
   positionAddress: string,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<ClosePositionResponseType> {
   const solana = await Solana.getInstance(network);
   const orca = await Orca.getInstance(network);
@@ -261,7 +263,12 @@ export async function closePosition(
   // Build, simulate, and send transaction
   const txPayload = await builder.build();
   await solana.simulateWithErrorHandling(txPayload.transaction);
-  const { signature, fee } = await solana.sendAndConfirmTransaction(txPayload.transaction, [wallet]);
+  const { signature, fee } = await solana.sendAndConfirmTransaction(
+    txPayload.transaction,
+    [wallet],
+    undefined,
+    liveActionAuthorization,
+  );
 
   // Extract rent refund and actual token amounts from the confirmed transaction.
   // Position accounts (mint, PDA, ATA) are closed by the TX, so their preBalance = rent refunded.
@@ -371,10 +378,10 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, positionAddress } = request.body;
+        const { walletAddress, positionAddress, liveActionAuthorization } = request.body;
         const network = request.body.network;
 
-        return await closePosition(network, walletAddress, positionAddress);
+        return await closePosition(network, walletAddress, positionAddress, liveActionAuthorization);
       } catch (e) {
         logger.error(e);
         if (e.statusCode) throw e;

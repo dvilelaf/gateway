@@ -13,6 +13,13 @@ const QUOTE_TOKEN = 'USDC';
 const SWAP_AMOUNT = 0.001;
 const AMM_POOL_ADDRESS_EXAMPLE = '0x88A43bbDF9D098eEC7bCEda4e2494615dfD9bB9C'; // Uniswap V2 WETH-USDC pool on Base
 const CLMM_POOL_ADDRESS_EXAMPLE = '0xd0b53d9277642d899df5c87a3966a349a798f224'; // Uniswap V3 WETH-USDC pool on Base
+const liveActionAuthorizationFields = {
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Gateway mutation',
+    }),
+  ),
+};
 
 // ========================================
 // AMM Request Schemas
@@ -406,6 +413,7 @@ export const UniswapClmmOpenPositionRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Uniswap CLMM Add Liquidity Request
@@ -451,6 +459,7 @@ export const UniswapClmmAddLiquidityRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Uniswap CLMM Remove Liquidity Request
@@ -487,6 +496,7 @@ export const UniswapClmmRemoveLiquidityRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Uniswap CLMM Close Position Request
@@ -518,6 +528,7 @@ export const UniswapClmmClosePositionRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Uniswap CLMM Collect Fees Request
@@ -549,6 +560,7 @@ export const UniswapClmmCollectFeesRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Uniswap CLMM Execute Swap Request
@@ -608,4 +620,5 @@ export const UniswapClmmExecuteSwapRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });

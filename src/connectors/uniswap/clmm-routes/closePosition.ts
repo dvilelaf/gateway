@@ -25,6 +25,7 @@ export async function closePosition(
   network: string,
   walletAddress: string,
   positionAddress: string,
+  liveActionAuthorization?: ClosePositionRequestType['liveActionAuthorization'],
 ): Promise<ClosePositionResponseType> {
   // Validate essential parameters
   if (!positionAddress) {
@@ -147,7 +148,7 @@ export async function closePosition(
   );
 
   // Execute the transaction to remove liquidity and burn the position
-  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_CLOSE_POSITION_GAS_LIMIT);
+  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_CLOSE_POSITION_GAS_LIMIT, liveActionAuthorization);
   txParams.value = BigNumber.from(value.toString());
 
   const tx = await positionManagerWithSigner.multicall([calldata], txParams);
@@ -208,7 +209,12 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress: requestedWalletAddress, positionAddress } = request.body;
+        const {
+          network,
+          walletAddress: requestedWalletAddress,
+          positionAddress,
+          liveActionAuthorization,
+        } = request.body;
 
         let walletAddress = requestedWalletAddress;
         if (!walletAddress) {
@@ -219,7 +225,7 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
           }
         }
 
-        return await closePosition(network, walletAddress, positionAddress);
+        return await closePosition(network, walletAddress, positionAddress, liveActionAuthorization);
       } catch (e: any) {
         logger.error('Failed to close position:', e);
         if (e.statusCode) {

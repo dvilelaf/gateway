@@ -25,6 +25,7 @@ export async function addLiquidity(
   baseTokenAmount: number,
   quoteTokenAmount: number,
   slippagePct: number = PancakeswapConfig.config.slippagePct,
+  liveActionAuthorization?: Static<typeof PancakeswapClmmAddLiquidityRequest>['liveActionAuthorization'],
 ): Promise<AddLiquidityResponseType> {
   if (!positionAddress || (baseTokenAmount === undefined && quoteTokenAmount === undefined)) {
     throw httpErrors.badRequest('Missing required parameters');
@@ -154,7 +155,7 @@ export async function addLiquidity(
     wallet,
   );
 
-  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_ADD_LIQUIDITY_GAS_LIMIT);
+  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_ADD_LIQUIDITY_GAS_LIMIT, liveActionAuthorization);
   txParams.value = BigNumber.from(value.toString());
   const tx = await positionManagerWithSigner.multicall([calldata], txParams);
   const receipt = await ethereum.handleTransactionExecution(tx);
@@ -202,6 +203,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         } = request.body;
 
         let walletAddress = requestedWalletAddress;
@@ -220,6 +222,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e: any) {
         logger.error('Failed to add liquidity:', e);

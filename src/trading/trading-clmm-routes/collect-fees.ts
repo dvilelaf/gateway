@@ -61,6 +61,11 @@ const UnifiedCollectFeesRequest = Type.Object({
     description: 'Position address',
     examples: ['<sample-position-address>'],
   }),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live CLMM fee collection',
+    }),
+  ),
 });
 
 // Import connector functions
@@ -83,7 +88,7 @@ export const collectFeesRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { connector, chainNetwork, walletAddress, positionAddress } = request.body;
+        const { connector, chainNetwork, walletAddress, positionAddress, liveActionAuthorization } = request.body;
 
         // Parse chain and network from chainNetwork parameter
         const { network } = parseChainNetwork(chainNetwork);
@@ -91,22 +96,22 @@ export const collectFeesRoute: FastifyPluginAsync = async (fastify) => {
         // Route to appropriate connector
         switch (connector) {
           case 'uniswap':
-            return await uniswapCollectFees(network, walletAddress, positionAddress);
+            return await uniswapCollectFees(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'pancakeswap':
-            return await pancakeswapCollectFees(network, walletAddress, positionAddress);
+            return await pancakeswapCollectFees(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'raydium':
-            return await raydiumCollectFees(network, walletAddress, positionAddress);
+            return await raydiumCollectFees(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'meteora':
-            return await meteoraCollectFees(network, walletAddress, positionAddress);
+            return await meteoraCollectFees(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'pancakeswap-sol':
-            return await pancakeswapSolCollectFees(network, walletAddress, positionAddress);
+            return await pancakeswapSolCollectFees(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'orca':
-            return await orcaCollectFees(network, walletAddress, positionAddress);
+            return await orcaCollectFees(network, walletAddress, positionAddress, liveActionAuthorization);
 
           default:
             throw httpErrors.badRequest(`Unsupported connector: ${connector}`);

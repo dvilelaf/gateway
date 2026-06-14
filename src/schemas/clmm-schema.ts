@@ -118,6 +118,11 @@ export const OpenPositionRequest = Type.Object(
     baseTokenAmount: Type.Optional(Type.Number()),
     quoteTokenAmount: Type.Optional(Type.Number()),
     slippagePct: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+    liveActionAuthorization: Type.Optional(
+      Type.Any({
+        description: 'Marlin live-action-authorization-v1 artifact for live CLMM position open',
+      }),
+    ),
   },
   { $id: 'OpenPositionRequest' },
 );
@@ -151,6 +156,11 @@ export const AddLiquidityRequest = Type.Object(
     baseTokenAmount: Type.Number(),
     quoteTokenAmount: Type.Number(),
     slippagePct: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+    liveActionAuthorization: Type.Optional(
+      Type.Any({
+        description: 'Marlin live-action-authorization-v1 artifact for live CLMM liquidity add',
+      }),
+    ),
   },
   { $id: 'AddLiquidityRequest' },
 );
@@ -180,6 +190,11 @@ export const RemoveLiquidityRequest = Type.Object(
     walletAddress: Type.Optional(Type.String()),
     positionAddress: Type.String(),
     percentageToRemove: Type.Number({ minimum: 0, maximum: 100 }),
+    liveActionAuthorization: Type.Optional(
+      Type.Any({
+        description: 'Marlin live-action-authorization-v1 artifact for live CLMM liquidity remove',
+      }),
+    ),
   },
   { $id: 'RemoveLiquidityRequest' },
 );
@@ -208,6 +223,11 @@ export const CollectFeesRequest = Type.Object(
     network: Type.Optional(Type.String()),
     walletAddress: Type.Optional(Type.String()),
     positionAddress: Type.String(),
+    liveActionAuthorization: Type.Optional(
+      Type.Any({
+        description: 'Marlin live-action-authorization-v1 artifact for live CLMM fee collection',
+      }),
+    ),
   },
   { $id: 'CollectFeesRequest' },
 );
@@ -236,6 +256,11 @@ export const ClosePositionRequest = Type.Object(
     network: Type.Optional(Type.String()),
     walletAddress: Type.Optional(Type.String()),
     positionAddress: Type.String(),
+    liveActionAuthorization: Type.Optional(
+      Type.Any({
+        description: 'Marlin live-action-authorization-v1 artifact for live CLMM position close',
+      }),
+    ),
   },
   { $id: 'ClosePositionRequest' },
 );
@@ -262,7 +287,9 @@ export const ClosePositionResponse = Type.Object(
 );
 export type ClosePositionResponseType = Static<typeof ClosePositionResponse>;
 
-export const QuotePositionRequest = Type.Omit(OpenPositionRequest, ['walletAddress'], { $id: 'QuotePositionRequest' });
+export const QuotePositionRequest = Type.Omit(OpenPositionRequest, ['walletAddress', 'liveActionAuthorization'], {
+  $id: 'QuotePositionRequest',
+});
 export type QuotePositionRequestType = Static<typeof QuotePositionRequest>;
 
 export const QuotePositionResponse = Type.Object(

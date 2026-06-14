@@ -7,6 +7,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { AddLiquidityResponse, AddLiquidityResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { PancakeswapSol } from '../pancakeswap-sol';
 import { PancakeswapSolConfig } from '../pancakeswap-sol.config';
 import { buildAddLiquidityTransaction } from '../pancakeswap-sol.transactions';
@@ -21,6 +22,7 @@ export async function addLiquidity(
   baseTokenAmount: number,
   quoteTokenAmount: number,
   slippagePct: number = PancakeswapSolConfig.config.slippagePct,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<AddLiquidityResponseType> {
   const solana = await Solana.getInstance(network);
   const pancakeswapSol = await PancakeswapSol.getInstance(network);
@@ -100,7 +102,10 @@ export async function addLiquidity(
   transaction.sign([wallet]);
   await solana.simulateWithErrorHandling(transaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   if (confirmed && txData) {
     const totalFee = txData.meta.fee;
@@ -161,6 +166,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         } = request.body;
 
         return await addLiquidity(
@@ -170,6 +176,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e: any) {
         logger.error('Add liquidity error:', e);

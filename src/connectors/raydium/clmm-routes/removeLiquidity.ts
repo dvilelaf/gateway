@@ -13,6 +13,7 @@ import {
 } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Raydium } from '../raydium';
 import { RaydiumClmmRemoveLiquidityRequest } from '../schemas';
 
@@ -22,6 +23,7 @@ export async function removeLiquidity(
   positionAddress: string,
   percentageToRemove: number,
   closePosition: boolean = false,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<RemoveLiquidityResponseType> {
   const solana = await Solana.getInstance(network);
   const raydium = await Raydium.getInstance(network);
@@ -80,7 +82,10 @@ export async function removeLiquidity(
   )) as VersionedTransaction;
   await solana.simulateWithErrorHandling(transaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   // Return with status
   if (confirmed && txData) {
@@ -137,9 +142,16 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress, positionAddress, percentageToRemove } = request.body;
+        const { network, walletAddress, positionAddress, percentageToRemove, liveActionAuthorization } = request.body;
 
-        return await removeLiquidity(network, walletAddress, positionAddress, percentageToRemove, false);
+        return await removeLiquidity(
+          network,
+          walletAddress,
+          positionAddress,
+          percentageToRemove,
+          false,
+          liveActionAuthorization,
+        );
       } catch (e) {
         logger.error(e);
         if (e.statusCode) throw e;

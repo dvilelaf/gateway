@@ -11,6 +11,7 @@ import {
 } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Meteora } from '../meteora';
 import { MeteoraClmmRemoveLiquidityRequest } from '../schemas';
 
@@ -22,6 +23,7 @@ export async function removeLiquidity(
   walletAddress: string,
   positionAddress: string,
   percentageToRemove: number,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<RemoveLiquidityResponseType> {
   const solana = await Solana.getInstance(network);
   const meteora = await Meteora.getInstance(network);
@@ -87,7 +89,7 @@ export async function removeLiquidity(
 
     logger.info('Transaction simulated successfully, sending to network...');
 
-    const result = await solana.sendAndConfirmTransaction(tx, [wallet]);
+    const result = await solana.sendAndConfirmTransaction(tx, [wallet], undefined, liveActionAuthorization);
     totalFee += result.fee;
     lastSignature = result.signature;
   }
@@ -163,11 +165,17 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress, positionAddress, liquidityPct } = request.body;
+        const { network, walletAddress, positionAddress, liquidityPct, liveActionAuthorization } = request.body;
 
         const networkToUse = network;
 
-        return await removeLiquidity(networkToUse, walletAddress, positionAddress, liquidityPct);
+        return await removeLiquidity(
+          networkToUse,
+          walletAddress,
+          positionAddress,
+          liquidityPct,
+          liveActionAuthorization,
+        );
       } catch (e) {
         logger.error(e);
         if (e.statusCode) {

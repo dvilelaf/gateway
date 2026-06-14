@@ -27,6 +27,7 @@ export async function removeLiquidity(
   walletAddress: string,
   positionAddress: string,
   percentageToRemove: number,
+  liveActionAuthorization?: RemoveLiquidityRequestType['liveActionAuthorization'],
 ): Promise<RemoveLiquidityResponseType> {
   if (!positionAddress || percentageToRemove === undefined) {
     throw httpErrors.badRequest('Missing required parameters');
@@ -130,7 +131,11 @@ export async function removeLiquidity(
     wallet,
   );
 
-  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_REMOVE_LIQUIDITY_GAS_LIMIT);
+  const txParams = await ethereum.prepareGasOptions(
+    undefined,
+    CLMM_REMOVE_LIQUIDITY_GAS_LIMIT,
+    liveActionAuthorization,
+  );
   txParams.value = BigNumber.from(value.toString());
   const tx = await positionManagerWithSigner.multicall([calldata], txParams);
   const receipt = await ethereum.handleTransactionExecution(tx);
@@ -193,7 +198,13 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress: requestedWalletAddress, positionAddress, percentageToRemove } = request.body;
+        const {
+          network,
+          walletAddress: requestedWalletAddress,
+          positionAddress,
+          percentageToRemove,
+          liveActionAuthorization,
+        } = request.body;
 
         let walletAddress = requestedWalletAddress;
         if (!walletAddress) {
@@ -204,7 +215,13 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           }
         }
 
-        return await removeLiquidity(network, walletAddress, positionAddress, percentageToRemove);
+        return await removeLiquidity(
+          network,
+          walletAddress,
+          positionAddress,
+          percentageToRemove,
+          liveActionAuthorization,
+        );
       } catch (e: any) {
         logger.error('Failed to remove liquidity:', e);
         if (e.statusCode) {

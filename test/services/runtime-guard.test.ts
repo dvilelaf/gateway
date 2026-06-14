@@ -401,4 +401,196 @@ describe('runtime guard wiring', () => {
     expect(executeSwap).toContain('liveActionAuthorization');
     expect(executeSwap).toContain('liveActionAuthorization,');
   });
+
+  it('passes live action authorization through CLMM position mutations', () => {
+    const sharedSchema = readFileSync(path.join(ROOT, 'src/schemas/clmm-schema.ts'), 'utf8');
+    for (const [start, end] of [
+      ['export const OpenPositionRequest', 'export type OpenPositionRequestType'],
+      ['export const AddLiquidityRequest', 'export type AddLiquidityRequestType'],
+      ['export const RemoveLiquidityRequest', 'export type RemoveLiquidityRequestType'],
+      ['export const CollectFeesRequest', 'export type CollectFeesRequestType'],
+      ['export const ClosePositionRequest', 'export type ClosePositionRequestType'],
+    ]) {
+      const schema = sharedSchema.slice(sharedSchema.indexOf(start), sharedSchema.indexOf(end));
+      expect(schema).toContain('liveActionAuthorization');
+    }
+    const sharedQuotePositionSchema = sharedSchema.slice(
+      sharedSchema.indexOf('export const QuotePositionRequest'),
+      sharedSchema.indexOf('export type QuotePositionRequestType'),
+    );
+    expect(sharedQuotePositionSchema).toContain("'liveActionAuthorization'");
+    expect(sharedQuotePositionSchema).not.toContain('Type.Any');
+
+    for (const [connector, schemaNames] of [
+      [
+        'uniswap',
+        [
+          'UniswapClmmOpenPositionRequest',
+          'UniswapClmmAddLiquidityRequest',
+          'UniswapClmmRemoveLiquidityRequest',
+          'UniswapClmmClosePositionRequest',
+          'UniswapClmmCollectFeesRequest',
+          'UniswapClmmExecuteSwapRequest',
+        ],
+      ],
+      [
+        'pancakeswap',
+        [
+          'PancakeswapClmmOpenPositionRequest',
+          'PancakeswapClmmAddLiquidityRequest',
+          'PancakeswapClmmRemoveLiquidityRequest',
+          'PancakeswapClmmClosePositionRequest',
+          'PancakeswapClmmCollectFeesRequest',
+          'PancakeswapClmmExecuteSwapRequest',
+        ],
+      ],
+      [
+        'raydium',
+        [
+          'RaydiumClmmOpenPositionRequest',
+          'RaydiumClmmAddLiquidityRequest',
+          'RaydiumClmmRemoveLiquidityRequest',
+          'RaydiumClmmClosePositionRequest',
+          'RaydiumClmmExecuteSwapRequest',
+        ],
+      ],
+      [
+        'meteora',
+        [
+          'MeteoraClmmOpenPositionRequest',
+          'MeteoraClmmAddLiquidityRequest',
+          'MeteoraClmmRemoveLiquidityRequest',
+          'MeteoraClmmClosePositionRequest',
+          'MeteoraClmmCollectFeesRequest',
+          'MeteoraClmmExecuteSwapRequest',
+        ],
+      ],
+      [
+        'orca',
+        [
+          'OrcaClmmOpenPositionRequest',
+          'OrcaClmmAddLiquidityRequest',
+          'OrcaClmmRemoveLiquidityRequest',
+          'OrcaClmmClosePositionRequest',
+          'OrcaClmmCollectFeesRequest',
+          'OrcaClmmExecuteSwapRequest',
+        ],
+      ],
+      [
+        'pancakeswap-sol',
+        [
+          'PancakeswapSolClmmOpenPositionRequest',
+          'PancakeswapSolClmmAddLiquidityRequest',
+          'PancakeswapSolClmmRemoveLiquidityRequest',
+          'PancakeswapSolClmmClosePositionRequest',
+          'PancakeswapSolClmmCollectFeesRequest',
+          'PancakeswapSolClmmExecuteSwapRequest',
+        ],
+      ],
+    ] as const) {
+      const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/schemas.ts`), 'utf8');
+      for (const schemaName of schemaNames) {
+        const start = source.indexOf(`export const ${schemaName}`);
+        const nextExport = source.indexOf('\nexport ', start + 1);
+        const schema = source.slice(start, nextExport === -1 ? undefined : nextExport);
+        expect(schema).toContain('liveActionAuthorization');
+      }
+    }
+
+    for (const [connector, schemaNames] of [
+      [
+        'raydium',
+        [
+          'RaydiumAmmGetPositionInfoRequest',
+          'RaydiumAmmQuoteSwapRequest',
+          'RaydiumAmmQuoteLiquidityRequest',
+          'RaydiumClmmGetPositionInfoRequest',
+          'RaydiumClmmQuoteSwapRequest',
+          'RaydiumClmmQuotePositionRequest',
+        ],
+      ],
+      [
+        'meteora',
+        [
+          'MeteoraQuoteSwapRequest',
+          'MeteoraClmmQuoteSwapRequest',
+          'MeteoraClmmGetPoolInfoRequest',
+          'MeteoraClmmGetPositionInfoRequest',
+          'MeteoraClmmGetPositionsOwnedRequest',
+          'MeteoraClmmQuotePositionRequest',
+        ],
+      ],
+      [
+        'orca',
+        [
+          'OrcaQuoteSwapRequest',
+          'OrcaClmmQuoteSwapRequest',
+          'OrcaClmmGetPoolInfoRequest',
+          'OrcaClmmGetPositionInfoRequest',
+          'OrcaClmmGetPositionsOwnedRequest',
+          'OrcaClmmQuotePositionRequest',
+        ],
+      ],
+      [
+        'pancakeswap-sol',
+        [
+          'PancakeswapSolClmmGetPoolInfoRequest',
+          'PancakeswapSolClmmGetPositionInfoRequest',
+          'PancakeswapSolClmmGetPositionsOwnedRequest',
+          'PancakeswapSolClmmQuoteSwapRequest',
+          'PancakeswapSolClmmQuotePositionRequest',
+        ],
+      ],
+    ] as const) {
+      const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/schemas.ts`), 'utf8');
+      for (const schemaName of schemaNames) {
+        const start = source.indexOf(`export const ${schemaName}`);
+        const nextExport = source.indexOf('\nexport ', start + 1);
+        const schema = source.slice(start, nextExport === -1 ? undefined : nextExport);
+        expect(schema).not.toContain('liveActionAuthorization');
+      }
+    }
+
+    for (const file of ['open.ts', 'add.ts', 'remove.ts', 'collect-fees.ts', 'close.ts']) {
+      const source = readFileSync(path.join(ROOT, `src/trading/trading-clmm-routes/${file}`), 'utf8');
+      expect(source).toContain('liveActionAuthorization');
+    }
+
+    for (const connector of ['uniswap', 'pancakeswap']) {
+      for (const file of [
+        'openPosition.ts',
+        'addLiquidity.ts',
+        'removeLiquidity.ts',
+        'collectFees.ts',
+        'closePosition.ts',
+      ]) {
+        const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/clmm-routes/${file}`), 'utf8');
+        expect(source).toContain('liveActionAuthorization');
+        expect(source).toMatch(/prepareGasOptions\([\s\S]*liveActionAuthorization/);
+      }
+    }
+
+    for (const [connector, files] of [
+      ['raydium', ['openPosition.ts', 'addLiquidity.ts', 'removeLiquidity.ts', 'collectFees.ts', 'closePosition.ts']],
+      ['meteora', ['openPosition.ts', 'addLiquidity.ts', 'removeLiquidity.ts', 'collectFees.ts', 'closePosition.ts']],
+      ['orca', ['openPosition.ts', 'addLiquidity.ts', 'removeLiquidity.ts', 'collectFees.ts', 'closePosition.ts']],
+      [
+        'pancakeswap-sol',
+        ['openPosition.ts', 'addLiquidity.ts', 'removeLiquidity.ts', 'collectFees.ts', 'closePosition.ts'],
+      ],
+    ] as const) {
+      for (const file of files) {
+        const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/clmm-routes/${file}`), 'utf8');
+        expect(source).toContain('liveActionAuthorization');
+        if (
+          (connector === 'raydium' && file === 'collectFees.ts') ||
+          (connector === 'pancakeswap-sol' && file === 'collectFees.ts')
+        ) {
+          expect(source).toMatch(/removeLiquidity\([\s\S]*liveActionAuthorization/);
+        } else {
+          expect(source).toMatch(/sendAndConfirm(?:Raw)?Transaction\([\s\S]*liveActionAuthorization/);
+        }
+      }
+    }
+  });
 });

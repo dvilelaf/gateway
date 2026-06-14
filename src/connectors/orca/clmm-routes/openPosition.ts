@@ -22,6 +22,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { OpenPositionResponse, OpenPositionResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Orca } from '../orca';
 import { extractInnerTransferAmounts, getTickArrayPubkeys, handleWsolAta } from '../orca.utils';
 import { OrcaClmmOpenPositionRequest } from '../schemas';
@@ -171,6 +172,7 @@ export async function openPosition(
   baseTokenAmount?: number,
   quoteTokenAmount?: number,
   slippagePct?: number,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<OpenPositionResponseType> {
   // Validate prices
   if (lowerPrice >= upperPrice) {
@@ -459,10 +461,12 @@ export async function openPosition(
   // Build, simulate, and send transaction
   const txPayload = await builder.build();
   await solana.simulateWithErrorHandling(txPayload.transaction);
-  const { signature, fee } = await solana.sendAndConfirmTransaction(txPayload.transaction, [
-    wallet,
-    positionMintKeypair,
-  ]);
+  const { signature, fee } = await solana.sendAndConfirmTransaction(
+    txPayload.transaction,
+    [wallet, positionMintKeypair],
+    undefined,
+    liveActionAuthorization,
+  );
 
   // Extract position rent from the confirmed transaction's postBalances.
   // Newly-created accounts have preBalance=0, so their postBalance IS the rent.
@@ -568,8 +572,16 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, poolAddress, lowerPrice, upperPrice, baseTokenAmount, quoteTokenAmount, slippagePct } =
-          request.body;
+        const {
+          walletAddress,
+          poolAddress,
+          lowerPrice,
+          upperPrice,
+          baseTokenAmount,
+          quoteTokenAmount,
+          slippagePct,
+          liveActionAuthorization,
+        } = request.body;
         const network = request.body.network;
 
         return await openPosition(
@@ -581,6 +593,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e) {
         logger.error(e);

@@ -9,6 +9,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { CollectFeesResponse, CollectFeesResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Orca } from '../orca';
 import { getTickArrayPubkeys, handleWsolAta } from '../orca.utils';
 import { OrcaClmmCollectFeesRequest } from '../schemas';
@@ -17,6 +18,7 @@ export async function collectFees(
   network: string,
   address: string,
   positionAddress: string,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<CollectFeesResponseType> {
   const solana = await Solana.getInstance(network);
   const orca = await Orca.getInstance(network);
@@ -180,7 +182,12 @@ export async function collectFees(
   await solana.simulateWithErrorHandling(transaction);
 
   // Send and confirm transaction
-  const { signature, fee } = await solana.sendAndConfirmTransaction(transaction, [wallet]);
+  const { signature, fee } = await solana.sendAndConfirmTransaction(
+    transaction,
+    [wallet],
+    undefined,
+    liveActionAuthorization,
+  );
 
   // Extract collected fees from balance changes
   const tokenAAddress = whirlpool.getTokenAInfo().address.toString();
@@ -227,10 +234,10 @@ export const collectFeesRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, positionAddress } = request.body;
+        const { walletAddress, positionAddress, liveActionAuthorization } = request.body;
         const network = request.body.network;
 
-        return await collectFees(network, walletAddress, positionAddress);
+        return await collectFees(network, walletAddress, positionAddress, liveActionAuthorization);
       } catch (e) {
         logger.error(e);
         if (e.statusCode) throw e;

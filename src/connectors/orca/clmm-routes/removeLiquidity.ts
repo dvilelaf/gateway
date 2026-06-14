@@ -16,6 +16,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { RemoveLiquidityResponse, RemoveLiquidityResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Orca } from '../orca';
 import { getTickArrayPubkeys, handleWsolAta } from '../orca.utils';
 import { OrcaClmmRemoveLiquidityRequest } from '../schemas';
@@ -26,6 +27,7 @@ export async function removeLiquidity(
   positionAddress: string,
   liquidityPct: number,
   slippagePct: number,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<RemoveLiquidityResponseType> {
   if (liquidityPct <= 0 || liquidityPct > 100) {
     throw httpErrors.badRequest('liquidityPct must be between 0 and 100');
@@ -192,7 +194,12 @@ export async function removeLiquidity(
   // Build, simulate, and send transaction
   const txPayload = await builder.build();
   await solana.simulateWithErrorHandling(txPayload.transaction);
-  const { signature, fee } = await solana.sendAndConfirmTransaction(txPayload.transaction, [wallet]);
+  const { signature, fee } = await solana.sendAndConfirmTransaction(
+    txPayload.transaction,
+    [wallet],
+    undefined,
+    liveActionAuthorization,
+  );
 
   // Extract removed amounts from balance changes
   const tokenAAddress = whirlpool.getTokenAInfo().address.toString();
@@ -239,10 +246,23 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, positionAddress, liquidityPct = 100, slippagePct = 1 } = request.body;
+        const {
+          walletAddress,
+          positionAddress,
+          liquidityPct = 100,
+          slippagePct = 1,
+          liveActionAuthorization,
+        } = request.body;
         const network = request.body.network;
 
-        return await removeLiquidity(network, walletAddress, positionAddress, liquidityPct, slippagePct);
+        return await removeLiquidity(
+          network,
+          walletAddress,
+          positionAddress,
+          liquidityPct,
+          slippagePct,
+          liveActionAuthorization,
+        );
       } catch (e) {
         logger.error(e);
         if (e.statusCode) throw e;

@@ -17,6 +17,13 @@ const LOWER_PRICE_BOUND = 100;
 const UPPER_PRICE_BOUND = 300;
 const AMM_POOL_ADDRESS_EXAMPLE = '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2';
 const CLMM_POOL_ADDRESS_EXAMPLE = '3ucNos4NbumPLZNWztqGHNFFgkHeRMBQAVemeeomsUxv';
+const liveActionAuthorizationFields = {
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Gateway mutation',
+    }),
+  ),
+};
 
 // ========================================
 // AMM Request Schemas
@@ -152,6 +159,7 @@ export const RaydiumAmmExecuteSwapRequest = Type.Object({
       examples: [RaydiumConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 export const RaydiumAmmQuoteLiquidityRequest = Type.Object({
@@ -380,6 +388,7 @@ export const RaydiumClmmExecuteSwapRequest = Type.Object({
       examples: [RaydiumConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // ========================================
@@ -433,6 +442,7 @@ export const RaydiumClmmOpenPositionRequest = Type.Object({
       examples: [RaydiumConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 export const RaydiumClmmAddLiquidityRequest = Type.Object({
@@ -470,6 +480,7 @@ export const RaydiumClmmAddLiquidityRequest = Type.Object({
       examples: [RaydiumConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 export const RaydiumClmmRemoveLiquidityRequest = Type.Object({
@@ -496,6 +507,7 @@ export const RaydiumClmmRemoveLiquidityRequest = Type.Object({
     description: 'Percentage of liquidity to remove',
     examples: [100],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 export const RaydiumClmmClosePositionRequest = Type.Object({
@@ -516,6 +528,7 @@ export const RaydiumClmmClosePositionRequest = Type.Object({
     description: 'Position NFT address to close',
     examples: ['DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 export const RaydiumClmmGetPositionsOwnedRequest = Type.Object({

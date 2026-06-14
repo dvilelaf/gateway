@@ -9,6 +9,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { OpenPositionResponse, OpenPositionResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Raydium } from '../raydium';
 import { RaydiumConfig } from '../raydium.config';
 import { RaydiumClmmOpenPositionRequest } from '../schemas';
@@ -24,6 +25,7 @@ export async function openPosition(
   baseTokenAmount?: number,
   quoteTokenAmount?: number,
   slippagePct: number = RaydiumConfig.config.slippagePct,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<OpenPositionResponseType> {
   const solana = await Solana.getInstance(network);
   const raydium = await Raydium.getInstance(network);
@@ -107,7 +109,10 @@ export async function openPosition(
   )) as VersionedTransaction;
   await solana.simulateWithErrorHandling(transaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   // Return with status
   if (confirmed && txData) {
@@ -172,6 +177,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         } = request.body;
         const networkToUse = network;
 
@@ -184,6 +190,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e) {
         logger.error(e);

@@ -68,6 +68,11 @@ const UnifiedRemoveLiquidityRequest = Type.Object({
     default: 100,
     examples: [100],
   }),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live CLMM liquidity remove',
+    }),
+  ),
 });
 
 // Import connector functions
@@ -90,7 +95,8 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { connector, chainNetwork, walletAddress, positionAddress, percentageToRemove } = request.body;
+        const { connector, chainNetwork, walletAddress, positionAddress, percentageToRemove, liveActionAuthorization } =
+          request.body;
 
         // Parse chain and network from chainNetwork parameter
         const { network } = parseChainNetwork(chainNetwork);
@@ -98,22 +104,60 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
         // Route to appropriate connector
         switch (connector) {
           case 'uniswap':
-            return await uniswapRemoveLiquidity(network, walletAddress, positionAddress, percentageToRemove);
+            return await uniswapRemoveLiquidity(
+              network,
+              walletAddress,
+              positionAddress,
+              percentageToRemove,
+              liveActionAuthorization,
+            );
 
           case 'pancakeswap':
-            return await pancakeswapRemoveLiquidity(network, walletAddress, positionAddress, percentageToRemove);
+            return await pancakeswapRemoveLiquidity(
+              network,
+              walletAddress,
+              positionAddress,
+              percentageToRemove,
+              liveActionAuthorization,
+            );
 
           case 'raydium':
-            return await raydiumRemoveLiquidity(network, walletAddress, positionAddress, percentageToRemove);
+            return await raydiumRemoveLiquidity(
+              network,
+              walletAddress,
+              positionAddress,
+              percentageToRemove,
+              false,
+              liveActionAuthorization,
+            );
 
           case 'meteora':
-            return await meteoraRemoveLiquidity(network, walletAddress, positionAddress, percentageToRemove);
+            return await meteoraRemoveLiquidity(
+              network,
+              walletAddress,
+              positionAddress,
+              percentageToRemove,
+              liveActionAuthorization,
+            );
 
           case 'pancakeswap-sol':
-            return await pancakeswapSolRemoveLiquidity(network, walletAddress, positionAddress, percentageToRemove);
+            return await pancakeswapSolRemoveLiquidity(
+              network,
+              walletAddress,
+              positionAddress,
+              percentageToRemove,
+              liveActionAuthorization,
+            );
 
           case 'orca':
-            return await orcaRemoveLiquidity(network, walletAddress, positionAddress, percentageToRemove, 1);
+            return await orcaRemoveLiquidity(
+              network,
+              walletAddress,
+              positionAddress,
+              percentageToRemove,
+              1,
+              liveActionAuthorization,
+            );
 
           default:
             throw httpErrors.badRequest(`Unsupported connector: ${connector}`);

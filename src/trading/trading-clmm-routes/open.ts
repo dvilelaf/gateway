@@ -98,6 +98,11 @@ const UnifiedOpenPositionRequest = Type.Object({
       examples: [0],
     }),
   ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live CLMM position open',
+    }),
+  ),
 });
 
 // Import connector functions
@@ -139,6 +144,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           quoteTokenAmount,
           slippagePct,
           strategyType,
+          liveActionAuthorization,
         } = request.body;
 
         // Parse chain and network from chainNetwork parameter
@@ -156,6 +162,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'pancakeswap':
@@ -168,6 +175,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'raydium':
@@ -180,6 +188,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'meteora':
@@ -193,6 +202,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
               quoteTokenAmount,
               slippagePct,
               strategyType,
+              liveActionAuthorization,
             );
 
           case 'pancakeswap-sol':
@@ -205,6 +215,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'orca':
@@ -217,6 +228,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           default:

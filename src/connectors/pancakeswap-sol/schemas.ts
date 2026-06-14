@@ -17,6 +17,13 @@ const LOWER_PRICE_BOUND = 150;
 const UPPER_PRICE_BOUND = 250;
 const CLMM_POOL_ADDRESS_EXAMPLE = '4QU2NpRaqmKMvPSwVKQDeW4V6JFEKJdkzbzdauumD9qN';
 const POSITION_ADDRESS_EXAMPLE = '';
+const liveActionAuthorizationFields = {
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Gateway mutation',
+    }),
+  ),
+};
 
 // CLMM Pool Info Request
 export const PancakeswapSolClmmGetPoolInfoRequest = Type.Object({
@@ -83,6 +90,7 @@ export const PancakeswapSolClmmOpenPositionRequest = Type.Object({
       examples: [PancakeswapSolConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 export type PancakeswapSolClmmOpenPositionRequestType = Static<typeof PancakeswapSolClmmOpenPositionRequest>;
@@ -220,6 +228,7 @@ export const PancakeswapSolClmmExecuteSwapRequest = Type.Object({
       examples: [PancakeswapSolConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 export type PancakeswapSolClmmExecuteSwapRequestType = Static<typeof PancakeswapSolClmmExecuteSwapRequest>;
@@ -243,6 +252,7 @@ export const PancakeswapSolClmmClosePositionRequest = Type.Object({
     description: 'Position NFT address to close',
     examples: [POSITION_ADDRESS_EXAMPLE],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 export type PancakeswapSolClmmClosePositionRequestType = Static<typeof PancakeswapSolClmmClosePositionRequest>;
@@ -272,6 +282,7 @@ export const PancakeswapSolClmmRemoveLiquidityRequest = Type.Object({
     description: 'Percentage of liquidity to remove',
     examples: [100],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 export type PancakeswapSolClmmRemoveLiquidityRequestType = Static<typeof PancakeswapSolClmmRemoveLiquidityRequest>;
@@ -295,6 +306,7 @@ export const PancakeswapSolClmmCollectFeesRequest = Type.Object({
     description: 'Position NFT address',
     examples: [POSITION_ADDRESS_EXAMPLE],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 export type PancakeswapSolClmmCollectFeesRequestType = Static<typeof PancakeswapSolClmmCollectFeesRequest>;
@@ -335,6 +347,7 @@ export const PancakeswapSolClmmAddLiquidityRequest = Type.Object({
       examples: [PancakeswapSolConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 export type PancakeswapSolClmmAddLiquidityRequestType = Static<typeof PancakeswapSolClmmAddLiquidityRequest>;

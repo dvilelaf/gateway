@@ -8,6 +8,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { RemoveLiquidityResponse, RemoveLiquidityResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { PancakeswapSol, PANCAKESWAP_CLMM_PROGRAM_ID } from '../pancakeswap-sol';
 import { parsePositionData } from '../pancakeswap-sol.parser';
 import { buildRemoveLiquidityTransaction } from '../pancakeswap-sol.transactions';
@@ -18,6 +19,7 @@ export async function removeLiquidity(
   walletAddress: string,
   positionAddress: string,
   percentageToRemove: number,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<RemoveLiquidityResponseType> {
   const solana = await Solana.getInstance(network);
   const pancakeswapSol = await PancakeswapSol.getInstance(network);
@@ -84,7 +86,10 @@ export async function removeLiquidity(
   transaction.sign([wallet]);
   await solana.simulateWithErrorHandling(transaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+  );
 
   if (confirmed && txData) {
     const totalFee = txData.meta.fee;
@@ -138,9 +143,21 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network = 'mainnet-beta', walletAddress, positionAddress, percentageToRemove } = request.body;
+        const {
+          network = 'mainnet-beta',
+          walletAddress,
+          positionAddress,
+          percentageToRemove,
+          liveActionAuthorization,
+        } = request.body;
 
-        return await removeLiquidity(network, walletAddress!, positionAddress, percentageToRemove);
+        return await removeLiquidity(
+          network,
+          walletAddress!,
+          positionAddress,
+          percentageToRemove,
+          liveActionAuthorization,
+        );
       } catch (e: any) {
         logger.error('Remove liquidity error:', e);
         // Re-throw httpErrors as-is

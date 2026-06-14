@@ -32,6 +32,7 @@ export async function openPosition(
   baseTokenAmount?: number,
   quoteTokenAmount?: number,
   slippagePct: number = UniswapConfig.config.slippagePct,
+  liveActionAuthorization?: OpenPositionRequestType['liveActionAuthorization'],
 ): Promise<OpenPositionResponseType> {
   // Validate essential parameters
   if (!lowerPrice || !upperPrice || !poolAddress || (baseTokenAmount === undefined && quoteTokenAmount === undefined)) {
@@ -226,7 +227,7 @@ export async function openPosition(
 
   let tx;
   try {
-    const txParams = await ethereum.prepareGasOptions(undefined, CLMM_OPEN_POSITION_GAS_LIMIT);
+    const txParams = await ethereum.prepareGasOptions(undefined, CLMM_OPEN_POSITION_GAS_LIMIT, liveActionAuthorization);
     txParams.value = BigNumber.from(value.toString());
     tx = await positionManager.multicall([calldata], txParams);
   } catch (txError: any) {
@@ -321,6 +322,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         } = request.body;
 
         // Get wallet address - either from request or first available
@@ -343,6 +345,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e: any) {
         logger.error('Failed to open position:', e);

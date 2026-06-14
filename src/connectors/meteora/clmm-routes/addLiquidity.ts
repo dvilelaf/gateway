@@ -10,6 +10,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { AddLiquidityResponse, AddLiquidityResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Meteora } from '../meteora';
 import { MeteoraConfig } from '../meteora.config';
 import { MeteoraClmmAddLiquidityRequest } from '../schemas';
@@ -32,6 +33,7 @@ export async function addLiquidity(
   quoteTokenAmount: number,
   slippagePct: number = MeteoraConfig.config.slippagePct,
   strategyType?: StrategyType,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<AddLiquidityResponseType> {
   // Validate addresses first
   try {
@@ -122,7 +124,12 @@ export async function addLiquidity(
 
   // Send and confirm transaction using sendAndConfirmTransaction which handles signing
   // Transaction will automatically simulate to determine optimal compute units
-  const { signature, fee } = await solana.sendAndConfirmTransaction(addLiquidityTx, [wallet]);
+  const { signature, fee } = await solana.sendAndConfirmTransaction(
+    addLiquidityTx,
+    [wallet],
+    undefined,
+    liveActionAuthorization,
+  );
 
   // Get transaction data for confirmation
   const txData = await solana.connection.getTransaction(signature, {
@@ -192,8 +199,15 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, positionAddress, baseTokenAmount, quoteTokenAmount, slippagePct, strategyType } =
-          request.body;
+        const {
+          walletAddress,
+          positionAddress,
+          baseTokenAmount,
+          quoteTokenAmount,
+          slippagePct,
+          strategyType,
+          liveActionAuthorization,
+        } = request.body;
         const network = request.body.network;
 
         return await addLiquidity(
@@ -204,6 +218,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           quoteTokenAmount,
           slippagePct,
           strategyType,
+          liveActionAuthorization,
         );
       } catch (e) {
         logger.error(e);

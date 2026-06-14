@@ -5,6 +5,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { CollectFeesResponse, CollectFeesRequestType, CollectFeesResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Meteora } from '../meteora';
 import { MeteoraClmmCollectFeesRequest } from '../schemas';
 
@@ -12,6 +13,7 @@ export async function collectFees(
   network: string,
   address: string,
   positionAddress: string,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<CollectFeesResponseType> {
   const solana = await Solana.getInstance(network);
   const meteora = await Meteora.getInstance(network);
@@ -63,7 +65,7 @@ export async function collectFees(
     logger.info('Transaction simulated successfully, sending to network...');
 
     // Send and confirm transaction using sendAndConfirmTransaction which handles signing
-    const { signature, fee } = await solana.sendAndConfirmTransaction(tx, [wallet]);
+    const { signature, fee } = await solana.sendAndConfirmTransaction(tx, [wallet], undefined, liveActionAuthorization);
     lastSignature = signature;
     totalFee += fee;
   }
@@ -129,10 +131,10 @@ export const collectFeesRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress, positionAddress } = request.body;
+        const { network, walletAddress, positionAddress, liveActionAuthorization } = request.body;
         const networkToUse = network;
 
-        return await collectFees(networkToUse, walletAddress, positionAddress);
+        return await collectFees(networkToUse, walletAddress, positionAddress, liveActionAuthorization);
       } catch (e) {
         logger.error(e);
         if (e.statusCode) {

@@ -13,6 +13,13 @@ const QUOTE_TOKEN = 'WBNB';
 const SWAP_AMOUNT = 10;
 const AMM_POOL_ADDRESS_EXAMPLE = '0x88A43bbDF9D098eEC7bCEda4e2494615dfD9bB9C'; // Pancakeswap V2 WETH-USDC pool on Base
 const CLMM_POOL_ADDRESS_EXAMPLE = '0x172fcd41e0913e95784454622d1c3724f546f849'; // Pancakeswap V3 USDT-WBNB pool on BSC
+const liveActionAuthorizationFields = {
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Gateway mutation',
+    }),
+  ),
+};
 
 // ========================================
 // AMM Request Schemas
@@ -408,6 +415,7 @@ export const PancakeswapClmmOpenPositionRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Pancakeswap CLMM Add Liquidity Request
@@ -454,6 +462,7 @@ export const PancakeswapClmmAddLiquidityRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Pancakeswap CLMM Remove Liquidity Request
@@ -491,6 +500,7 @@ export const PancakeswapClmmRemoveLiquidityRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Pancakeswap CLMM Close Position Request
@@ -523,6 +533,7 @@ export const PancakeswapClmmClosePositionRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Pancakeswap CLMM Collect Fees Request
@@ -555,6 +566,7 @@ export const PancakeswapClmmCollectFeesRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Pancakeswap CLMM Execute Swap Request
@@ -615,4 +627,5 @@ export const PancakeswapClmmExecuteSwapRequest = Type.Object({
       examples: [300000],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });

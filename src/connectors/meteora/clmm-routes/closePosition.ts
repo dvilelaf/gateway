@@ -7,6 +7,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { ClosePositionResponse, ClosePositionResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Meteora } from '../meteora';
 import { MeteoraClmmClosePositionRequest } from '../schemas';
 
@@ -14,6 +15,7 @@ export async function closePosition(
   network: string,
   walletAddress: string,
   positionAddress: string,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<ClosePositionResponseType> {
   try {
     const solana = await Solana.getInstance(network);
@@ -77,7 +79,7 @@ export async function closePosition(
       logger.info('Transaction simulated successfully, sending to network...');
 
       // Send and confirm transaction
-      const result = await solana.sendAndConfirmTransaction(tx, [wallet]);
+      const result = await solana.sendAndConfirmTransaction(tx, [wallet], undefined, liveActionAuthorization);
       totalFee += result.fee;
       lastSignature = result.signature;
     }
@@ -191,10 +193,10 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress, positionAddress } = request.body;
+        const { network, walletAddress, positionAddress, liveActionAuthorization } = request.body;
         const networkToUse = network;
 
-        return await closePosition(networkToUse, walletAddress, positionAddress);
+        return await closePosition(networkToUse, walletAddress, positionAddress, liveActionAuthorization);
       } catch (e) {
         logger.error('Close position route error:', {
           message: e.message || 'Unknown error',
@@ -205,6 +207,7 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
           positionAddress: request.body.positionAddress,
           network: request.body.network,
           walletAddress: request.body.walletAddress,
+          liveActionAuthorization: request.body.liveActionAuthorization,
         });
 
         if (e.statusCode) {

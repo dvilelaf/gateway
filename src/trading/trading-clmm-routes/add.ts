@@ -82,6 +82,11 @@ const UnifiedAddLiquidityRequest = Type.Object({
       examples: [1],
     }),
   ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live CLMM liquidity add',
+    }),
+  ),
 });
 
 // Import connector functions
@@ -112,6 +117,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         } = request.body;
 
         // Parse chain and network from chainNetwork parameter
@@ -127,6 +133,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'pancakeswap':
@@ -137,6 +144,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'raydium':
@@ -147,6 +155,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'meteora':
@@ -157,6 +166,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'pancakeswap-sol':
@@ -167,6 +177,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           case 'orca':
@@ -177,6 +188,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
               baseTokenAmount,
               quoteTokenAmount,
               slippagePct,
+              liveActionAuthorization,
             );
 
           default:

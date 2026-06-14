@@ -26,6 +26,7 @@ export async function removeLiquidity(
   walletAddress: string,
   positionAddress: string,
   percentageToRemove: number,
+  liveActionAuthorization?: RemoveLiquidityRequestType['liveActionAuthorization'],
 ): Promise<RemoveLiquidityResponseType> {
   // Validate essential parameters
   if (!positionAddress || percentageToRemove === undefined) {
@@ -158,7 +159,11 @@ export async function removeLiquidity(
   );
 
   // Execute the transaction to remove liquidity
-  const txParams = await ethereum.prepareGasOptions(undefined, CLMM_REMOVE_LIQUIDITY_GAS_LIMIT);
+  const txParams = await ethereum.prepareGasOptions(
+    undefined,
+    CLMM_REMOVE_LIQUIDITY_GAS_LIMIT,
+    liveActionAuthorization,
+  );
   txParams.value = BigNumber.from(value.toString());
 
   const tx = await positionManagerWithSigner.multicall([calldata], txParams);
@@ -228,7 +233,13 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress: requestedWalletAddress, positionAddress, percentageToRemove } = request.body;
+        const {
+          network,
+          walletAddress: requestedWalletAddress,
+          positionAddress,
+          percentageToRemove,
+          liveActionAuthorization,
+        } = request.body;
 
         let walletAddress = requestedWalletAddress;
         if (!walletAddress) {
@@ -239,7 +250,13 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           }
         }
 
-        return await removeLiquidity(network, walletAddress, positionAddress, percentageToRemove);
+        return await removeLiquidity(
+          network,
+          walletAddress,
+          positionAddress,
+          percentageToRemove,
+          liveActionAuthorization,
+        );
       } catch (e: any) {
         logger.error('Failed to remove liquidity:', e);
         if (e.statusCode) {

@@ -61,6 +61,11 @@ const UnifiedClosePositionRequest = Type.Object({
     description: 'Position address',
     examples: ['<sample-position-address>'],
   }),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live CLMM position close',
+    }),
+  ),
 });
 
 // Import connector functions
@@ -83,7 +88,7 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { connector, chainNetwork, walletAddress, positionAddress } = request.body;
+        const { connector, chainNetwork, walletAddress, positionAddress, liveActionAuthorization } = request.body;
 
         // Parse chain and network from chainNetwork parameter
         const { network } = parseChainNetwork(chainNetwork);
@@ -91,22 +96,22 @@ export const closePositionRoute: FastifyPluginAsync = async (fastify) => {
         // Route to appropriate connector
         switch (connector) {
           case 'uniswap':
-            return await uniswapClosePosition(network, walletAddress, positionAddress);
+            return await uniswapClosePosition(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'pancakeswap':
-            return await pancakeswapClosePosition(network, walletAddress, positionAddress);
+            return await pancakeswapClosePosition(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'raydium':
-            return await raydiumClosePosition(network, walletAddress, positionAddress);
+            return await raydiumClosePosition(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'meteora':
-            return await meteoraClosePosition(network, walletAddress, positionAddress);
+            return await meteoraClosePosition(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'pancakeswap-sol':
-            return await pancakeswapSolClosePosition(network, walletAddress, positionAddress);
+            return await pancakeswapSolClosePosition(network, walletAddress, positionAddress, liveActionAuthorization);
 
           case 'orca':
-            return await orcaClosePosition(network, walletAddress, positionAddress);
+            return await orcaClosePosition(network, walletAddress, positionAddress, liveActionAuthorization);
 
           default:
             throw httpErrors.badRequest(`Unsupported connector: ${connector}`);

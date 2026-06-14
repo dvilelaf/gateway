@@ -16,6 +16,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { AddLiquidityResponse, AddLiquidityResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Orca } from '../orca';
 import { getTickArrayPubkeys, handleWsolAta } from '../orca.utils';
 import { OrcaClmmAddLiquidityRequest } from '../schemas';
@@ -27,6 +28,7 @@ export async function addLiquidity(
   baseTokenAmount: number,
   quoteTokenAmount: number,
   slippagePct: number,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<AddLiquidityResponseType> {
   // Validate at least one amount is provided
   if ((!baseTokenAmount || baseTokenAmount <= 0) && (!quoteTokenAmount || quoteTokenAmount <= 0)) {
@@ -252,7 +254,12 @@ export async function addLiquidity(
   // Build, simulate, and send transaction
   const txPayload = await builder.build();
   await solana.simulateWithErrorHandling(txPayload.transaction);
-  const { signature, fee } = await solana.sendAndConfirmTransaction(txPayload.transaction, [wallet]);
+  const { signature, fee } = await solana.sendAndConfirmTransaction(
+    txPayload.transaction,
+    [wallet],
+    undefined,
+    liveActionAuthorization,
+  );
 
   // Extract added amounts from balance changes
   const tokenAAddress = whirlpool.getTokenAInfo().address.toString();
@@ -299,7 +306,14 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, positionAddress, baseTokenAmount, quoteTokenAmount, slippagePct = 1 } = request.body;
+        const {
+          walletAddress,
+          positionAddress,
+          baseTokenAmount,
+          quoteTokenAmount,
+          slippagePct = 1,
+          liveActionAuthorization,
+        } = request.body;
         const network = request.body.network;
 
         return await addLiquidity(
@@ -309,6 +323,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount || 0,
           quoteTokenAmount || 0,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e) {
         logger.error(e);

@@ -9,6 +9,7 @@ import { Solana } from '../../../chains/solana/solana';
 import { OpenPositionResponse, OpenPositionResponseType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Meteora } from '../meteora';
 import { MeteoraConfig } from '../meteora.config';
 import { MeteoraClmmOpenPositionRequest } from '../schemas';
@@ -30,6 +31,7 @@ export async function openPosition(
   quoteTokenAmount: number | undefined,
   slippagePct: number = MeteoraConfig.config.slippagePct,
   strategyType?: number,
+  liveActionAuthorization?: LiveActionAuthorization,
 ): Promise<OpenPositionResponseType> {
   const solana = await Solana.getInstance(network);
   const meteora = await Meteora.getInstance(network);
@@ -154,10 +156,12 @@ export async function openPosition(
 
   // Send and confirm the ORIGINAL unsigned transaction
   // sendAndConfirmTransaction will handle the signing and auto-simulate for optimal compute units
-  const { signature, fee: txFee } = await solana.sendAndConfirmTransaction(createPositionTx, [
-    wallet,
-    newImbalancePosition,
-  ]);
+  const { signature, fee: txFee } = await solana.sendAndConfirmTransaction(
+    createPositionTx,
+    [wallet, newImbalancePosition],
+    undefined,
+    liveActionAuthorization,
+  );
 
   // Get transaction data for confirmation
   const txData = await solana.connection.getTransaction(signature, {
@@ -254,6 +258,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           quoteTokenAmount,
           slippagePct,
           strategyType,
+          liveActionAuthorization,
         } = request.body;
         const networkToUse = network;
 
@@ -267,6 +272,7 @@ export const openPositionRoute: FastifyPluginAsync = async (fastify) => {
           quoteTokenAmount,
           slippagePct,
           strategyType,
+          liveActionAuthorization,
         );
       } catch (e) {
         logger.error(e);

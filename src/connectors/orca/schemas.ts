@@ -17,6 +17,13 @@ const QUOTE_TOKEN_AMOUNT = 2;
 const LOWER_PRICE_BOUND = 200;
 const UPPER_PRICE_BOUND = 300;
 const CLMM_POOL_ADDRESS_EXAMPLE = 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE';
+const liveActionAuthorizationFields = {
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Gateway mutation',
+    }),
+  ),
+};
 
 // Orca-specific extension
 export const OrcaPoolInfoSchema = Type.Composite(
@@ -184,6 +191,7 @@ export const OrcaClmmExecuteSwapRequest = Type.Object({
       examples: [OrcaConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Export the type for ExecuteSwapRequest
@@ -238,6 +246,7 @@ export const OrcaClmmOpenPositionRequest = Type.Object({
       examples: [OrcaConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Orca CLMM Add Liquidity Request
@@ -281,6 +290,7 @@ export const OrcaClmmAddLiquidityRequest = Type.Object({
       examples: [OrcaConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Orca CLMM Remove Liquidity Request
@@ -320,6 +330,7 @@ export const OrcaClmmRemoveLiquidityRequest = Type.Object({
       examples: [1],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 // Orca CLMM Close Position Request
@@ -342,6 +353,7 @@ export const OrcaClmmClosePositionRequest = Type.Object({
     description: 'Position NFT address',
     examples: ['<sample-position-address>'],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 // Orca CLMM Collect Fees Request
@@ -364,6 +376,7 @@ export const OrcaClmmCollectFeesRequest = Type.Object({
     description: 'Position NFT address',
     examples: ['<sample-position-address>'],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 // Orca CLMM Fetch Pools Request
