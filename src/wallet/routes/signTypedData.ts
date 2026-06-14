@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 
 import { Ethereum } from '../../chains/ethereum/ethereum';
+import { assertMainnetMutationAllowed } from '../../services/runtime-guard';
 import {
   SignTypedDataRequest,
   SignTypedDataResponse,
@@ -56,6 +57,12 @@ export const signTypedDataRoute: FastifyPluginAsync = async (fastify) => {
       if (!COW_SETTLEMENT_CONTRACTS.has(validatedVerifyingContract.toLowerCase())) {
         throw fastify.httpErrors.badRequest('EIP-712 verifyingContract is not an allowed CoW Settlement contract');
       }
+
+      assertMainnetMutationAllowed({
+        chain,
+        network,
+        operation: 'sign_typed_data',
+      });
 
       const wallet = await ethereum.getWallet(validatedAddress);
       const { EIP712Domain: _domainType, ...signingTypes } = types;

@@ -111,4 +111,11 @@ describe('runtime guard wiring', () => {
       sendRaw.indexOf('_sendAndConfirmRawTransaction'),
     );
   });
+
+  it('checks typed-data signing before wallet signing', () => {
+    const source = readFileSync(path.join(ROOT, 'src/wallet/routes/signTypedData.ts'), 'utf8');
+
+    expect(source.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(source.indexOf('ethereum.getWallet('));
+    expect(source.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(source.indexOf('wallet._signTypedData('));
+  });
 });
