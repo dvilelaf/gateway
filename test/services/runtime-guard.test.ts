@@ -199,6 +199,15 @@ describe('runtime guard wiring', () => {
       sendTransaction.indexOf('sendEthereumTransaction('),
     );
     expect(sendTransaction).toContain('liveActionAuthorization: req.liveActionAuthorization');
+
+    const sendSolanaTransaction = source.slice(
+      source.indexOf('async function sendSolanaTransaction'),
+      source.indexOf('/**\n * Send an Ethereum transaction'),
+    );
+    expect(sendSolanaTransaction).toMatch(/sendAndConfirmTransaction\([\s\S]*req\.liveActionAuthorization/);
+
+    const sendEthereumTransaction = source.slice(source.indexOf('async function sendEthereumTransaction'));
+    expect(sendEthereumTransaction).toMatch(/prepareGasOptions\([\s\S]*req\.liveActionAuthorization/);
   });
 
   it('exposes live action authorization on wallet mutation schemas', () => {

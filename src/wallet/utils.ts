@@ -692,7 +692,12 @@ async function sendSolanaTransaction(
   }
 
   try {
-    const { signature, fee } = await solana.sendAndConfirmTransaction(transaction, [wallet]);
+    const { signature, fee } = await solana.sendAndConfirmTransaction(
+      transaction,
+      [wallet],
+      undefined,
+      req.liveActionAuthorization,
+    );
 
     return {
       signature,
@@ -730,7 +735,7 @@ async function sendEthereumTransaction(
 
   if (!req.token || req.token.toUpperCase() === ethereum.nativeTokenSymbol) {
     // Native token transfer (ETH, MATIC, etc.)
-    const gasOptions = await ethereum.prepareGasOptions();
+    const gasOptions = await ethereum.prepareGasOptions(undefined, undefined, req.liveActionAuthorization);
     const amountWei = utils.parseEther(req.amount);
 
     txResponse = await wallet.sendTransaction({
@@ -749,7 +754,7 @@ async function sendEthereumTransaction(
     const contract = ethereum.getContract(tokenInfo.address, wallet);
     const tokenAmount = utils.parseUnits(req.amount, tokenInfo.decimals);
 
-    const gasOptions = await ethereum.prepareGasOptions();
+    const gasOptions = await ethereum.prepareGasOptions(undefined, undefined, req.liveActionAuthorization);
     txResponse = await contract.transfer(toAddress, tokenAmount, gasOptions);
     tokenSymbol = tokenInfo.symbol;
   }
