@@ -86,6 +86,7 @@ const mockQuoteData = {
 
 describe('POST /execute-quote', () => {
   let server: any;
+  const originalLiveMutationsEnabled = process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
 
   beforeAll(async () => {
     server = await buildApp();
@@ -98,6 +99,7 @@ describe('POST /execute-quote', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     quoteCache.clear();
+    process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = 'true';
 
     // Mock TokenService
     const mockTokenService = {
@@ -114,6 +116,14 @@ describe('POST /execute-quote', () => {
       }),
     };
     (TokenService.getInstance as jest.Mock).mockReturnValue(mockTokenService);
+  });
+
+  afterEach(() => {
+    if (originalLiveMutationsEnabled === undefined) {
+      delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+    } else {
+      process.env.GATEWAY_LIVE_MUTATIONS_ENABLED = originalLiveMutationsEnabled;
+    }
   });
 
   it('should execute a previously fetched quote', async () => {
@@ -228,6 +238,31 @@ describe('POST /execute-quote', () => {
 
     expect(response.statusCode).toBe(400);
     expect(JSON.parse(response.body)).toHaveProperty('error');
+  });
+
+  it('should block mainnet execution before loading the wallet when live mutations are disabled', async () => {
+    delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+    const quoteId = 'test-quote-id';
+    quoteCache.set(quoteId, mockQuoteData);
+    const mockEthereumInstance = {
+      getWallet: jest.fn().mockResolvedValue(mockWallet),
+    };
+    (Ethereum.getInstance as jest.Mock).mockResolvedValue(mockEthereumInstance);
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/execute-quote',
+      payload: {
+        network: 'base',
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        quoteId,
+      },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(JSON.parse(response.body).message).toContain('mainnet mutation disabled');
+    expect(mockEthereumInstance.getWallet).not.toHaveBeenCalled();
+    expect(mockWallet.sendTransaction).not.toHaveBeenCalled();
   });
 
   it('should throw error if allowance is insufficient', async () => {

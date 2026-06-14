@@ -6,6 +6,7 @@ import { ExecuteQuoteRequestType, SwapExecuteResponseType, SwapExecuteResponse }
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import { quoteCache } from '../../../services/quote-cache';
+import { assertMainnetMutationAllowed } from '../../../services/runtime-guard';
 import { ZeroX } from '../0x';
 import { ZeroXExecuteQuoteRequest } from '../schemas';
 
@@ -23,6 +24,11 @@ async function executeQuote(
   }
 
   const ethereum = await Ethereum.getInstance(network);
+  assertMainnetMutationAllowed({
+    chain: 'ethereum',
+    network,
+    operation: '0x_execute_quote',
+  });
   const wallet = await ethereum.getWallet(walletAddress);
   const zeroX = await ZeroX.getInstance(network);
 
