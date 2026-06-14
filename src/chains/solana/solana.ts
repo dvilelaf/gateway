@@ -1655,6 +1655,12 @@ export class Solana {
   }
 
   async sendRawTransaction(rawTx: Buffer | Uint8Array | Array<number>, lastValidBlockHeight: number): Promise<string> {
+    assertMainnetMutationAllowed({
+      chain: 'solana',
+      network: this.network,
+      operation: 'solana_raw_transaction',
+    });
+
     const blockheight = await this.connection.getBlockHeight({
       commitment: 'confirmed',
     });

@@ -132,6 +132,18 @@ describe('runtime guard wiring', () => {
     );
   });
 
+  it('checks direct Solana raw broadcasts before sendRawTransaction', () => {
+    const source = readFileSync(path.join(ROOT, 'src/chains/solana/solana.ts'), 'utf8');
+    const sendRaw = source.slice(
+      source.indexOf('async sendRawTransaction'),
+      source.indexOf('async extractBalanceChangesAndFee'),
+    );
+
+    const guardIndex = sendRaw.indexOf('assertMainnetMutationAllowed(');
+    expect(guardIndex).toBeGreaterThanOrEqual(0);
+    expect(guardIndex).toBeLessThan(sendRaw.indexOf('this.connection.sendRawTransaction('));
+  });
+
   it('checks typed-data signing before wallet signing', () => {
     const source = readFileSync(path.join(ROOT, 'src/wallet/routes/signTypedData.ts'), 'utf8');
 
