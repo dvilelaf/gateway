@@ -198,6 +198,22 @@ describe('runtime guard wiring', () => {
     expect(sendTransaction.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(
       sendTransaction.indexOf('sendEthereumTransaction('),
     );
+    expect(sendTransaction).toContain('liveActionAuthorization: req.liveActionAuthorization');
+  });
+
+  it('exposes live action authorization on wallet mutation schemas', () => {
+    const source = readFileSync(path.join(ROOT, 'src/wallet/schemas.ts'), 'utf8');
+    const sendSchema = source.slice(
+      source.indexOf('export const SendTransactionRequestSchema'),
+      source.indexOf('export const SendTransactionResponseSchema'),
+    );
+    const signSchema = source.slice(
+      source.indexOf('export const SignTypedDataRequestSchema'),
+      source.indexOf('export const SignTypedDataResponseSchema'),
+    );
+
+    expect(sendSchema).toContain('liveActionAuthorization');
+    expect(signSchema).toContain('liveActionAuthorization');
   });
 
   it('checks Ethereum gas preparation before transaction callers can broadcast', () => {
@@ -248,6 +264,7 @@ describe('runtime guard wiring', () => {
 
     expect(source.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(source.indexOf('ethereum.getWallet('));
     expect(source.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(source.indexOf('wallet._signTypedData('));
+    expect(source).toContain('liveActionAuthorization');
   });
 
   it('routes AMM ETH add-liquidity branches through Ethereum gas preparation', () => {

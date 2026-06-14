@@ -603,6 +603,7 @@ export async function sendTransaction(
 
   assertMainnetMutationAllowed({
     chain: req.chain,
+    liveActionAuthorization: req.liveActionAuthorization,
     network: req.network,
     operation: 'wallet_send',
   });

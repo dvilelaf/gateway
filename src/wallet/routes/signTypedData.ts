@@ -33,7 +33,7 @@ export const signTypedDataRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request) => {
-      const { chain, network, address, domain, types, value } = request.body;
+      const { chain, network, address, domain, liveActionAuthorization, types, value } = request.body;
       if (chain !== 'ethereum') {
         throw fastify.httpErrors.badRequest('EIP-712 typed-data signing is only supported for ethereum wallets');
       }
@@ -60,6 +60,7 @@ export const signTypedDataRoute: FastifyPluginAsync = async (fastify) => {
 
       assertMainnetMutationAllowed({
         chain,
+        liveActionAuthorization,
         network,
         operation: 'sign_typed_data',
       });

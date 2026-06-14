@@ -83,6 +83,11 @@ export const SignTypedDataRequestSchema = Type.Object({
   domain: Type.Record(Type.String(), Type.Any()),
   types: Type.Record(Type.String(), Type.Array(Type.Record(Type.String(), Type.String()))),
   value: Type.Record(Type.String(), Type.Any()),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live typed-data signing',
+    }),
+  ),
 });
 
 export const SignTypedDataResponseSchema = Type.Object({
@@ -266,6 +271,11 @@ export const SendTransactionRequestSchema = Type.Object({
   token: Type.Optional(
     Type.String({
       description: 'Token symbol or address (omit for native token)',
+    }),
+  ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live wallet send',
     }),
   ),
 });
