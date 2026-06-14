@@ -70,6 +70,11 @@ export const SignMessageRequestSchema = Type.Object({
   network: Type.String(),
   address: WalletAddressSchema,
   message: Type.String(),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live message signing',
+    }),
+  ),
 });
 
 export const SignMessageResponseSchema = Type.Object({

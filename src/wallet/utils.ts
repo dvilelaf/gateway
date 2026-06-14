@@ -236,6 +236,13 @@ export async function signMessage(fastify: FastifyInstance, req: SignMessageRequ
 
     // Get connection with validated network parameter
     const safeNetwork = sanitizePathComponent(req.network);
+    assertMainnetMutationAllowed({
+      chain: req.chain,
+      liveActionAuthorization: req.liveActionAuthorization,
+      network: safeNetwork,
+      operation: 'sign_message',
+    });
+
     const connection = await getInitializedChain(req.chain, safeNetwork);
 
     // getWallet now includes its own address validation
