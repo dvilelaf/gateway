@@ -16,6 +16,7 @@ async function executeQuote(
   quoteId: string,
   gasPrice?: string,
   maxGas?: number,
+  liveActionAuthorization?: ExecuteQuoteRequestType['liveActionAuthorization'],
 ): Promise<SwapExecuteResponseType> {
   // Retrieve cached quote from global cache
   const quote = quoteCache.get(quoteId);
@@ -26,6 +27,7 @@ async function executeQuote(
   const ethereum = await Ethereum.getInstance(network);
   assertMainnetMutationAllowed({
     chain: 'ethereum',
+    liveActionAuthorization,
     network,
     operation: '0x_execute_quote',
   });
@@ -131,10 +133,10 @@ export const executeQuoteRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, network, quoteId, gasPrice, maxGas } =
+        const { walletAddress, network, quoteId, gasPrice, liveActionAuthorization, maxGas } =
           request.body as typeof ZeroXExecuteQuoteRequest._type;
 
-        return await executeQuote(walletAddress, network, quoteId, gasPrice, maxGas);
+        return await executeQuote(walletAddress, network, quoteId, gasPrice, maxGas, liveActionAuthorization);
       } catch (e) {
         if (e.statusCode) throw e;
         logger.error('Error executing 0x quote:', e);

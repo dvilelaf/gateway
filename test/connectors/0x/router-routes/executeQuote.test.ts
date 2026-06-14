@@ -84,6 +84,24 @@ const mockQuoteData = {
   auxiliaryChainData: {},
 } as any;
 
+const liveActionAuthorization = {
+  action: 'gateway_swap',
+  api_live_flag: 'TRADING_SAFETY_LIVE_GATEWAY_SWAP_EXECUTE_ENABLED',
+  blockers: [],
+  connector_id: '0x',
+  edge_sha256: 'e'.repeat(64),
+  expires_at_utc: '2099-01-01T00:00:00Z',
+  gas: '0.001',
+  gateway_live_flags: ['GATEWAY_LIVE_0X_EXECUTE_QUOTE_ENABLED'],
+  generated_at_utc: '2026-06-14T10:00:00Z',
+  live_gate_sha256: 'g'.repeat(64),
+  network: 'mainnet',
+  notional: '1',
+  slippage_bps: '25',
+  status: 'approved',
+  version: 'live-action-authorization-v1',
+};
+
 describe('POST /execute-quote', () => {
   let server: any;
   const originalLiveMutationsEnabled = process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
@@ -212,6 +230,7 @@ describe('POST /execute-quote', () => {
       method: 'POST',
       url: '/execute-quote',
       payload: {
+        liveActionAuthorization,
         network: 'mainnet',
         walletAddress: '0x1234567890123456789012345678901234567890',
         quoteId: quoteId,
@@ -329,6 +348,7 @@ describe('POST /execute-quote', () => {
       method: 'POST',
       url: '/execute-quote',
       payload: {
+        liveActionAuthorization,
         network: 'mainnet',
         walletAddress: '0x1234567890123456789012345678901234567890',
         quoteId: quoteId,

@@ -19,6 +19,7 @@ async function executeSwap(
   slippagePct: number = ZeroXConfig.config.slippagePct,
   gasPrice?: string,
   maxGas?: number,
+  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<SwapExecuteResponseType> {
   // Step 1: Get a fresh firm quote using the quoteSwap function
   const quoteResult = await quoteSwap(
@@ -33,7 +34,14 @@ async function executeSwap(
   );
 
   // Step 2: Execute the quote immediately using executeQuote function
-  const executeResult = await executeQuote(walletAddress, network, quoteResult.quoteId, gasPrice, maxGas);
+  const executeResult = await executeQuote(
+    walletAddress,
+    network,
+    quoteResult.quoteId,
+    gasPrice,
+    maxGas,
+    liveActionAuthorization,
+  );
 
   return executeResult;
 }
@@ -56,8 +64,18 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, network, baseToken, quoteToken, amount, side, slippagePct, gasPrice, maxGas } =
-          request.body as typeof ZeroXExecuteSwapRequest._type;
+        const {
+          walletAddress,
+          network,
+          baseToken,
+          quoteToken,
+          amount,
+          side,
+          slippagePct,
+          gasPrice,
+          liveActionAuthorization,
+          maxGas,
+        } = request.body as typeof ZeroXExecuteSwapRequest._type;
 
         return await executeSwap(
           walletAddress,
@@ -69,6 +87,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           slippagePct,
           gasPrice,
           maxGas,
+          liveActionAuthorization,
         );
       } catch (e) {
         if (e.statusCode) throw e;

@@ -156,6 +156,11 @@ export const ZeroXExecuteQuoteRequest = Type.Object({
       examples: [1000000],
     }),
   ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live quote execution',
+    }),
+  ),
 });
 
 // 0x-specific execute-swap request (superset of base ExecuteSwapRequest)
@@ -209,6 +214,11 @@ export const ZeroXExecuteSwapRequest = Type.Object({
     Type.Number({
       description: 'Maximum gas limit for the transaction',
       examples: [300000],
+    }),
+  ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live swap execution',
     }),
   ),
 });

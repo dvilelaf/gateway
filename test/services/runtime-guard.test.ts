@@ -71,7 +71,7 @@ describe('runtime guard', () => {
     ).toThrow(/GATEWAY_LIVE_SWAP_ENABLED=true/);
   });
 
-  it('allows mainnet mutations only when the operation is explicitly enabled', () => {
+  it('rejects mainnet mutations when operation is enabled but authorization is missing', () => {
     delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
     process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
 
@@ -81,9 +81,108 @@ describe('runtime guard', () => {
         network: 'mainnet',
         operation: 'swap',
       }),
+    ).toThrow(/live action authorization missing/);
+  });
+
+  it('allows mainnet mutations only when operation and authorization are explicitly enabled', () => {
+    delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+    process.env.GATEWAY_LIVE_SWAP_ENABLED = 'true';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: approvedAuthorization({
+          gatewayLiveFlags: ['GATEWAY_LIVE_SWAP_ENABLED'],
+          network: 'mainnet',
+        }),
+        network: 'mainnet',
+        operation: 'swap',
+      }),
     ).not.toThrow();
   });
+
+  it('rejects expired live action authorization artifacts', () => {
+    process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED = 'true';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: approvedAuthorization({
+          action: 'wallet_send',
+          expiresAtUtc: '2020-01-01T00:00:00Z',
+          gatewayLiveFlags: ['GATEWAY_LIVE_WALLET_SEND_ENABLED'],
+          network: 'base',
+        }),
+        network: 'base',
+        operation: 'wallet_send',
+      }),
+    ).toThrow(/live action authorization expired/);
+  });
+
+  it('rejects authorization artifacts missing the required operation flag', () => {
+    process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED = 'true';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: approvedAuthorization({
+          action: 'wallet_send',
+          gatewayLiveFlags: ['GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED'],
+          network: 'base',
+        }),
+        network: 'base',
+        operation: 'wallet_send',
+      }),
+    ).toThrow(/Gateway flag mismatch/);
+  });
+
+  it('rejects authorization artifacts for the wrong network', () => {
+    process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED = 'true';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: approvedAuthorization({
+          action: 'wallet_send',
+          gatewayLiveFlags: ['GATEWAY_LIVE_WALLET_SEND_ENABLED'],
+          network: 'ethereum-mainnet',
+        }),
+        network: 'base',
+        operation: 'wallet_send',
+      }),
+    ).toThrow(/network mismatch/);
+  });
 });
+
+function approvedAuthorization({
+  action = 'gateway_swap',
+  expiresAtUtc = '2099-01-01T00:00:00Z',
+  gatewayLiveFlags,
+  network,
+}: {
+  action?: string;
+  expiresAtUtc?: string;
+  gatewayLiveFlags: string[];
+  network: string;
+}) {
+  return {
+    action,
+    api_live_flag: 'TRADING_SAFETY_LIVE_GATEWAY_SWAP_EXECUTE_ENABLED',
+    blockers: [],
+    connector_id: 'gateway',
+    edge_sha256: 'e'.repeat(64),
+    expires_at_utc: expiresAtUtc,
+    gas: '0.001',
+    gateway_live_flags: gatewayLiveFlags,
+    generated_at_utc: '2026-06-14T10:00:00Z',
+    live_gate_sha256: 'g'.repeat(64),
+    network,
+    notional: '1',
+    slippage_bps: '25',
+    status: 'approved',
+    version: 'live-action-authorization-v1',
+  };
+}
 
 describe('runtime guard wiring', () => {
   it('checks wallet sends before chain-specific send paths', () => {
