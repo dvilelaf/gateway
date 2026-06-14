@@ -763,11 +763,12 @@ export class Ethereum {
     wallet: Wallet,
     spender: string,
     amount: BigNumber,
+    liveActionAuthorization?: LiveActionAuthorization,
   ): Promise<providers.TransactionResponse> {
     logger.info(`Approving ${amount.toString()} tokens for spender ${spender}`);
 
     // Prepare gas options for approval transaction
-    const gasOptions = await this.prepareGasOptions();
+    const gasOptions = await this.prepareGasOptions(undefined, undefined, liveActionAuthorization);
     const params: any = {
       ...gasOptions,
       nonce: await this.provider.getTransactionCount(wallet.address),
@@ -886,14 +887,18 @@ export class Ethereum {
    * @param amountInWei The amount of ETH to wrap in wei (as a BigNumber)
    * @returns The transaction receipt
    */
-  public async wrapNativeToken(wallet: Wallet, amountInWei: BigNumber): Promise<ContractTransaction> {
+  public async wrapNativeToken(
+    wallet: Wallet,
+    amountInWei: BigNumber,
+    liveActionAuthorization?: LiveActionAuthorization,
+  ): Promise<ContractTransaction> {
     const wrappedAddress = this.getWrappedNativeTokenAddress();
 
     // Create wrapped token contract instance
     const wrappedContract = new Contract(wrappedAddress, Ethereum.WETH9ABI, wallet);
 
     // Prepare gas options for wrap transaction
-    const gasOptions = await this.prepareGasOptions();
+    const gasOptions = await this.prepareGasOptions(undefined, undefined, liveActionAuthorization);
     const params: any = {
       ...gasOptions,
       nonce: await this.provider.getTransactionCount(wallet.address),

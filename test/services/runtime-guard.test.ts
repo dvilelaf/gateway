@@ -240,6 +240,7 @@ describe('runtime guard wiring', () => {
 
   it('passes live action authorization through Ethereum approve wrap and unwrap routes', () => {
     const schemas = readFileSync(path.join(ROOT, 'src/chains/ethereum/schemas.ts'), 'utf8');
+    const ethereum = readFileSync(path.join(ROOT, 'src/chains/ethereum/ethereum.ts'), 'utf8');
     for (const [start, end] of [
       ['export const ApproveRequestSchema', 'export const ApproveResponseSchema'],
       ['export const WrapRequestSchema', 'export const WrapResponseSchema'],
@@ -254,6 +255,18 @@ describe('runtime guard wiring', () => {
       expect(source).toContain('liveActionAuthorization');
       expect(source).toContain('prepareGasOptions');
     }
+
+    const approveERC20 = ethereum.slice(
+      ethereum.indexOf('public async approveERC20'),
+      ethereum.indexOf('/**\n   * Get current block number'),
+    );
+    expect(approveERC20).toMatch(/prepareGasOptions\([\s\S]*liveActionAuthorization/);
+
+    const wrapNativeToken = ethereum.slice(
+      ethereum.indexOf('public async wrapNativeToken'),
+      ethereum.indexOf('/**\n   * Get a wallet address example'),
+    );
+    expect(wrapNativeToken).toMatch(/prepareGasOptions\([\s\S]*liveActionAuthorization/);
   });
 
   it('checks Solana send helpers before raw transaction submission', () => {

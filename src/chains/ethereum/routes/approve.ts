@@ -201,7 +201,13 @@ export async function approveEthereumToken(
         const contract = ethereum.getContract(fullToken.address, wallet);
 
         // Call approve function
-        const tx = await ethereum.approveERC20(contract, wallet, spenderAddress, amountBigNumber);
+        const tx = await ethereum.approveERC20(
+          contract,
+          wallet,
+          spenderAddress,
+          amountBigNumber,
+          liveActionAuthorization,
+        );
 
         // Wait for the transaction to be mined with timeout (60 seconds for approvals)
         const receipt = await ethereum.handleTransactionExecution(tx);
