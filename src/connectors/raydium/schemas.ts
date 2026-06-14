@@ -228,6 +228,7 @@ export const RaydiumAmmAddLiquidityRequest = Type.Object({
       examples: [RaydiumConfig.config.slippagePct],
     }),
   ),
+  ...liveActionAuthorizationFields,
 });
 
 export const RaydiumAmmRemoveLiquidityRequest = Type.Object({
@@ -254,6 +255,7 @@ export const RaydiumAmmRemoveLiquidityRequest = Type.Object({
     description: 'Percentage of liquidity to remove',
     examples: [100],
   }),
+  ...liveActionAuthorizationFields,
 });
 
 // ========================================

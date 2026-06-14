@@ -139,6 +139,7 @@ async function removeLiquidity(
   walletAddress: string,
   poolAddress: string,
   percentageToRemove: number,
+  liveActionAuthorization?: Static<typeof RaydiumAmmRemoveLiquidityRequest>['liveActionAuthorization'],
 ): Promise<RemoveLiquidityResponseType> {
   const solana = await Solana.getInstance(network);
   const raydium = await Raydium.getInstance(network);
@@ -211,7 +212,10 @@ async function removeLiquidity(
 
   await solana.simulateWithErrorHandling(signedTransaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(signedTransaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    signedTransaction,
+    liveActionAuthorization,
+  );
   if (confirmed && txData) {
     const tokenAInfo = await solana.getToken(poolInfo.mintA.address);
     const tokenBInfo = await solana.getToken(poolInfo.mintB.address);
@@ -265,9 +269,16 @@ export const removeLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress, poolAddress, percentageToRemove } = request.body;
+        const { network, walletAddress, poolAddress, percentageToRemove, liveActionAuthorization } = request.body;
 
-        return await removeLiquidity(fastify, network, walletAddress, poolAddress, percentageToRemove);
+        return await removeLiquidity(
+          fastify,
+          network,
+          walletAddress,
+          poolAddress,
+          percentageToRemove,
+          liveActionAuthorization,
+        );
       } catch (e) {
         logger.error(e);
         if (e.statusCode) throw e;

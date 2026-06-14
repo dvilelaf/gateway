@@ -350,6 +350,38 @@ describe('runtime guard wiring', () => {
     }
   });
 
+  it('passes live action authorization through Raydium AMM mutation routes only', () => {
+    const schemas = readFileSync(path.join(ROOT, 'src/connectors/raydium/schemas.ts'), 'utf8');
+    for (const schemaName of [
+      'RaydiumAmmExecuteSwapRequest',
+      'RaydiumAmmAddLiquidityRequest',
+      'RaydiumAmmRemoveLiquidityRequest',
+    ]) {
+      const start = schemas.indexOf(`export const ${schemaName}`);
+      const nextExport = schemas.indexOf('\nexport ', start + 1);
+      const schema = schemas.slice(start, nextExport === -1 ? undefined : nextExport);
+      expect(schema).toContain('liveActionAuthorization');
+    }
+
+    for (const schemaName of [
+      'RaydiumAmmGetPoolInfoRequest',
+      'RaydiumAmmGetPositionInfoRequest',
+      'RaydiumAmmQuoteSwapRequest',
+      'RaydiumAmmQuoteLiquidityRequest',
+    ]) {
+      const start = schemas.indexOf(`export const ${schemaName}`);
+      const nextExport = schemas.indexOf('\nexport ', start + 1);
+      const schema = schemas.slice(start, nextExport === -1 ? undefined : nextExport);
+      expect(schema).not.toContain('liveActionAuthorization');
+    }
+
+    for (const file of ['executeSwap.ts', 'addLiquidity.ts', 'removeLiquidity.ts']) {
+      const source = readFileSync(path.join(ROOT, `src/connectors/raydium/amm-routes/${file}`), 'utf8');
+      expect(source).toContain('liveActionAuthorization');
+      expect(source).toMatch(/sendAndConfirmRawTransaction\([\s\S]*liveActionAuthorization/);
+    }
+  });
+
   it('passes live action authorization through unified swap execution routes', () => {
     const source = readFileSync(path.join(ROOT, 'src/trading/swap/execute.ts'), 'utf8');
 

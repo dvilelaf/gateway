@@ -112,6 +112,7 @@ async function addLiquidity(
   baseTokenAmount: number,
   quoteTokenAmount: number,
   slippagePct: number = RaydiumConfig.config.slippagePct,
+  liveActionAuthorization?: Static<typeof RaydiumAmmAddLiquidityRequest>['liveActionAuthorization'],
 ): Promise<AddLiquidityResponseType> {
   const solana = await Solana.getInstance(network);
   const raydium = await Raydium.getInstance(network);
@@ -209,7 +210,10 @@ async function addLiquidity(
 
   await solana.simulateWithErrorHandling(signedTransaction);
 
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(signedTransaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    signedTransaction,
+    liveActionAuthorization,
+  );
   if (confirmed && txData) {
     const tokenAInfo = await solana.getToken(poolInfo.mintA.address);
     const tokenBInfo = await solana.getToken(poolInfo.mintB.address);
@@ -258,7 +262,15 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress, poolAddress, baseTokenAmount, quoteTokenAmount, slippagePct } = request.body;
+        const {
+          network,
+          walletAddress,
+          poolAddress,
+          baseTokenAmount,
+          quoteTokenAmount,
+          slippagePct,
+          liveActionAuthorization,
+        } = request.body;
 
         return await addLiquidity(
           fastify,
@@ -268,6 +280,7 @@ export const addLiquidityRoute: FastifyPluginAsync = async (fastify) => {
           baseTokenAmount,
           quoteTokenAmount,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e) {
         logger.error(e);
