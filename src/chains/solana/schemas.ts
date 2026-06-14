@@ -131,6 +131,11 @@ export const WrapRequestSchema = Type.Object({
     description: 'The amount of SOL to wrap (in SOL, not lamports)',
     examples: ['1.0', '0.5'],
   }),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Solana wrap',
+    }),
+  ),
 });
 
 // Wrap response schema
@@ -158,6 +163,11 @@ export const UnwrapRequestSchema = Type.Object({
     Type.String({
       description: 'The amount of WSOL to unwrap (in SOL, not lamports). If not provided, unwraps all WSOL.',
       examples: ['1.0', '0.5'],
+    }),
+  ),
+  liveActionAuthorization: Type.Optional(
+    Type.Any({
+      description: 'Marlin live-action-authorization-v1 artifact for live Solana unwrap',
     }),
   ),
 });

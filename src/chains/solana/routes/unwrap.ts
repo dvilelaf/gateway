@@ -17,6 +17,7 @@ export async function unwrapSolana(
   network: string,
   address: string,
   amount?: string,
+  liveActionAuthorization?: UnwrapRequestType['liveActionAuthorization'],
 ): Promise<UnwrapResponseType> {
   // Get Solana instance for the specified network
   const solana = await Solana.getInstance(network);
@@ -102,7 +103,10 @@ export async function unwrapSolana(
     await solana.simulateWithErrorHandling(transaction);
 
     // Send and confirm transaction
-    const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+    const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+      transaction,
+      liveActionAuthorization,
+    );
 
     // Calculate fee from transaction data
     let feeInSol = '0';
@@ -152,8 +156,8 @@ export const unwrapRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request) => {
-      const { network, address, amount } = request.body;
-      return await unwrapSolana(fastify, network, address, amount);
+      const { network, address, amount, liveActionAuthorization } = request.body;
+      return await unwrapSolana(fastify, network, address, amount, liveActionAuthorization);
     },
   );
 };

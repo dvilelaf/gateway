@@ -40,6 +40,7 @@ import { ConfigManagerV2 } from '../../services/config-manager-v2';
 import { httpErrors } from '../../services/error-handler';
 import { logger, redactUrl } from '../../services/logger';
 import { assertMainnetMutationAllowed } from '../../services/runtime-guard';
+import type { LiveActionAuthorization } from '../../services/runtime-guard';
 import { TokenService } from '../../services/token-service';
 import { getSafeWalletFilePath, isHardwareWallet as isHardwareWalletUtil } from '../../wallet/utils';
 
@@ -1229,9 +1230,11 @@ export class Solana {
     tx: Transaction | VersionedTransaction,
     signers: Signer[] = [],
     priorityFeePerCU?: number,
+    liveActionAuthorization?: LiveActionAuthorization,
   ): Promise<{ signature: string; fee: number }> {
     assertMainnetMutationAllowed({
       chain: 'solana',
+      liveActionAuthorization,
       network: this.network,
       operation: 'solana_transaction',
     });
@@ -1463,9 +1466,11 @@ export class Solana {
 
   async sendAndConfirmRawTransaction(
     transaction: VersionedTransaction | Transaction,
+    liveActionAuthorization?: LiveActionAuthorization,
   ): Promise<{ confirmed: boolean; signature: string; txData: any }> {
     assertMainnetMutationAllowed({
       chain: 'solana',
+      liveActionAuthorization,
       network: this.network,
       operation: 'solana_raw_transaction',
     });
@@ -1654,9 +1659,14 @@ export class Solana {
     }
   }
 
-  async sendRawTransaction(rawTx: Buffer | Uint8Array | Array<number>, lastValidBlockHeight: number): Promise<string> {
+  async sendRawTransaction(
+    rawTx: Buffer | Uint8Array | Array<number>,
+    lastValidBlockHeight: number,
+    liveActionAuthorization?: LiveActionAuthorization,
+  ): Promise<string> {
     assertMainnetMutationAllowed({
       chain: 'solana',
+      liveActionAuthorization,
       network: this.network,
       operation: 'solana_raw_transaction',
     });

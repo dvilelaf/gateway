@@ -264,6 +264,8 @@ describe('runtime guard wiring', () => {
     expect(sendRaw.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(
       sendRaw.indexOf('_sendAndConfirmRawTransaction'),
     );
+    expect(sendTransaction).toContain('liveActionAuthorization');
+    expect(sendRaw).toContain('liveActionAuthorization');
   });
 
   it('checks direct Solana raw broadcasts before sendRawTransaction', () => {
@@ -276,6 +278,26 @@ describe('runtime guard wiring', () => {
     const guardIndex = sendRaw.indexOf('assertMainnetMutationAllowed(');
     expect(guardIndex).toBeGreaterThanOrEqual(0);
     expect(guardIndex).toBeLessThan(sendRaw.indexOf('this.connection.sendRawTransaction('));
+    expect(sendRaw).toContain('liveActionAuthorization');
+  });
+
+  it('passes live action authorization through Solana wrap and unwrap routes', () => {
+    const schemas = readFileSync(path.join(ROOT, 'src/chains/solana/schemas.ts'), 'utf8');
+    for (const [start, end] of [
+      ['export const WrapRequestSchema', 'export const WrapResponseSchema'],
+      ['export const UnwrapRequestSchema', 'export const UnwrapResponseSchema'],
+    ]) {
+      const schema = schemas.slice(schemas.indexOf(start), schemas.indexOf(end));
+      expect(schema).toContain('liveActionAuthorization');
+    }
+
+    for (const file of ['wrap.ts', 'unwrap.ts']) {
+      const source = readFileSync(path.join(ROOT, `src/chains/solana/routes/${file}`), 'utf8');
+      expect(source).toContain('liveActionAuthorization');
+      expect(source).toContain('sendAndConfirmRawTransaction(');
+      expect(source).toContain('transaction,');
+      expect(source).toContain('liveActionAuthorization,');
+    }
   });
 
   it('checks typed-data signing before wallet signing', () => {
