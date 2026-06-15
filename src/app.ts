@@ -13,6 +13,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 // Internal dependencies
 
 // Routes
+import { bridgeRoutes } from './bridge/bridge.routes';
 import { ethereumRoutes } from './chains/ethereum/ethereum.routes';
 import { solanaRoutes } from './chains/solana/solana.routes';
 import { configRoutes } from './config/config.routes';
@@ -241,6 +242,9 @@ const configureGatewayServer = () => {
 
     // Register trading CLMM routes (unified cross-chain concentrated liquidity)
     app.register(tradingClmmRoutes, { prefix: '/trading/clmm' });
+
+    // Register Marlin-approved bridge execution routes
+    app.register(bridgeRoutes, { prefix: '/bridge' });
 
     // Register chain routes
     app.register(solanaRoutes, { prefix: '/chains/solana' });

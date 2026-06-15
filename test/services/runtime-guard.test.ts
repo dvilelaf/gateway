@@ -2,13 +2,20 @@ import { createHmac } from 'crypto';
 import { readFileSync } from 'fs';
 import path from 'path';
 
-import { assertMainnetMutationAllowed } from '../../src/services/runtime-guard';
+import {
+  BridgeExecutionExpectation,
+  assertBridgeExecutionAllowed,
+  assertMainnetMutationAllowed,
+} from '../../src/services/runtime-guard';
 
 const ROOT = path.resolve(__dirname, '../..');
 
 describe('runtime guard', () => {
   const originalEnv = process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
   const originalSwapEnv = process.env.GATEWAY_LIVE_SWAP_ENABLED;
+  const originalBridgeEnv = process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED;
+  const originalEthereumTransactionEnv = process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+  const originalBridgeAllowlist = process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST;
   const originalAuthSecret = process.env.MARLIN_LIVE_ACTION_AUTH_SECRET;
 
   afterEach(() => {
@@ -21,6 +28,21 @@ describe('runtime guard', () => {
       delete process.env.GATEWAY_LIVE_SWAP_ENABLED;
     } else {
       process.env.GATEWAY_LIVE_SWAP_ENABLED = originalSwapEnv;
+    }
+    if (originalBridgeEnv === undefined) {
+      delete process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED;
+    } else {
+      process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED = originalBridgeEnv;
+    }
+    if (originalEthereumTransactionEnv === undefined) {
+      delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    } else {
+      process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED = originalEthereumTransactionEnv;
+    }
+    if (originalBridgeAllowlist === undefined) {
+      delete process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST;
+    } else {
+      process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST = originalBridgeAllowlist;
     }
     if (originalAuthSecret === undefined) {
       delete process.env.MARLIN_LIVE_ACTION_AUTH_SECRET;
@@ -246,6 +268,58 @@ describe('runtime guard', () => {
       }),
     ).not.toThrow();
   });
+
+  it('rejects bridge execution when the provider is not allowlisted', () => {
+    process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED = 'true';
+    process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST = 'lifi';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+
+    expect(() =>
+      assertBridgeExecutionAllowed(
+        approvedBridgeAuthorization({ nonce: 'bridge-provider-allowlist' }),
+        approvedBridgeExpectation({ provider: 'squid' }),
+      ),
+    ).toThrow(/bridge provider not allowlisted/);
+  });
+
+  it('rejects bridge execution when signed route data does not match the tx request', () => {
+    process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED = 'true';
+    process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST = 'lifi,squid';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+
+    expect(() =>
+      assertBridgeExecutionAllowed(
+        approvedBridgeAuthorization({ nonce: 'bridge-route-mismatch' }),
+        approvedBridgeExpectation({ providerRouteId: 'route-999' }),
+      ),
+    ).toThrow(/bridge provider route id mismatch/);
+  });
+
+  it('rejects bridge execution when the same authorization nonce is reused', () => {
+    process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED = 'true';
+    process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST = 'lifi,squid';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+    const authorization = approvedBridgeAuthorization({ nonce: 'bridge-nonce-replay' });
+
+    expect(() => assertBridgeExecutionAllowed(authorization, approvedBridgeExpectation())).not.toThrow();
+    expect(() => assertBridgeExecutionAllowed(authorization, approvedBridgeExpectation())).toThrow(
+      /bridge authorization nonce replay/,
+    );
+  });
+
+  it('allows bridge authorizations to pass the lower-level Gateway transaction guard', () => {
+    process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: approvedBridgeAuthorization({ nonce: 'bridge-ethereum-transaction' }),
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).not.toThrow();
+  });
 });
 
 function approvedAuthorization({
@@ -281,6 +355,45 @@ function approvedAuthorization({
   return authorization;
 }
 
+function approvedBridgeExpectation(overrides: Partial<BridgeExecutionExpectation> = {}): BridgeExecutionExpectation {
+  return {
+    calldataHash: 'c'.repeat(64),
+    provider: 'lifi',
+    providerRouteId: 'route-123',
+    quoteId: 'quote-456',
+    routePayloadHash: 'p'.repeat(64),
+    sourceChainId: '8453',
+    target: '0x1111111111111111111111111111111111111111',
+    value: '0',
+    ...overrides,
+  };
+}
+
+function approvedBridgeAuthorization({ nonce }: { nonce: string }): Record<string, unknown> {
+  const expectation = approvedBridgeExpectation();
+  const authorization = approvedAuthorization({
+    action: 'bridge',
+    gatewayLiveFlags: [
+      'GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED',
+      'GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED',
+      'GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED',
+      'GATEWAY_LIVE_SOLANA_TRANSACTION_ENABLED',
+    ],
+    network: 'base',
+  });
+  authorization.bridge_authorization_nonce = nonce;
+  authorization.bridge_provider = expectation.provider;
+  authorization.bridge_provider_route_id = expectation.providerRouteId;
+  authorization.bridge_quote_id = expectation.quoteId;
+  authorization.bridge_route_payload_hash = expectation.routePayloadHash;
+  authorization.bridge_source_chain_id = expectation.sourceChainId;
+  authorization.bridge_tx_calldata_hash = expectation.calldataHash;
+  authorization.bridge_tx_target = expectation.target;
+  authorization.bridge_tx_value = expectation.value;
+  authorization.signature = signature(authorization);
+  return authorization;
+}
+
 function signature(authorization: Record<string, unknown>): string {
   const payload = { ...authorization };
   delete payload.signature;
@@ -290,6 +403,20 @@ function signature(authorization: Record<string, unknown>): string {
 }
 
 describe('runtime guard wiring', () => {
+  it('registers bridge routes on the Gateway app', () => {
+    const source = readFileSync(path.join(ROOT, 'src/app.ts'), 'utf8');
+
+    expect(source).toContain("import { bridgeRoutes } from './bridge/bridge.routes'");
+    expect(source).toContain("app.register(bridgeRoutes, { prefix: '/bridge' })");
+  });
+
+  it('checks bridge authorization before any bridge transaction broadcast', () => {
+    const source = readFileSync(path.join(ROOT, 'src/bridge/bridge.routes.ts'), 'utf8');
+    const execute = source.slice(source.indexOf("'/execute'"));
+
+    expect(execute.indexOf('assertBridgeExecutionAllowed(')).toBeLessThan(execute.indexOf('sendTransaction('));
+  });
+
   it('checks wallet sends before chain-specific send paths', () => {
     const source = readFileSync(path.join(ROOT, 'src/wallet/utils.ts'), 'utf8');
     const sendTransaction = source.slice(

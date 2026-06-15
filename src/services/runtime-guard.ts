@@ -2,8 +2,17 @@ import { createHmac, timingSafeEqual } from 'crypto';
 
 export const LIVE_MUTATIONS_ENV = 'GATEWAY_LIVE_MUTATIONS_ENABLED';
 export const LIVE_ACTION_AUTH_SECRET_ENV = 'MARLIN_LIVE_ACTION_AUTH_SECRET';
+export const BRIDGE_EXECUTE_ENV = 'GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED';
+export const BRIDGE_PROVIDER_ALLOWLIST_ENV = 'GATEWAY_BRIDGE_PROVIDER_ALLOWLIST';
 
 const SAFE_NETWORK_MARKERS = ['testnet', 'devnet', 'sepolia', 'goerli', 'amoy', 'fuji', 'local'];
+const BRIDGE_GATEWAY_FLAGS = [
+  BRIDGE_EXECUTE_ENV,
+  'GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED',
+  'GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED',
+  'GATEWAY_LIVE_SOLANA_TRANSACTION_ENABLED',
+];
+const usedBridgeAuthorizationNonces = new Set<string>();
 
 export interface MainnetMutationGuardInput {
   chain: string;
@@ -22,6 +31,15 @@ export interface LiveActionAuthorization {
   action?: unknown;
   blockers?: unknown;
   account_address?: unknown;
+  bridge_authorization_nonce?: unknown;
+  bridge_provider?: unknown;
+  bridge_provider_route_id?: unknown;
+  bridge_quote_id?: unknown;
+  bridge_route_payload_hash?: unknown;
+  bridge_source_chain_id?: unknown;
+  bridge_tx_calldata_hash?: unknown;
+  bridge_tx_target?: unknown;
+  bridge_tx_value?: unknown;
   connector_id?: unknown;
   expires_at_utc?: unknown;
   gas?: unknown;
@@ -33,6 +51,17 @@ export interface LiveActionAuthorization {
   status?: unknown;
   version?: unknown;
   wallet_address?: unknown;
+}
+
+export interface BridgeExecutionExpectation {
+  calldataHash: unknown;
+  provider: unknown;
+  providerRouteId: unknown;
+  quoteId: unknown;
+  routePayloadHash: unknown;
+  sourceChainId: unknown;
+  target: unknown;
+  value: unknown;
 }
 
 export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): void {
@@ -60,12 +89,86 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
   );
 }
 
+export function assertBridgeExecutionAllowed(
+  authorization: LiveActionAuthorization | undefined,
+  expectation: BridgeExecutionExpectation,
+): void {
+  if (!envFlagEnabled(BRIDGE_EXECUTE_ENV)) {
+    throw new Error(`bridge execution disabled; set ${BRIDGE_EXECUTE_ENV}=true only behind Marlin live gates`);
+  }
+  assertProviderAllowlisted(expectation.provider);
+  assertLiveActionAuthorization(authorization, {
+    expectedActions: ['bridge'],
+    expectedGatewayFlag: BRIDGE_EXECUTE_ENV,
+    expectedNetwork: String(expectation.sourceChainId) === '101' ? 'mainnet-beta' : authorizationNetwork(authorization),
+  });
+  assertExactGatewayFlags(authorization?.gateway_live_flags);
+  assertExpectedAuthorizationField(authorization?.bridge_provider, expectation.provider, 'bridge provider');
+  assertExpectedAuthorizationField(
+    authorization?.bridge_provider_route_id,
+    expectation.providerRouteId,
+    'bridge provider route id',
+  );
+  assertExpectedAuthorizationField(authorization?.bridge_quote_id, expectation.quoteId, 'bridge quote id');
+  assertExpectedAuthorizationField(
+    authorization?.bridge_route_payload_hash,
+    expectation.routePayloadHash,
+    'bridge route payload hash',
+  );
+  assertExpectedAuthorizationField(
+    authorization?.bridge_source_chain_id,
+    expectation.sourceChainId,
+    'bridge source chain id',
+  );
+  assertExpectedAuthorizationField(
+    authorization?.bridge_tx_calldata_hash,
+    expectation.calldataHash,
+    'bridge tx calldata hash',
+  );
+  assertExpectedAuthorizationField(authorization?.bridge_tx_target, expectation.target, 'bridge tx target');
+  assertExpectedAuthorizationDecimalField(authorization?.bridge_tx_value, expectation.value, 'bridge tx value');
+  const nonce = authorization?.bridge_authorization_nonce;
+  if (typeof nonce !== 'string' || nonce.trim() === '') {
+    throw new Error('bridge authorization nonce missing');
+  }
+  if (usedBridgeAuthorizationNonces.has(nonce)) {
+    throw new Error('bridge authorization nonce replay');
+  }
+  usedBridgeAuthorizationNonces.add(nonce);
+}
+
 export function isMainnetNetwork(network: string): boolean {
   const normalized = network.trim().toLowerCase();
   if (!normalized) {
     return false;
   }
   return !SAFE_NETWORK_MARKERS.some((marker) => normalized.includes(marker));
+}
+
+function assertProviderAllowlisted(provider: unknown): void {
+  const providerText = String(provider).trim();
+  const allowed = (process.env[BRIDGE_PROVIDER_ALLOWLIST_ENV] ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+  if (providerText === '' || !allowed.includes(providerText)) {
+    throw new Error('bridge provider not allowlisted');
+  }
+}
+
+function authorizationNetwork(authorization: LiveActionAuthorization | undefined): string {
+  return typeof authorization?.network === 'string' ? authorization.network : '';
+}
+
+function assertExactGatewayFlags(flags: unknown): void {
+  if (!Array.isArray(flags)) {
+    throw new Error('live action authorization Gateway flag mismatch');
+  }
+  const actual = flags.map(String).sort();
+  const expected = [...BRIDGE_GATEWAY_FLAGS].sort();
+  if (actual.length !== expected.length || actual.some((item, index) => item !== expected[index])) {
+    throw new Error('live action authorization Gateway flag mismatch');
+  }
 }
 
 function envFlagEnabled(name: string): boolean {
@@ -209,7 +312,7 @@ function liveOperationActions(operation: string): string[] {
     case 'ethereum_transaction':
     case 'solana_transaction':
     case 'solana_raw_transaction':
-      return ['gateway_swap', 'lp_add', 'lp_remove'];
+      return ['gateway_swap', 'lp_add', 'lp_remove', 'bridge'];
     case 'sign_typed_data':
       return ['order', 'gateway_swap'];
     default:
