@@ -691,6 +691,20 @@ describe('runtime guard wiring', () => {
     }
   });
 
+  it('passes live action authorization through Orca CLMM swap execution', () => {
+    const source = readFileSync(path.join(ROOT, 'src/connectors/orca/clmm-routes/executeSwap.ts'), 'utf8');
+
+    const route = source.slice(
+      source.indexOf('export const executeSwapRoute'),
+      source.indexOf('} catch (e: any)', source.indexOf('export const executeSwapRoute')),
+    );
+    expect(route).toContain('liveActionAuthorization');
+
+    const callIndex = route.indexOf('return await executeSwap(');
+    const executeSwapCall = route.slice(callIndex, route.indexOf(');', callIndex));
+    expect(executeSwapCall).toContain('liveActionAuthorization');
+  });
+
   it('does not require live authorization for universal-router gas estimates', () => {
     for (const connector of ['uniswap', 'pancakeswap']) {
       const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/universal-router.ts`), 'utf8');

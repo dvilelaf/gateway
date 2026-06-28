@@ -291,7 +291,17 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network, walletAddress, baseToken, quoteToken, amount, side, poolAddress, slippagePct } = request.body;
+        const {
+          network,
+          walletAddress,
+          baseToken,
+          quoteToken,
+          amount,
+          side,
+          poolAddress,
+          slippagePct,
+          liveActionAuthorization,
+        } = request.body;
 
         // Use defaults if not provided
         const networkUsed = network || getSolanaChainConfig().defaultNetwork;
@@ -342,6 +352,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           side as 'BUY' | 'SELL',
           poolAddressUsed,
           slippagePct,
+          liveActionAuthorization,
         );
       } catch (e: any) {
         logger.error('Error executing swap:', e.message || e);
