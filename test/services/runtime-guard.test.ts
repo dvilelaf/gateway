@@ -320,6 +320,24 @@ describe('runtime guard', () => {
       }),
     ).not.toThrow();
   });
+
+  it('allows wallet send authorizations to pass the lower-level Ethereum transaction guard', () => {
+    process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED = 'true';
+    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: approvedAuthorization({
+          action: 'wallet_send',
+          gatewayLiveFlags: ['GATEWAY_LIVE_WALLET_SEND_ENABLED'],
+          network: 'base',
+        }),
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).not.toThrow();
+  });
 });
 
 function approvedAuthorization({

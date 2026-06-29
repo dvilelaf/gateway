@@ -229,7 +229,7 @@ function assertLiveActionAuthorization(
   }
   if (
     !Array.isArray(authorization.gateway_live_flags) ||
-    !authorization.gateway_live_flags.includes(expectedGatewayFlag)
+    !_authorizationGatewayFlagAllowed(authorization, expectedGatewayFlag)
   ) {
     throw new Error('live action authorization Gateway flag mismatch');
   }
@@ -243,6 +243,23 @@ function assertLiveActionAuthorization(
   if (expiresAt.getTime() <= Date.now()) {
     throw new Error('live action authorization expired');
   }
+}
+
+function _authorizationGatewayFlagAllowed(
+  authorization: LiveActionAuthorization,
+  expectedGatewayFlag: string,
+): boolean {
+  if (!Array.isArray(authorization.gateway_live_flags)) {
+    return false;
+  }
+  if (authorization.gateway_live_flags.includes(expectedGatewayFlag)) {
+    return true;
+  }
+  return (
+    expectedGatewayFlag === 'GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED' &&
+    authorization.action === 'wallet_send' &&
+    authorization.gateway_live_flags.includes('GATEWAY_LIVE_WALLET_SEND_ENABLED')
+  );
 }
 
 function assertExpectedAuthorizationField(actual: unknown, expected: unknown, label: string): void {
@@ -312,7 +329,7 @@ function liveOperationActions(operation: string): string[] {
     case 'ethereum_transaction':
     case 'solana_transaction':
     case 'solana_raw_transaction':
-      return ['gateway_swap', 'lp_add', 'lp_remove', 'bridge'];
+      return ['gateway_swap', 'lp_add', 'lp_remove', 'bridge', 'wallet_send'];
     case 'sign_typed_data':
       return ['order', 'gateway_swap'];
     default:
