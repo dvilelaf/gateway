@@ -13,12 +13,7 @@ import { UniswapExecuteQuoteRequest } from '../schemas';
 // Permit2 address is constant across all chains
 const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
 
-async function executeQuote(
-  walletAddress: string,
-  network: string,
-  quoteId: string,
-  liveActionAuthorization?: unknown,
-): Promise<SwapExecuteResponseType> {
+async function executeQuote(walletAddress: string, network: string, quoteId: string): Promise<SwapExecuteResponseType> {
   // Retrieve cached quote
   const cached = quoteCache.get(quoteId);
   if (!cached) {
@@ -128,7 +123,7 @@ async function executeQuote(
 
       // Get gas options with increased gas limit for Universal Router V2
       const gasLimit = 500000; // Increased for Universal Router V2
-      const gasOptions = await ethereum.prepareGasOptions(undefined, gasLimit, liveActionAuthorization);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, gasLimit);
 
       // Build unsigned transaction with gas parameters
       const unsignedTx = {
@@ -163,7 +158,7 @@ async function executeQuote(
       // Get gas options with increased gas limit for Universal Router V2
       // Uniswap Universal Router V2 swaps typically use between 200k-500k gas
       const gasLimit = 500000; // Increased for Universal Router V2
-      const gasOptions = await ethereum.prepareGasOptions(undefined, gasLimit, liveActionAuthorization);
+      const gasOptions = await ethereum.prepareGasOptions(undefined, gasLimit);
       logger.info(`Using gas limit: ${gasOptions.gasLimit?.toString() || gasLimit}`);
 
       // Build transaction parameters with gas options
@@ -331,10 +326,9 @@ export const executeQuoteRoute: FastifyPluginAsync = async (fastify) => {
           walletAddress = getEthereumChainConfig().defaultWallet,
           network = getEthereumChainConfig().defaultNetwork,
           quoteId,
-          liveActionAuthorization,
         } = request.body as typeof UniswapExecuteQuoteRequest._type;
 
-        return await executeQuote(walletAddress, network, quoteId, liveActionAuthorization);
+        return await executeQuote(walletAddress, network, quoteId);
       } catch (e) {
         if (e.statusCode) throw e;
         logger.error('Error executing quote:', e);

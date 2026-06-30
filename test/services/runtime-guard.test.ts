@@ -658,8 +658,46 @@ describe('runtime guard wiring', () => {
       'zeroXRouterExecuteSwap',
     ]) {
       const index = source.indexOf(`return await ${connector}(`);
-      const call = source.slice(index, source.indexOf(');', index));
+      expect(index).toBeGreaterThanOrEqual(0);
+      const end = source.indexOf(');', index);
+      expect(end).toBeGreaterThan(index);
+      const call = source.slice(index, end);
       expect(call).not.toContain('liveActionAuthorization');
+    }
+  });
+
+  it('does not expose live action authorization through 0x and Aerodrome normal swaps', () => {
+    const zeroXSchemas = readFileSync(path.join(ROOT, 'src/connectors/0x/schemas.ts'), 'utf8');
+    const zeroXExecuteQuoteSchema = zeroXSchemas.slice(
+      zeroXSchemas.indexOf('export const ZeroXExecuteQuoteRequest'),
+      zeroXSchemas.indexOf('// 0x-specific execute-swap request'),
+    );
+    const zeroXExecuteSwapSchema = zeroXSchemas.slice(zeroXSchemas.indexOf('export const ZeroXExecuteSwapRequest'));
+    expect(zeroXExecuteQuoteSchema).not.toContain('liveActionAuthorization');
+    expect(zeroXExecuteSwapSchema).not.toContain('liveActionAuthorization');
+
+    for (const file of ['executeQuote.ts', 'executeSwap.ts']) {
+      const source = readFileSync(path.join(ROOT, `src/connectors/0x/router-routes/${file}`), 'utf8');
+      expect(source).not.toContain('liveActionAuthorization');
+    }
+
+    const aerodromeSchemas = readFileSync(path.join(ROOT, 'src/connectors/aerodrome/schemas.ts'), 'utf8');
+    const aerodromeSwapSchema = aerodromeSchemas.slice(
+      aerodromeSchemas.indexOf('export const AerodromeExecuteSwapRequest'),
+      aerodromeSchemas.indexOf('export const AerodromeExecuteQuoteRequest'),
+    );
+    expect(aerodromeSwapSchema).not.toContain('liveActionAuthorization');
+
+    const aerodromeAdapter = readFileSync(path.join(ROOT, 'src/connectors/aerodrome/aerodrome.adapter.ts'), 'utf8');
+    expect(aerodromeAdapter).not.toContain('liveActionAuthorization');
+  });
+
+  it('does not expose live action authorization through direct EVM router swap routes', () => {
+    for (const connector of ['uniswap', 'pancakeswap']) {
+      for (const file of ['executeQuote.ts', 'executeSwap.ts']) {
+        const source = readFileSync(path.join(ROOT, `src/connectors/${connector}/router-routes/${file}`), 'utf8');
+        expect(source).not.toContain('liveActionAuthorization');
+      }
     }
   });
 

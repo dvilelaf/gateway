@@ -18,7 +18,6 @@ async function executeSwap(
   amount: number,
   side: 'BUY' | 'SELL',
   slippagePct: number = PancakeswapConfig.config.slippagePct,
-  liveActionAuthorization?: unknown,
 ): Promise<SwapExecuteResponseType> {
   logger.info(`Executing swap: ${amount} ${baseToken} ${side} for ${quoteToken}`);
 
@@ -26,7 +25,7 @@ async function executeSwap(
   const quoteResponse = await quoteSwap(network, walletAddress, baseToken, quoteToken, amount, side, slippagePct);
 
   // Step 2: Execute the quote
-  const executeResponse = await executeQuote(walletAddress, network, quoteResponse.quoteId, liveActionAuthorization);
+  const executeResponse = await executeQuote(walletAddress, network, quoteResponse.quoteId);
 
   return executeResponse;
 }
@@ -49,7 +48,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, network, baseToken, quoteToken, amount, side, slippagePct, liveActionAuthorization } =
+        const { walletAddress, network, baseToken, quoteToken, amount, side, slippagePct } =
           request.body as typeof PancakeswapExecuteSwapRequest._type;
 
         return await executeSwap(
@@ -60,7 +59,6 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           amount,
           side as 'BUY' | 'SELL',
           slippagePct,
-          liveActionAuthorization,
         );
       } catch (e) {
         if (e.statusCode) throw e;
