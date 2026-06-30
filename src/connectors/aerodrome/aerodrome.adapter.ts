@@ -2,7 +2,6 @@ import { BigNumber } from 'ethers';
 
 import { Ethereum, TokenInfo as GatewayTokenInfo } from '../../chains/ethereum/ethereum';
 import { httpErrors } from '../../services/error-handler';
-import { LiveActionAuthorization } from '../../services/runtime-guard';
 
 const AERODROME_PACKAGE = 'hummingbot-aerodrome-gateway-connector/gateway-adapter';
 const AERODROME_ROOT_PACKAGE = 'hummingbot-aerodrome-gateway-connector';
@@ -72,12 +71,11 @@ export async function quoteAerodrome(network: string, request: unknown): Promise
 export async function executeAerodromeSwap(network: string, request: unknown): Promise<unknown> {
   const adapter = loadAerodromeGatewayAdapter();
   const connector = await getAerodromeConnector(network);
-  const liveActionAuthorization = liveActionAuthorizationFromRequest(request);
   const plan = await withAerodromeTimeout(
     adapter.planAerodromeGatewaySwap(connector, request, tokenResolver(network)),
     'swap plan',
   );
-  return adapter.executeAerodromeGatewaySwapPlan(plan, createGatewayWalletExecutor(network, liveActionAuthorization));
+  return adapter.executeAerodromeGatewaySwapPlan(plan, createGatewayWalletExecutor(network));
 }
 
 export async function executeAerodromeQuote(
@@ -90,22 +88,20 @@ export async function executeAerodromeQuote(
 
 export async function executeAerodromeAddLiquidity(network: string, request: any): Promise<unknown> {
   const planner = await getAerodromeLiquidityPlanner(network);
-  const liveActionAuthorization = liveActionAuthorizationFromRequest(request);
   const plan = await withAerodromeTimeout(
     planner.planAddLiquidity(await liquidityRequestToPlannerRequest(network, request)),
     'add liquidity plan',
   );
-  return executeLiquidityPlan(network, 'add', plan, liveActionAuthorization);
+  return executeLiquidityPlan(network, 'add', plan);
 }
 
 export async function executeAerodromeRemoveLiquidity(network: string, request: any): Promise<unknown> {
   const planner = await getAerodromeLiquidityPlanner(network);
-  const liveActionAuthorization = liveActionAuthorizationFromRequest(request);
   const plan = await withAerodromeTimeout(
     planner.planRemoveLiquidity(await liquidityRequestToPlannerRequest(network, request)),
     'remove liquidity plan',
   );
-  return executeLiquidityPlan(network, 'remove', plan, liveActionAuthorization);
+  return executeLiquidityPlan(network, 'remove', plan);
 }
 
 function loadAerodromeGatewayAdapter(): AerodromeGatewayModule {
@@ -199,13 +195,8 @@ async function liquidityRequestToPlannerRequest(network: string, request: any): 
   };
 }
 
-async function executeLiquidityPlan(
-  network: string,
-  action: 'add' | 'remove',
-  plan: LiquidityPlan,
-  liveActionAuthorization?: LiveActionAuthorization,
-): Promise<unknown> {
-  const executor = createGatewayWalletExecutor(network, liveActionAuthorization) as {
+async function executeLiquidityPlan(network: string, action: 'add' | 'remove', plan: LiquidityPlan): Promise<unknown> {
+  const executor = createGatewayWalletExecutor(network) as {
     executeTransaction: (transaction: PlannedTransaction) => Promise<BroadcastTransaction>;
   };
   const transactions: ExecutedTransaction[] = [];
@@ -282,7 +273,7 @@ function missingWalletExecutorError(): Error {
   );
 }
 
-function createGatewayWalletExecutor(network: string, liveActionAuthorization?: LiveActionAuthorization): unknown {
+function createGatewayWalletExecutor(network: string): unknown {
   return {
     executeTransaction: async (transaction: PlannedTransaction) => {
       const ethereum = await Ethereum.getInstance(network);
@@ -293,11 +284,7 @@ function createGatewayWalletExecutor(network: string, liveActionAuthorization?: 
         throw missingWalletExecutorErrorWithCause(error);
       }
 
-      const gasOptions = await ethereum.prepareGasOptions(
-        undefined,
-        gasEstimateToNumber(transaction.gasEstimate),
-        liveActionAuthorization,
-      );
+      const gasOptions = await ethereum.prepareGasOptions(undefined, gasEstimateToNumber(transaction.gasEstimate));
       const txResponse = await wallet.sendTransaction({
         to: transaction.to,
         data: transaction.data,
@@ -313,13 +300,6 @@ function createGatewayWalletExecutor(network: string, liveActionAuthorization?: 
       };
     },
   };
-}
-
-function liveActionAuthorizationFromRequest(request: unknown): LiveActionAuthorization | undefined {
-  if (request === null || typeof request !== 'object') {
-    return undefined;
-  }
-  return (request as { liveActionAuthorization?: LiveActionAuthorization }).liveActionAuthorization;
 }
 
 function gasEstimateToNumber(value: string): number {

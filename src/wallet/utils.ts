@@ -238,7 +238,6 @@ export async function signMessage(fastify: FastifyInstance, req: SignMessageRequ
     const safeNetwork = sanitizePathComponent(req.network);
     assertMainnetMutationAllowed({
       chain: req.chain,
-      liveActionAuthorization: req.liveActionAuthorization,
       network: safeNetwork,
       operation: 'sign_message',
     });
@@ -610,7 +609,6 @@ export async function sendTransaction(
 
   assertMainnetMutationAllowed({
     chain: req.chain,
-    liveActionAuthorization: req.liveActionAuthorization,
     network: req.network,
     operation: 'wallet_send',
   });

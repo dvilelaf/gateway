@@ -1230,11 +1230,10 @@ export class Solana {
     tx: Transaction | VersionedTransaction,
     signers: Signer[] = [],
     priorityFeePerCU?: number,
-    liveActionAuthorization?: LiveActionAuthorization,
+    _liveActionAuthorization?: LiveActionAuthorization,
   ): Promise<{ signature: string; fee: number }> {
     assertMainnetMutationAllowed({
       chain: 'solana',
-      liveActionAuthorization,
       network: this.network,
       operation: 'solana_transaction',
     });
@@ -1466,11 +1465,10 @@ export class Solana {
 
   async sendAndConfirmRawTransaction(
     transaction: VersionedTransaction | Transaction,
-    liveActionAuthorization?: LiveActionAuthorization,
+    _liveActionAuthorization?: LiveActionAuthorization,
   ): Promise<{ confirmed: boolean; signature: string; txData: any }> {
     assertMainnetMutationAllowed({
       chain: 'solana',
-      liveActionAuthorization,
       network: this.network,
       operation: 'solana_raw_transaction',
     });
@@ -1662,11 +1660,10 @@ export class Solana {
   async sendRawTransaction(
     rawTx: Buffer | Uint8Array | Array<number>,
     lastValidBlockHeight: number,
-    liveActionAuthorization?: LiveActionAuthorization,
+    _liveActionAuthorization?: LiveActionAuthorization,
   ): Promise<string> {
     assertMainnetMutationAllowed({
       chain: 'solana',
-      liveActionAuthorization,
       network: this.network,
       operation: 'solana_raw_transaction',
     });

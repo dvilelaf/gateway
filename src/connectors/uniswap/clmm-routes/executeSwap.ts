@@ -27,7 +27,7 @@ export async function executeClmmSwap(
   amount: number,
   side: 'BUY' | 'SELL',
   slippagePct: number = UniswapConfig.config.slippagePct,
-  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
+  liveActionAuthorization?: unknown,
 ): Promise<SwapExecuteResponseType> {
   const ethereum = await Ethereum.getInstance(network);
   await ethereum.init();

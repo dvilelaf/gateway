@@ -18,7 +18,7 @@ async function executeSwap(
   amount: number,
   side: 'BUY' | 'SELL',
   slippagePct: number = PancakeswapConfig.config.slippagePct,
-  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
+  liveActionAuthorization?: unknown,
 ): Promise<SwapExecuteResponseType> {
   logger.info(`Executing swap: ${amount} ${baseToken} ${side} for ${quoteToken}`);
 

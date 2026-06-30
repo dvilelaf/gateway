@@ -16,7 +16,6 @@ export async function executeQuote(
   quoteId: string,
   priorityLevel?: string,
   maxLamports?: number,
-  liveActionAuthorization?: ExecuteQuoteRequestType['liveActionAuthorization'],
 ): Promise<SwapExecuteResponseType> {
   // Retrieve cached quote
   const quote = quoteCache.get(quoteId);
@@ -73,10 +72,7 @@ export async function executeQuote(
   await solana.simulateWithErrorHandling(transaction);
 
   // Send and confirm transaction using Solana's method
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
-    transaction,
-    liveActionAuthorization,
-  );
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
 
   // Handle confirmation status
   const result = await solana.handleConfirmation(
@@ -115,10 +111,10 @@ export const executeQuoteRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { walletAddress, network, quoteId, priorityLevel, maxLamports, liveActionAuthorization } =
+        const { walletAddress, network, quoteId, priorityLevel, maxLamports } =
           request.body as typeof JupiterExecuteQuoteRequest._type;
 
-        return await executeQuote(walletAddress, network, quoteId, priorityLevel, maxLamports, liveActionAuthorization);
+        return await executeQuote(walletAddress, network, quoteId, priorityLevel, maxLamports);
       } catch (e) {
         if (e.statusCode) throw e;
         logger.error('Error executing quote:', e);

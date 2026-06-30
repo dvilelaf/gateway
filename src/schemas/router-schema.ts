@@ -87,11 +87,6 @@ export const ExecuteQuoteRequest = Type.Object(
     quoteId: Type.String({
       description: 'ID of the quote to execute',
     }),
-    liveActionAuthorization: Type.Optional(
-      Type.Any({
-        description: 'Marlin live-action-authorization-v1 artifact for live quote execution',
-      }),
-    ),
   },
   { $id: 'ExecuteQuoteRequest' },
 );
@@ -128,11 +123,6 @@ export const ExecuteSwapRequest = Type.Object(
         minimum: 0,
         maximum: 100,
         description: 'Maximum acceptable slippage percentage',
-      }),
-    ),
-    liveActionAuthorization: Type.Optional(
-      Type.Any({
-        description: 'Marlin live-action-authorization-v1 artifact for live swap execution',
       }),
     ),
   },

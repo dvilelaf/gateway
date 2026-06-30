@@ -13,7 +13,6 @@ export interface MainnetMutationGuardInput {
   expectedNotional?: unknown;
   expectedSlippageBps?: unknown;
   expectedWalletAddress?: unknown;
-  liveActionAuthorization?: LiveActionAuthorization;
   network: string;
   operation: string;
 }

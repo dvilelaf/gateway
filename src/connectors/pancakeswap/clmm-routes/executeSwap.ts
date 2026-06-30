@@ -26,7 +26,7 @@ export async function executeClmmSwap(
   amount: number,
   side: 'BUY' | 'SELL',
   slippagePct: number = PancakeswapConfig.config.slippagePct,
-  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
+  liveActionAuthorization?: unknown,
 ): Promise<SwapExecuteResponseType> {
   const ethereum = await Ethereum.getInstance(network);
   await ethereum.init();

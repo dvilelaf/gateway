@@ -306,11 +306,10 @@ export class Ethereum {
   public async prepareGasOptions(
     gasPrice?: number,
     gasLimit?: number,
-    liveActionAuthorization?: LiveActionAuthorization,
+    _liveActionAuthorization?: LiveActionAuthorization,
   ): Promise<any> {
     assertMainnetMutationAllowed({
       chain: 'ethereum',
-      liveActionAuthorization,
       network: this.network,
       operation: 'ethereum_transaction',
     });

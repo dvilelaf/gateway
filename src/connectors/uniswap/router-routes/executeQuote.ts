@@ -17,7 +17,7 @@ async function executeQuote(
   walletAddress: string,
   network: string,
   quoteId: string,
-  liveActionAuthorization?: ExecuteQuoteRequestType['liveActionAuthorization'],
+  liveActionAuthorization?: unknown,
 ): Promise<SwapExecuteResponseType> {
   // Retrieve cached quote
   const cached = quoteCache.get(quoteId);

@@ -19,7 +19,6 @@ async function executeSwap(
   slippagePct: number = JupiterConfig.config.slippagePct,
   priorityLevel?: string,
   maxLamports?: number,
-  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
 ): Promise<SwapExecuteResponseType> {
   // Step 1: Get a fresh quote using the quoteSwap function
   const quoteResult = await quoteSwap(network, baseToken, quoteToken, amount, side, slippagePct);
@@ -31,7 +30,6 @@ async function executeSwap(
     quoteResult.quoteId,
     priorityLevel ?? JupiterConfig.config.priorityLevel,
     maxLamports ?? JupiterConfig.config.maxLamports,
-    liveActionAuthorization,
   );
 
   return executeResult;
@@ -55,18 +53,8 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const {
-          walletAddress,
-          network,
-          baseToken,
-          quoteToken,
-          amount,
-          side,
-          slippagePct,
-          priorityLevel,
-          maxLamports,
-          liveActionAuthorization,
-        } = request.body as typeof JupiterExecuteSwapRequest._type;
+        const { walletAddress, network, baseToken, quoteToken, amount, side, slippagePct, priorityLevel, maxLamports } =
+          request.body as typeof JupiterExecuteSwapRequest._type;
 
         return await executeSwap(
           walletAddress,
@@ -78,7 +66,6 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           slippagePct,
           priorityLevel,
           maxLamports,
-          liveActionAuthorization,
         );
       } catch (e) {
         if (e.statusCode) throw e;

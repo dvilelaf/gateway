@@ -124,7 +124,6 @@ describe('runtime guard', () => {
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        liveActionAuthorization: authorization,
         network: 'mainnet',
         operation: 'swap',
       }),
@@ -142,7 +141,6 @@ describe('runtime guard', () => {
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        liveActionAuthorization: authorization,
         network: 'mainnet',
         operation: 'swap',
       }),
@@ -156,10 +154,6 @@ describe('runtime guard', () => {
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        liveActionAuthorization: approvedAuthorization({
-          gatewayLiveFlags: ['GATEWAY_LIVE_SWAP_ENABLED'],
-          network: 'mainnet',
-        }),
         network: 'mainnet',
         operation: 'swap',
       }),
@@ -172,12 +166,6 @@ describe('runtime guard', () => {
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        liveActionAuthorization: approvedAuthorization({
-          action: 'wallet_send',
-          expiresAtUtc: '2020-01-01T00:00:00Z',
-          gatewayLiveFlags: ['GATEWAY_LIVE_WALLET_SEND_ENABLED'],
-          network: 'base',
-        }),
         network: 'base',
         operation: 'wallet_send',
       }),
@@ -190,11 +178,6 @@ describe('runtime guard', () => {
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        liveActionAuthorization: approvedAuthorization({
-          action: 'wallet_send',
-          gatewayLiveFlags: ['GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED'],
-          network: 'base',
-        }),
         network: 'base',
         operation: 'wallet_send',
       }),
@@ -207,11 +190,6 @@ describe('runtime guard', () => {
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        liveActionAuthorization: approvedAuthorization({
-          action: 'wallet_send',
-          gatewayLiveFlags: ['GATEWAY_LIVE_WALLET_SEND_ENABLED'],
-          network: 'ethereum-mainnet',
-        }),
         network: 'base',
         operation: 'wallet_send',
       }),
@@ -229,10 +207,6 @@ describe('runtime guard', () => {
 
     const input = {
       chain: 'ethereum',
-      liveActionAuthorization: approvedAuthorization({
-        gatewayLiveFlags: ['GATEWAY_LIVE_SWAP_ENABLED'],
-        network: 'mainnet',
-      }),
       network: 'mainnet',
       operation: 'swap',
       ...expectedFields,
@@ -251,10 +225,6 @@ describe('runtime guard', () => {
         expectedGas: 0.001,
         expectedNotional: 1,
         expectedSlippageBps: 25,
-        liveActionAuthorization: approvedAuthorization({
-          gatewayLiveFlags: ['GATEWAY_LIVE_SWAP_ENABLED'],
-          network: 'mainnet',
-        }),
         network: 'mainnet',
         operation: 'swap',
       }),
@@ -305,7 +275,6 @@ describe('runtime guard', () => {
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        liveActionAuthorization: approvedBridgeAuthorization({ nonce: 'bridge-ethereum-transaction' }),
         network: 'base',
         operation: 'ethereum_transaction',
       }),
@@ -319,11 +288,6 @@ describe('runtime guard', () => {
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        liveActionAuthorization: approvedAuthorization({
-          action: 'wallet_send',
-          gatewayLiveFlags: ['GATEWAY_LIVE_WALLET_SEND_ENABLED'],
-          network: 'base',
-        }),
         network: 'base',
         operation: 'ethereum_transaction',
       }),
@@ -439,7 +403,7 @@ describe('runtime guard wiring', () => {
     expect(sendTransaction.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(
       sendTransaction.indexOf('sendEthereumTransaction('),
     );
-    expect(sendTransaction).toContain('liveActionAuthorization: req.liveActionAuthorization');
+    expect(sendTransaction).not.toContain('liveActionAuthorization: req.liveActionAuthorization');
 
     const sendSolanaTransaction = source.slice(
       source.indexOf('async function sendSolanaTransaction'),
@@ -590,7 +554,7 @@ describe('runtime guard wiring', () => {
       signMessage.indexOf('wallet.signMessage('),
     );
     expect(signMessage).toContain("operation: 'sign_message'");
-    expect(signMessage).toContain('liveActionAuthorization: req.liveActionAuthorization');
+    expect(signMessage).not.toContain('liveActionAuthorization: req.liveActionAuthorization');
   });
 
   it('routes AMM ETH add-liquidity branches through Ethereum gas preparation', () => {
@@ -667,22 +631,21 @@ describe('runtime guard wiring', () => {
     }
   });
 
-  it('passes live action authorization through unified swap execution routes', () => {
+  it('does not expose live action authorization through unified swap execution routes', () => {
     const source = readFileSync(path.join(ROOT, 'src/trading/swap/execute.ts'), 'utf8');
 
     const schema = source.slice(
       source.indexOf('const UnifiedExecuteSwapRequestSchema'),
       source.indexOf('type UnifiedExecuteSwapRequest'),
     );
-    expect(schema).toContain('liveActionAuthorization');
+    expect(schema).not.toContain('liveActionAuthorization');
 
     const route = source.slice(
       source.indexOf('async (request, reply) =>'),
       source.indexOf('logger.error(`[UnifiedSwap] Execute error'),
     );
-    expect(route).toContain('liveActionAuthorization');
     expect(route).toContain('connector,');
-    expect(route).toContain('liveActionAuthorization,');
+    expect(route).not.toContain('liveActionAuthorization');
 
     for (const connector of [
       'jupiterRouterExecuteSwap',
@@ -696,7 +659,7 @@ describe('runtime guard wiring', () => {
     ]) {
       const index = source.indexOf(`return await ${connector}(`);
       const call = source.slice(index, source.indexOf(');', index));
-      expect(call).toContain('liveActionAuthorization');
+      expect(call).not.toContain('liveActionAuthorization');
     }
   });
 
@@ -728,23 +691,22 @@ describe('runtime guard wiring', () => {
     }
   });
 
-  it('passes live action authorization through Jupiter router execution', () => {
+  it('does not expose live action authorization through Jupiter router execution', () => {
     const schemas = readFileSync(path.join(ROOT, 'src/connectors/jupiter/schemas.ts'), 'utf8');
     const executeQuoteSchema = schemas.slice(
       schemas.indexOf('export const JupiterExecuteQuoteRequest'),
       schemas.indexOf('// Jupiter-specific execute-swap request'),
     );
     const executeSwapSchema = schemas.slice(schemas.indexOf('export const JupiterExecuteSwapRequest'));
-    expect(executeQuoteSchema).toContain('liveActionAuthorization');
-    expect(executeSwapSchema).toContain('liveActionAuthorization');
+    expect(executeQuoteSchema).not.toContain('liveActionAuthorization');
+    expect(executeSwapSchema).not.toContain('liveActionAuthorization');
 
     const executeQuote = readFileSync(path.join(ROOT, 'src/connectors/jupiter/router-routes/executeQuote.ts'), 'utf8');
-    expect(executeQuote).toContain('liveActionAuthorization');
-    expect(executeQuote).toMatch(/sendAndConfirmRawTransaction\(\s*transaction,\s*liveActionAuthorization,\s*\)/);
+    expect(executeQuote).not.toContain('liveActionAuthorization');
+    expect(executeQuote).toContain('sendAndConfirmRawTransaction(transaction)');
 
     const executeSwap = readFileSync(path.join(ROOT, 'src/connectors/jupiter/router-routes/executeSwap.ts'), 'utf8');
-    expect(executeSwap).toContain('liveActionAuthorization');
-    expect(executeSwap).toContain('liveActionAuthorization,');
+    expect(executeSwap).not.toContain('liveActionAuthorization');
   });
 
   it('passes live action authorization through CLMM position mutations', () => {

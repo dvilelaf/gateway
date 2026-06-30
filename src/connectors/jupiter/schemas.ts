@@ -173,11 +173,6 @@ export const JupiterExecuteQuoteRequest = Type.Object({
       default: [JupiterConfig.config.maxLamports],
     }),
   ),
-  liveActionAuthorization: Type.Optional(
-    Type.Any({
-      description: 'Marlin live-action-authorization-v1 artifact for live quote execution',
-    }),
-  ),
 });
 
 // Jupiter-specific execute-swap request (superset of base ExecuteSwapRequest)
@@ -244,11 +239,6 @@ export const JupiterExecuteSwapRequest = Type.Object({
     Type.Number({
       description: 'Maximum priority fee in lamports for Solana transaction',
       default: JupiterConfig.config.maxLamports,
-    }),
-  ),
-  liveActionAuthorization: Type.Optional(
-    Type.Any({
-      description: 'Marlin live-action-authorization-v1 artifact for live swap execution',
     }),
   ),
 });

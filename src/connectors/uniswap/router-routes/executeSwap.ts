@@ -20,7 +20,7 @@ async function executeSwap(
   amount: number,
   side: 'BUY' | 'SELL',
   slippagePct: number = UniswapConfig.config.slippagePct,
-  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
+  liveActionAuthorization?: unknown,
 ): Promise<SwapExecuteResponseType> {
   try {
     logger.info(`Executing swap: ${amount} ${baseToken} ${side} for ${quoteToken}`);

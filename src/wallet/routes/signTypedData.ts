@@ -60,7 +60,6 @@ export const signTypedDataRoute: FastifyPluginAsync = async (fastify) => {
 
       assertMainnetMutationAllowed({
         chain,
-        liveActionAuthorization,
         network,
         operation: 'sign_typed_data',
       });
