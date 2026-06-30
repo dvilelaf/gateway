@@ -43,6 +43,12 @@ import {
 
 export const walletPath = './conf/wallets';
 
+export interface MarlinDefaultWalletMetadata {
+  address: string;
+  network: string;
+  walletRef: string;
+}
+
 // Utility to sanitize file paths and prevent path traversal attacks
 export function sanitizePathComponent(input: string): string {
   // Remove any characters that could be used for directory traversal
@@ -83,6 +89,36 @@ export function getSafeWalletFilePath(chain: string, address: string): string {
   }
 
   return `${walletPath}/${safeChain}/${safeAddress}.json`;
+}
+
+function getMarlinDefaultMetadataPath(chain: string): string {
+  const safeChain = sanitizePathComponent(chain.toLowerCase());
+  return `${walletPath}/${safeChain}/marlin-default.json`;
+}
+
+export async function writeMarlinDefaultWalletMetadata(
+  chain: string,
+  metadata: MarlinDefaultWalletMetadata,
+): Promise<void> {
+  const safeChain = sanitizePathComponent(chain.toLowerCase());
+  await mkdirIfDoesNotExist(`${walletPath}/${safeChain}`);
+  await fse.writeJson(getMarlinDefaultMetadataPath(chain), metadata, { spaces: 2 });
+}
+
+export async function readMarlinDefaultWalletMetadata(chain: string): Promise<MarlinDefaultWalletMetadata | undefined> {
+  try {
+    const metadata = await fse.readJson(getMarlinDefaultMetadataPath(chain));
+    if (
+      typeof metadata.address === 'string' &&
+      typeof metadata.network === 'string' &&
+      typeof metadata.walletRef === 'string'
+    ) {
+      return metadata;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 export async function mkdirIfDoesNotExist(path: string): Promise<void> {
@@ -325,11 +361,16 @@ export async function getWallets(
 
       // Get hardware wallet addresses if requested
       const hardwareAddresses = showHardware ? await getHardwareWalletAddresses(chain) : [];
+      const marlinDefault = await readMarlinDefaultWalletMetadata(safeChain);
 
       responses.push({
         chain: safeChain,
         walletAddresses: safeWalletAddresses,
         hardwareWalletAddresses: hardwareAddresses.length > 0 ? hardwareAddresses : undefined,
+        default_address: marlinDefault?.address,
+        is_default: marlinDefault !== undefined,
+        network: marlinDefault?.network,
+        walletRef: marlinDefault?.walletRef,
       });
     }
 

@@ -46,6 +46,10 @@ export const GetWalletResponseSchema = Type.Object({
       description: 'List of hardware wallet addresses (Ledger)',
     }),
   ),
+  default_address: Type.Optional(Type.String()),
+  is_default: Type.Optional(Type.Boolean()),
+  network: Type.Optional(Type.String()),
+  walletRef: Type.Optional(Type.String()),
 });
 
 export const RemoveWalletRequestSchema = Type.Object({
@@ -63,6 +67,33 @@ export const RemoveWalletResponseSchema = Type.Object({
   message: Type.String({
     description: 'Success message indicating wallet type removed',
   }),
+});
+
+export const SetMarlinDefaultWalletRequestSchema = Type.Object({
+  chain: Type.String({
+    description: 'Blockchain to set the default wallet for',
+    enum: ['ethereum', 'solana'],
+    examples: ['solana', 'ethereum'],
+  }),
+  network: Type.String({
+    description: 'Marlin network context for the derived wallet',
+  }),
+  address: Type.String({
+    description: 'Mnemonic-derived public wallet address',
+  }),
+  walletRef: Type.String({
+    description: 'Marlin wallet policy reference',
+  }),
+});
+
+export const SetMarlinDefaultWalletResponseSchema = Type.Object({
+  message: Type.String({
+    description: 'Success message',
+  }),
+  chain: Type.String(),
+  network: Type.String(),
+  address: Type.String(),
+  walletRef: Type.String(),
 });
 
 export const SignMessageRequestSchema = Type.Object({
@@ -187,6 +218,8 @@ export type AddWalletRequest = Static<typeof AddWalletRequestSchema>;
 export type AddWalletResponse = Static<typeof AddWalletResponseSchema>;
 export type RemoveWalletRequest = Static<typeof RemoveWalletRequestSchema>;
 export type RemoveWalletResponse = Static<typeof RemoveWalletResponseSchema>;
+export type SetMarlinDefaultWalletRequest = Static<typeof SetMarlinDefaultWalletRequestSchema>;
+export type SetMarlinDefaultWalletResponse = Static<typeof SetMarlinDefaultWalletResponseSchema>;
 export type SignMessageRequest = Static<typeof SignMessageRequestSchema>;
 export type SignMessageResponse = Static<typeof SignMessageResponseSchema>;
 export type SignTypedDataRequest = Static<typeof SignTypedDataRequestSchema>;
