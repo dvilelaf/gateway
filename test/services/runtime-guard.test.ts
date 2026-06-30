@@ -668,11 +668,15 @@ describe('runtime guard wiring', () => {
 
   it('does not expose live action authorization through 0x and Aerodrome normal swaps', () => {
     const zeroXSchemas = readFileSync(path.join(ROOT, 'src/connectors/0x/schemas.ts'), 'utf8');
-    const zeroXExecuteQuoteSchema = zeroXSchemas.slice(
-      zeroXSchemas.indexOf('export const ZeroXExecuteQuoteRequest'),
-      zeroXSchemas.indexOf('// 0x-specific execute-swap request'),
-    );
-    const zeroXExecuteSwapSchema = zeroXSchemas.slice(zeroXSchemas.indexOf('export const ZeroXExecuteSwapRequest'));
+    const zeroXQuoteStart = zeroXSchemas.indexOf('export const ZeroXExecuteQuoteRequest');
+    const zeroXQuoteEnd = zeroXSchemas.indexOf('// 0x-specific execute-swap request');
+    expect(zeroXQuoteStart).toBeGreaterThanOrEqual(0);
+    expect(zeroXQuoteEnd).toBeGreaterThan(zeroXQuoteStart);
+    const zeroXExecuteQuoteSchema = zeroXSchemas.slice(zeroXQuoteStart, zeroXQuoteEnd);
+
+    const zeroXSwapStart = zeroXSchemas.indexOf('export const ZeroXExecuteSwapRequest');
+    expect(zeroXSwapStart).toBeGreaterThanOrEqual(0);
+    const zeroXExecuteSwapSchema = zeroXSchemas.slice(zeroXSwapStart);
     expect(zeroXExecuteQuoteSchema).not.toContain('liveActionAuthorization');
     expect(zeroXExecuteSwapSchema).not.toContain('liveActionAuthorization');
 
@@ -682,10 +686,11 @@ describe('runtime guard wiring', () => {
     }
 
     const aerodromeSchemas = readFileSync(path.join(ROOT, 'src/connectors/aerodrome/schemas.ts'), 'utf8');
-    const aerodromeSwapSchema = aerodromeSchemas.slice(
-      aerodromeSchemas.indexOf('export const AerodromeExecuteSwapRequest'),
-      aerodromeSchemas.indexOf('export const AerodromeExecuteQuoteRequest'),
-    );
+    const aerodromeSwapStart = aerodromeSchemas.indexOf('export const AerodromeExecuteSwapRequest');
+    const aerodromeSwapEnd = aerodromeSchemas.indexOf('export const AerodromeExecuteQuoteRequest');
+    expect(aerodromeSwapStart).toBeGreaterThanOrEqual(0);
+    expect(aerodromeSwapEnd).toBeGreaterThan(aerodromeSwapStart);
+    const aerodromeSwapSchema = aerodromeSchemas.slice(aerodromeSwapStart, aerodromeSwapEnd);
     expect(aerodromeSwapSchema).not.toContain('liveActionAuthorization');
 
     const aerodromeAdapter = readFileSync(path.join(ROOT, 'src/connectors/aerodrome/aerodrome.adapter.ts'), 'utf8');
