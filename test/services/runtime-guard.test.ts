@@ -17,6 +17,8 @@ describe('runtime guard', () => {
   const originalEthereumTransactionEnv = process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
   const originalBridgeAllowlist = process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST;
   const originalAuthSecret = process.env.MARLIN_LIVE_ACTION_AUTH_SECRET;
+  const originalMarlinRuntimeProfile = process.env.MARLIN_RUNTIME_PROFILE;
+  const originalGatewayPassphrase = process.env.GATEWAY_PASSPHRASE;
 
   afterEach(() => {
     if (originalEnv === undefined) {
@@ -49,6 +51,16 @@ describe('runtime guard', () => {
     } else {
       process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = originalAuthSecret;
     }
+    if (originalMarlinRuntimeProfile === undefined) {
+      delete process.env.MARLIN_RUNTIME_PROFILE;
+    } else {
+      process.env.MARLIN_RUNTIME_PROFILE = originalMarlinRuntimeProfile;
+    }
+    if (originalGatewayPassphrase === undefined) {
+      delete process.env.GATEWAY_PASSPHRASE;
+    } else {
+      process.env.GATEWAY_PASSPHRASE = originalGatewayPassphrase;
+    }
   });
 
   it('allows testnet and devnet mutations by default', () => {
@@ -70,6 +82,7 @@ describe('runtime guard', () => {
 
   it('blocks mainnet mutations by default', () => {
     delete process.env.GATEWAY_LIVE_MUTATIONS_ENABLED;
+    delete process.env.MARLIN_RUNTIME_PROFILE;
 
     expect(() =>
       assertMainnetMutationAllowed({
@@ -85,6 +98,103 @@ describe('runtime guard', () => {
         operation: 'wallet_send',
       }),
     ).toThrow(/GATEWAY_LIVE_WALLET_SEND_ENABLED=true/);
+  });
+
+  it('keeps direct mainnet mutations blocked in Marlin runtime profile', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).toThrow(/GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED=true/);
+  });
+
+  it('allows Marlin provider-intent swap raw transaction authorization', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        internalProviderIntentSource: 'jupiter_execute_swap',
+        liveActionAuthorization: {
+          action: 'gateway_swap',
+          scope: 'provider_intent',
+          source: 'marlin',
+        },
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).not.toThrow();
+  });
+
+  it('does not let Marlin provider-intent swap authorization bypass other operations', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    delete process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    const authorization = {
+      action: 'gateway_swap',
+      scope: 'provider_intent',
+      source: 'marlin',
+    };
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        liveActionAuthorization: authorization,
+        network: 'mainnet',
+        operation: 'ethereum_transaction',
+      }),
+    ).toThrow(/GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED=true/);
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        liveActionAuthorization: authorization,
+        network: 'mainnet-beta',
+        operation: 'wallet_send',
+      }),
+    ).toThrow(/GATEWAY_LIVE_WALLET_SEND_ENABLED=true/);
+  });
+
+  it('does not let public provider-intent markers bypass Solana raw transaction guard', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        liveActionAuthorization: {
+          action: 'gateway_swap',
+          scope: 'provider_intent',
+          source: 'marlin',
+        },
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).toThrow(/GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED=true/);
+  });
+
+  it('does not let public provider-intent source markers bypass Solana raw transaction guard', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        liveActionAuthorization: {
+          action: 'gateway_swap',
+          providerIntentSource: 'jupiter_execute_swap',
+          scope: 'provider_intent',
+          source: 'marlin',
+        } as any,
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).toThrow(/GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED=true/);
   });
 
   it('does not allow mainnet mutations with only the broad flag enabled', () => {
@@ -745,11 +855,28 @@ describe('runtime guard wiring', () => {
     expect(executeSwapSchema).not.toContain('liveActionAuthorization');
 
     const executeQuote = readFileSync(path.join(ROOT, 'src/connectors/jupiter/router-routes/executeQuote.ts'), 'utf8');
-    expect(executeQuote).not.toContain('liveActionAuthorization');
-    expect(executeQuote).toContain('sendAndConfirmRawTransaction(transaction)');
+    const executeQuoteRoute = executeQuote.slice(
+      executeQuote.indexOf('export const executeQuoteRoute'),
+      executeQuote.indexOf('} catch (e)', executeQuote.indexOf('export const executeQuoteRoute')),
+    );
+    expect(executeQuoteRoute).not.toContain('liveActionAuthorization');
+    expect(executeQuoteRoute).toContain(
+      'return await executeQuote(walletAddress, network, quoteId, priorityLevel, maxLamports)',
+    );
 
     const executeSwap = readFileSync(path.join(ROOT, 'src/connectors/jupiter/router-routes/executeSwap.ts'), 'utf8');
-    expect(executeSwap).not.toContain('liveActionAuthorization');
+    const executeSwapRoute = executeSwap.slice(
+      executeSwap.indexOf('export const executeSwapRoute'),
+      executeSwap.indexOf('} catch (e)', executeSwap.indexOf('export const executeSwapRoute')),
+    );
+    expect(executeSwapRoute).toContain('liveActionAuthorization');
+    expect(executeSwapRoute).toContain('marlinProviderIntentHeaderMatches');
+    expect(executeSwap).toContain(
+      "const internalProviderIntentSource = liveActionAuthorization ? 'jupiter_execute_swap' : undefined",
+    );
+    expect(executeSwapRoute).toContain('request.body as typeof JupiterExecuteSwapRequest._type &');
+    expect(executeSwap).toContain("const MARLIN_PROVIDER_INTENT_HEADER = 'x-marlin-provider-intent'");
+    expect(executeSwap).toContain('process.env.GATEWAY_PASSPHRASE');
   });
 
   it('passes live action authorization through CLMM position mutations', () => {

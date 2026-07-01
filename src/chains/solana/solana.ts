@@ -1465,10 +1465,13 @@ export class Solana {
 
   async sendAndConfirmRawTransaction(
     transaction: VersionedTransaction | Transaction,
-    _liveActionAuthorization?: LiveActionAuthorization,
+    liveActionAuthorization?: LiveActionAuthorization,
+    internalProviderIntentSource?: string,
   ): Promise<{ confirmed: boolean; signature: string; txData: any }> {
     assertMainnetMutationAllowed({
       chain: 'solana',
+      internalProviderIntentSource,
+      liveActionAuthorization,
       network: this.network,
       operation: 'solana_raw_transaction',
     });
@@ -1660,10 +1663,13 @@ export class Solana {
   async sendRawTransaction(
     rawTx: Buffer | Uint8Array | Array<number>,
     lastValidBlockHeight: number,
-    _liveActionAuthorization?: LiveActionAuthorization,
+    liveActionAuthorization?: LiveActionAuthorization,
+    internalProviderIntentSource?: string,
   ): Promise<string> {
     assertMainnetMutationAllowed({
       chain: 'solana',
+      internalProviderIntentSource,
+      liveActionAuthorization,
       network: this.network,
       operation: 'solana_raw_transaction',
     });

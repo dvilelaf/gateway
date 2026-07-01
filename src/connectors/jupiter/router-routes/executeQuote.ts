@@ -7,6 +7,7 @@ import { ExecuteQuoteRequestType, SwapExecuteResponseType, SwapExecuteResponse }
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import { quoteCache } from '../../../services/quote-cache';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { Jupiter } from '../jupiter';
 import { JupiterExecuteQuoteRequest } from '../schemas';
 
@@ -16,6 +17,8 @@ export async function executeQuote(
   quoteId: string,
   priorityLevel?: string,
   maxLamports?: number,
+  liveActionAuthorization?: LiveActionAuthorization,
+  internalProviderIntentSource?: string,
 ): Promise<SwapExecuteResponseType> {
   // Retrieve cached quote
   const quote = quoteCache.get(quoteId);
@@ -72,7 +75,11 @@ export async function executeQuote(
   await solana.simulateWithErrorHandling(transaction);
 
   // Send and confirm transaction using Solana's method
-  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(transaction);
+  const { confirmed, signature, txData } = await solana.sendAndConfirmRawTransaction(
+    transaction,
+    liveActionAuthorization,
+    internalProviderIntentSource,
+  );
 
   // Handle confirmation status
   const result = await solana.handleConfirmation(

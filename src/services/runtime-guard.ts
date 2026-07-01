@@ -13,6 +13,8 @@ export interface MainnetMutationGuardInput {
   expectedNotional?: unknown;
   expectedSlippageBps?: unknown;
   expectedWalletAddress?: unknown;
+  internalProviderIntentSource?: string;
+  liveActionAuthorization?: LiveActionAuthorization;
   network: string;
   operation: string;
 }
@@ -38,6 +40,8 @@ export interface LiveActionAuthorization {
   notional?: unknown;
   signature?: unknown;
   slippage_bps?: unknown;
+  source?: unknown;
+  scope?: unknown;
   status?: unknown;
   version?: unknown;
   wallet_address?: unknown;
@@ -56,6 +60,9 @@ export interface BridgeExecutionExpectation {
 
 export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): void {
   if (!isMainnetNetwork(input.network)) {
+    return;
+  }
+  if (isMarlinProviderIntentSwapAuthorization(input)) {
     return;
   }
   const operationEnv = liveOperationEnv(input.operation);
@@ -107,6 +114,18 @@ function assertProviderAllowlisted(provider: unknown): void {
 
 function envFlagEnabled(name: string): boolean {
   return ['1', 'true', 'yes', 'on'].includes((process.env[name] ?? '').trim().toLowerCase());
+}
+
+function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInput): boolean {
+  const authorization = input.liveActionAuthorization;
+  return (
+    input.chain === 'solana' &&
+    input.operation === 'solana_raw_transaction' &&
+    authorization?.source === 'marlin' &&
+    authorization?.scope === 'provider_intent' &&
+    authorization?.action === 'gateway_swap' &&
+    input.internalProviderIntentSource === 'jupiter_execute_swap'
+  );
 }
 
 function liveOperationEnv(operation: string): string {
