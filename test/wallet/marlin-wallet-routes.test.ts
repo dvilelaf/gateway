@@ -174,6 +174,18 @@ describe('Marlin wallet route profile', () => {
       method: 'POST',
       url: '/wallet/marlin-default',
       payload: {
+        chain: 'ethereum',
+        network: 'base',
+        address: '0x0000000000000000000000000000000000000123',
+        walletRef: 'base:mainnet:evm_gateway',
+      },
+    });
+    expect(response.statusCode).toBe(403);
+
+    response = await app.inject({
+      method: 'POST',
+      url: '/wallet/marlin-default',
+      payload: {
         chain: 'base',
         network: 'mainnet',
         address: '0x0000000000000000000000000000000000000123',

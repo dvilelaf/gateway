@@ -46,7 +46,7 @@ const HARDENED_OFFSET = 0x80000000;
 function canonicalMarlinWalletContext(chain: string, network: string): [string, string] {
   const normalizedChain = chain.trim().toLowerCase().replace(/_/g, '-');
   const normalizedNetwork = network.trim().toLowerCase().replace(/_/g, '-');
-  if (normalizedChain === 'ethereum' && normalizedNetwork === 'ethereum-base') {
+  if (normalizedChain === 'ethereum' && ['base', 'ethereum-base'].includes(normalizedNetwork)) {
     return ['base', 'mainnet'];
   }
   if (normalizedChain === 'ethereum' && normalizedNetwork === 'ethereum-base-sepolia') {
