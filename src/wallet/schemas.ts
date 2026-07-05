@@ -130,6 +130,15 @@ export const SignTypedDataResponseSchema = Type.Object({
   signature: Type.String(),
 });
 
+export const MarlinCowSignTypedDataRequestSchema = Type.Composite([
+  Type.Omit(SignTypedDataRequestSchema, ['liveActionAuthorization']),
+  Type.Object({
+    walletRef: Type.String(),
+  }),
+]);
+
+export const MarlinCowSignTypedDataResponseSchema = SignTypedDataResponseSchema;
+
 // Hardware wallet schemas
 export const AddHardwareWalletRequestSchema = Type.Object({
   chain: Type.String({
@@ -224,6 +233,8 @@ export type SignMessageRequest = Static<typeof SignMessageRequestSchema>;
 export type SignMessageResponse = Static<typeof SignMessageResponseSchema>;
 export type SignTypedDataRequest = Static<typeof SignTypedDataRequestSchema>;
 export type SignTypedDataResponse = Static<typeof SignTypedDataResponseSchema>;
+export type MarlinCowSignTypedDataRequest = Static<typeof MarlinCowSignTypedDataRequestSchema>;
+export type MarlinCowSignTypedDataResponse = Static<typeof MarlinCowSignTypedDataResponseSchema>;
 export type GetWalletResponse = Static<typeof GetWalletResponseSchema>;
 export type AddHardwareWalletRequest = Static<typeof AddHardwareWalletRequestSchema>;
 export type AddHardwareWalletResponse = Static<typeof AddHardwareWalletResponseSchema>;

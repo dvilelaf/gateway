@@ -7,6 +7,7 @@ import { addHardwareWalletRoute } from './routes/addHardwareWallet';
 import { addWalletRoute } from './routes/addWallet';
 import { createWalletRoute } from './routes/createWallet';
 import { getWalletsRoute } from './routes/getWallets';
+import { marlinCowSignTypedDataRoute } from './routes/marlinCowSignTypedData';
 import { removeWalletRoute } from './routes/removeWallet';
 import { sendTransactionRoute } from './routes/sendTransaction';
 import { setDefaultRoute } from './routes/setDefault';
@@ -24,6 +25,7 @@ export const walletRoutes: FastifyPluginAsync = async (fastify) => {
   // mnemonic-derived default wallet needed by provider execution.
   await fastify.register(getWalletsRoute);
   await fastify.register(setMarlinDefaultRoute);
+  await fastify.register(marlinCowSignTypedDataRoute);
   if (isMarlinRuntimeProfile()) {
     return;
   }

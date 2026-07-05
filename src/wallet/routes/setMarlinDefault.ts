@@ -55,7 +55,7 @@ function canonicalMarlinWalletContext(chain: string, network: string): [string, 
   return [normalizedChain, normalizedNetwork];
 }
 
-function marlinWalletPolicyFor(chain: string, network: string): MarlinWalletPolicy | undefined {
+export function marlinWalletPolicyFor(chain: string, network: string): MarlinWalletPolicy | undefined {
   const [canonicalChain, canonicalNetwork] = canonicalMarlinWalletContext(chain, network);
   if (canonicalChain === 'solana' && canonicalNetwork === 'mainnet-beta') {
     return {
@@ -171,7 +171,7 @@ async function encryptSolanaPrivateKey(privateKey: string, walletKey: string): P
   });
 }
 
-async function ensureMarlinWalletExists({
+export async function ensureMarlinWalletExists({
   address,
   chain,
   network,

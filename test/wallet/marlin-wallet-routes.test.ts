@@ -121,6 +121,26 @@ describe('Marlin wallet route profile', () => {
       expect(response.statusCode).toBe(404);
     }
 
+    const scopedCowSigner = await app.inject({
+      method: 'POST',
+      url: '/wallet/marlin-cow/sign-typed-data',
+      payload: {
+        chain: 'ethereum',
+        network: 'base',
+        address: '0x0000000000000000000000000000000000000123',
+        walletRef: 'operator-wallet',
+        domain: {
+          chainId: 8453,
+          verifyingContract: '0x9008d19f58aabd9ed0d60971565aa8510560ab41',
+        },
+        types: {
+          Order: [{ name: 'sellToken', type: 'address' }],
+        },
+        value: { sellToken: '0x4200000000000000000000000000000000000006' },
+      },
+    });
+    expect(scopedCowSigner.statusCode).toBe(400);
+
     const publicList = await app.inject({ method: 'GET', url: '/wallet/?showHardware=false' });
     expect(publicList.statusCode).toBe(200);
     await app.close();
