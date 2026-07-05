@@ -72,8 +72,8 @@ export const RemoveWalletResponseSchema = Type.Object({
 export const SetMarlinDefaultWalletRequestSchema = Type.Object({
   chain: Type.String({
     description: 'Blockchain to set the default wallet for',
-    enum: ['ethereum', 'solana'],
-    examples: ['solana', 'ethereum'],
+    enum: ['base', 'ethereum', 'solana'],
+    examples: ['solana', 'ethereum', 'base'],
   }),
   network: Type.String({
     description: 'Marlin network context for the derived wallet',

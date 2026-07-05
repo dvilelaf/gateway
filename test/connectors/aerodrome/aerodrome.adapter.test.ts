@@ -109,17 +109,26 @@ describe('Aerodrome Gateway adapter', () => {
       };
     });
 
-    const response = await executeAerodromeSwap('base', {
-      baseToken: 'WETH',
-      quoteToken: 'USDC',
-      amount: 1,
-      side: 'SELL',
-      walletAddress: '0x1111111111111111111111111111111111111111',
+    const response = await executeAerodromeSwap(
+      'base',
+      {
+        baseToken: 'WETH',
+        quoteToken: 'USDC',
+        amount: 1,
+        side: 'SELL',
+        walletAddress: '0x1111111111111111111111111111111111111111',
+      },
       liveActionAuthorization,
-    });
+      'aerodrome_execute_swap',
+    );
 
     expect(ethereum.getWallet).toHaveBeenCalledWith('0x1111111111111111111111111111111111111111');
-    expect(ethereum.prepareGasOptions).toHaveBeenCalledWith(undefined, 321000, liveActionAuthorization);
+    expect(ethereum.prepareGasOptions).toHaveBeenCalledWith(
+      undefined,
+      321000,
+      liveActionAuthorization,
+      'aerodrome_execute_swap',
+    );
     expect(sendTransaction).toHaveBeenCalledWith(
       expect.objectContaining({
         to: '0x2222222222222222222222222222222222222222',
@@ -161,7 +170,6 @@ describe('Aerodrome Gateway adapter', () => {
   });
 
   it('executes add-liquidity approvals and liquidity transaction sequentially', async () => {
-    const liveActionAuthorization = { version: 'live-action-authorization-v1' };
     const sendTransaction = jest
       .fn()
       .mockResolvedValueOnce({ hash: '0xapproval' })
@@ -209,7 +217,6 @@ describe('Aerodrome Gateway adapter', () => {
       poolType: 'volatile',
       walletAddress: '0x1111111111111111111111111111111111111111',
       slippagePct: 0.5,
-      liveActionAuthorization,
     });
 
     expect(planAddLiquidity).toHaveBeenCalledWith(
@@ -223,12 +230,12 @@ describe('Aerodrome Gateway adapter', () => {
       1,
       expect.objectContaining({ to: '0xusdc', data: '0xapprove', gasLimit: 250000 }),
     );
-    expect(ethereum.prepareGasOptions).toHaveBeenNthCalledWith(1, undefined, 250000, liveActionAuthorization);
+    expect(ethereum.prepareGasOptions).toHaveBeenNthCalledWith(1, undefined, 250000, undefined, undefined);
     expect(sendTransaction).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ to: '0xrouter', data: '0xadd', gasLimit: 321000 }),
     );
-    expect(ethereum.prepareGasOptions).toHaveBeenNthCalledWith(2, undefined, 321000, liveActionAuthorization);
+    expect(ethereum.prepareGasOptions).toHaveBeenNthCalledWith(2, undefined, 321000, undefined, undefined);
     expect(response).toMatchObject({
       signature: '0xlpadd',
       status: 'CONFIRMED',
@@ -240,7 +247,6 @@ describe('Aerodrome Gateway adapter', () => {
   });
 
   it('executes remove-liquidity transaction through the Gateway wallet', async () => {
-    const liveActionAuthorization = { version: 'live-action-authorization-v1' };
     const sendTransaction = jest.fn().mockResolvedValue({ hash: '0xlpremove' });
     const ethereum = {
       provider: {},
@@ -272,7 +278,6 @@ describe('Aerodrome Gateway adapter', () => {
       liquidity: '0.01',
       poolType: 'volatile',
       walletAddress: '0x1111111111111111111111111111111111111111',
-      liveActionAuthorization,
     });
 
     expect(planRemoveLiquidity).toHaveBeenCalledWith(
@@ -280,7 +285,7 @@ describe('Aerodrome Gateway adapter', () => {
         liquidity: '0.01',
       }),
     );
-    expect(ethereum.prepareGasOptions).toHaveBeenCalledWith(undefined, 300000, liveActionAuthorization);
+    expect(ethereum.prepareGasOptions).toHaveBeenCalledWith(undefined, 300000, undefined, undefined);
     expect(response).toMatchObject({
       signature: '0xlpremove',
       status: 'CONFIRMED',

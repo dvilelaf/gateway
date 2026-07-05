@@ -3,18 +3,27 @@ import path from 'path';
 
 import Fastify from 'fastify';
 
+import { deriveMarlinDefaultWalletMaterial } from '../../src/wallet/routes/setMarlinDefault';
 import walletRoutes, { MARLIN_RUNTIME_PROFILE_ENV, isMarlinRuntimeProfile } from '../../src/wallet/wallet.routes';
 
 const ROOT = path.resolve(__dirname, '../..');
+const MARLIN_MNEMONIC_ENV = 'MARLIN_MNEMONIC';
+const TEST_MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 describe('Marlin wallet route profile', () => {
   const originalProfile = process.env[MARLIN_RUNTIME_PROFILE_ENV];
+  const originalMnemonic = process.env[MARLIN_MNEMONIC_ENV];
 
   afterEach(() => {
     if (originalProfile === undefined) {
       delete process.env[MARLIN_RUNTIME_PROFILE_ENV];
     } else {
       process.env[MARLIN_RUNTIME_PROFILE_ENV] = originalProfile;
+    }
+    if (originalMnemonic === undefined) {
+      delete process.env[MARLIN_MNEMONIC_ENV];
+    } else {
+      process.env[MARLIN_MNEMONIC_ENV] = originalMnemonic;
     }
   });
 
@@ -57,8 +66,30 @@ describe('Marlin wallet route profile', () => {
 
     expect(source).toContain('isMarlinRuntimeProfile()');
     expect(source).toContain('walletRef does not match Marlin policy');
-    expect(source).toContain('getSafeWalletFilePath(chain, validatedAddress)');
-    expect(source).toContain('writeMarlinDefaultWalletMetadata(chain');
+    expect(source).toContain('deriveMarlinDefaultWalletMaterial(normalizedMnemonicFromEnv(), policy)');
+    expect(source).toContain('writeMarlinDefaultWalletMetadata(reconciled.storageChain');
+  });
+
+  it('derives Marlin wallet material from the canonical mnemonic policies', () => {
+    const evm = deriveMarlinDefaultWalletMaterial(TEST_MNEMONIC, {
+      derivationPath: "m/44'/60'/0'/0/0",
+      family: 'evm',
+      storageChain: 'ethereum',
+      walletRef: 'base:mainnet:evm_gateway',
+    });
+    const solana = deriveMarlinDefaultWalletMaterial(TEST_MNEMONIC, {
+      derivationPath: "m/44'/501'/0'/0'",
+      family: 'solana',
+      storageChain: 'solana',
+      walletRef: 'solana:mainnet-beta:solana_gateway',
+    });
+
+    expect(evm.address).toBe('0x9858EfFD232B4033E47d90003D41EC34EcaEda94');
+    expect(evm.storageChain).toBe('ethereum');
+    expect(evm.privateKey).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(solana.address).toBe('HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk');
+    expect(solana.storageChain).toBe('solana');
+    expect(solana.privateKey.length).toBeGreaterThan(80);
   });
 
   it('exposes scoped Marlin default metadata in public wallet listing', () => {
@@ -137,17 +168,18 @@ describe('Marlin wallet route profile', () => {
     });
     expect(response.statusCode).toBe(400);
 
+    process.env[MARLIN_MNEMONIC_ENV] = TEST_MNEMONIC;
     response = await app.inject({
       method: 'POST',
       url: '/wallet/marlin-default',
       payload: {
-        chain: 'ethereum',
-        network: 'ethereum-base',
+        chain: 'base',
+        network: 'mainnet',
         address: '0x0000000000000000000000000000000000000123',
         walletRef: 'base:mainnet:evm_gateway',
       },
     });
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(403);
     await app.close();
   });
 });

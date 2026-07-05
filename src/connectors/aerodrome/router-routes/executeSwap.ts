@@ -3,8 +3,11 @@ import { FastifyPluginAsync } from 'fastify';
 
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import { LiveActionAuthorization } from '../../../services/runtime-guard';
 import { executeAerodromeSwap } from '../aerodrome.adapter';
 import { AerodromeExecuteSwapRequest, AerodromeSwapExecuteResponse } from '../schemas';
+
+const MARLIN_PROVIDER_INTENT_HEADER = 'x-marlin-provider-intent';
 
 export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{
@@ -22,8 +25,22 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const { network = 'base' } = request.body;
-        return (await executeAerodromeSwap(network, request.body)) as Static<typeof AerodromeSwapExecuteResponse>;
+        const bodyWithInternalFields = request.body as typeof AerodromeExecuteSwapRequest._type & {
+          liveActionAuthorization?: LiveActionAuthorization;
+        };
+        const { network = 'base' } = bodyWithInternalFields;
+        const liveActionAuthorization = marlinProviderIntentHeaderMatches(
+          request.headers[MARLIN_PROVIDER_INTENT_HEADER],
+        )
+          ? bodyWithInternalFields.liveActionAuthorization
+          : undefined;
+        const internalProviderIntentSource = liveActionAuthorization ? 'aerodrome_execute_swap' : undefined;
+        return (await executeAerodromeSwap(
+          network,
+          bodyWithInternalFields,
+          liveActionAuthorization,
+          internalProviderIntentSource,
+        )) as Static<typeof AerodromeSwapExecuteResponse>;
       } catch (e: any) {
         if (e.statusCode) throw e;
         logger.error('Error executing Aerodrome swap:', e);
@@ -32,5 +49,13 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
   );
 };
+
+function marlinProviderIntentHeaderMatches(value: string | string[] | undefined): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const passphrase = process.env.GATEWAY_PASSPHRASE?.trim();
+  return passphrase !== undefined && passphrase !== '' && value === passphrase;
+}
 
 export default executeSwapRoute;

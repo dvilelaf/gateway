@@ -2,11 +2,12 @@ import { BigNumber } from 'ethers';
 
 import { Ethereum, TokenInfo as GatewayTokenInfo } from '../../chains/ethereum/ethereum';
 import { httpErrors } from '../../services/error-handler';
+import { LiveActionAuthorization } from '../../services/runtime-guard';
 
 const AERODROME_PACKAGE = 'hummingbot-aerodrome-gateway-connector/gateway-adapter';
 const AERODROME_ROOT_PACKAGE = 'hummingbot-aerodrome-gateway-connector';
 const AERODROME_LIQUIDITY_PACKAGE = 'hummingbot-aerodrome-gateway-connector/liquidity';
-const DEFAULT_AERODROME_TIMEOUT_MS = 60_000;
+const DEFAULT_AERODROME_TIMEOUT_MS = 180_000;
 
 type AerodromeGatewayModule = {
   quoteAerodromeForGateway: (
@@ -68,14 +69,22 @@ export async function quoteAerodrome(network: string, request: unknown): Promise
   return withAerodromeTimeout(adapter.quoteAerodromeForGateway(connector, request, tokenResolver(network)), 'quote');
 }
 
-export async function executeAerodromeSwap(network: string, request: unknown): Promise<unknown> {
+export async function executeAerodromeSwap(
+  network: string,
+  request: unknown,
+  liveActionAuthorization?: LiveActionAuthorization,
+  internalProviderIntentSource?: string,
+): Promise<unknown> {
   const adapter = loadAerodromeGatewayAdapter();
   const connector = await getAerodromeConnector(network);
   const plan = await withAerodromeTimeout(
     adapter.planAerodromeGatewaySwap(connector, request, tokenResolver(network)),
     'swap plan',
   );
-  return adapter.executeAerodromeGatewaySwapPlan(plan, createGatewayWalletExecutor(network));
+  return adapter.executeAerodromeGatewaySwapPlan(
+    plan,
+    createGatewayWalletExecutor(network, liveActionAuthorization, internalProviderIntentSource),
+  );
 }
 
 export async function executeAerodromeQuote(
@@ -273,7 +282,11 @@ function missingWalletExecutorError(): Error {
   );
 }
 
-function createGatewayWalletExecutor(network: string): unknown {
+function createGatewayWalletExecutor(
+  network: string,
+  liveActionAuthorization?: LiveActionAuthorization,
+  internalProviderIntentSource?: string,
+): unknown {
   return {
     executeTransaction: async (transaction: PlannedTransaction) => {
       const ethereum = await Ethereum.getInstance(network);
@@ -284,7 +297,12 @@ function createGatewayWalletExecutor(network: string): unknown {
         throw missingWalletExecutorErrorWithCause(error);
       }
 
-      const gasOptions = await ethereum.prepareGasOptions(undefined, gasEstimateToNumber(transaction.gasEstimate));
+      const gasOptions = await ethereum.prepareGasOptions(
+        undefined,
+        gasEstimateToNumber(transaction.gasEstimate),
+        liveActionAuthorization,
+        internalProviderIntentSource,
+      );
       const txResponse = await wallet.sendTransaction({
         to: transaction.to,
         data: transaction.data,

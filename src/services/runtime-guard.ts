@@ -118,13 +118,21 @@ function envFlagEnabled(name: string): boolean {
 
 function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInput): boolean {
   const authorization = input.liveActionAuthorization;
-  return (
-    input.chain === 'solana' &&
-    input.operation === 'solana_raw_transaction' &&
+  const marlinProviderIntent =
     authorization?.source === 'marlin' &&
     authorization?.scope === 'provider_intent' &&
-    authorization?.action === 'gateway_swap' &&
-    input.internalProviderIntentSource === 'jupiter_execute_swap'
+    authorization?.action === 'gateway_swap';
+  if (!marlinProviderIntent) {
+    return false;
+  }
+  return (
+    (input.chain === 'solana' &&
+      input.operation === 'solana_raw_transaction' &&
+      input.internalProviderIntentSource === 'jupiter_execute_swap') ||
+    (input.chain === 'ethereum' &&
+      input.network === 'base' &&
+      input.operation === 'ethereum_transaction' &&
+      input.internalProviderIntentSource === 'aerodrome_execute_swap')
   );
 }
 

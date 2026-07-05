@@ -132,6 +132,25 @@ describe('runtime guard', () => {
     ).not.toThrow();
   });
 
+  it('allows Marlin provider-intent Aerodrome swap Ethereum transaction authorization', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        internalProviderIntentSource: 'aerodrome_execute_swap',
+        liveActionAuthorization: {
+          action: 'gateway_swap',
+          scope: 'provider_intent',
+          source: 'marlin',
+        },
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).not.toThrow();
+  });
+
   it('does not let Marlin provider-intent swap authorization bypass other operations', () => {
     delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
     delete process.env.GATEWAY_LIVE_WALLET_SEND_ENABLED;
@@ -158,6 +177,20 @@ describe('runtime guard', () => {
         operation: 'wallet_send',
       }),
     ).toThrow(/GATEWAY_LIVE_WALLET_SEND_ENABLED=true/);
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        internalProviderIntentSource: 'aerodrome_execute_swap',
+        liveActionAuthorization: {
+          action: 'gateway_swap',
+          scope: 'provider_intent',
+          source: 'marlin',
+        },
+        network: 'mainnet',
+        operation: 'ethereum_transaction',
+      }),
+    ).toThrow(/GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED=true/);
   });
 
   it('does not let public provider-intent markers bypass Solana raw transaction guard', () => {
@@ -776,7 +809,7 @@ describe('runtime guard wiring', () => {
     }
   });
 
-  it('does not expose live action authorization through 0x and Aerodrome normal swaps', () => {
+  it('does not expose live action authorization through 0x and Aerodrome public swap schemas', () => {
     const zeroXSchemas = readFileSync(path.join(ROOT, 'src/connectors/0x/schemas.ts'), 'utf8');
     const zeroXQuoteStart = zeroXSchemas.indexOf('export const ZeroXExecuteQuoteRequest');
     const zeroXQuoteEnd = zeroXSchemas.indexOf('// 0x-specific execute-swap request');
@@ -803,8 +836,15 @@ describe('runtime guard wiring', () => {
     const aerodromeSwapSchema = aerodromeSchemas.slice(aerodromeSwapStart, aerodromeSwapEnd);
     expect(aerodromeSwapSchema).not.toContain('liveActionAuthorization');
 
-    const aerodromeAdapter = readFileSync(path.join(ROOT, 'src/connectors/aerodrome/aerodrome.adapter.ts'), 'utf8');
-    expect(aerodromeAdapter).not.toContain('liveActionAuthorization');
+    const aerodromeExecuteSwap = readFileSync(
+      path.join(ROOT, 'src/connectors/aerodrome/router-routes/executeSwap.ts'),
+      'utf8',
+    );
+    expect(aerodromeExecuteSwap).toContain("const MARLIN_PROVIDER_INTENT_HEADER = 'x-marlin-provider-intent'");
+    expect(aerodromeExecuteSwap).toContain('marlinProviderIntentHeaderMatches');
+    expect(aerodromeExecuteSwap).toContain(
+      "const internalProviderIntentSource = liveActionAuthorization ? 'aerodrome_execute_swap' : undefined",
+    );
   });
 
   it('does not expose live action authorization through direct EVM router swap routes', () => {

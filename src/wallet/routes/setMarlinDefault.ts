@@ -1,8 +1,15 @@
+import crypto from 'crypto';
+
+import { Keypair } from '@solana/web3.js';
+import bs58 from 'bs58';
+import { Wallet } from 'ethers';
 import { FastifyPluginAsync } from 'fastify';
+import fse from 'fs-extra';
 
 import { Ethereum } from '../../chains/ethereum/ethereum';
 import { Solana } from '../../chains/solana/solana';
 import { updateDefaultWallet } from '../../config/utils';
+import { ConfigManagerCertPassphrase } from '../../services/config-manager-cert-passphrase';
 import { logger } from '../../services/logger';
 import { isMarlinRuntimeProfile } from '../../services/marlin-runtime';
 import {
@@ -11,34 +18,197 @@ import {
   SetMarlinDefaultWalletResponse,
   SetMarlinDefaultWalletResponseSchema,
 } from '../schemas';
-import { getSafeWalletFilePath, validateChainName, writeMarlinDefaultWalletMetadata } from '../utils';
+import {
+  getSafeWalletFilePath,
+  mkdirIfDoesNotExist,
+  validateChainName,
+  walletPath,
+  writeMarlinDefaultWalletMetadata,
+} from '../utils';
+
+type MarlinWalletFamily = 'evm' | 'solana';
+
+export interface MarlinWalletPolicy {
+  derivationPath: string;
+  family: MarlinWalletFamily;
+  storageChain: 'ethereum' | 'solana';
+  walletRef: string;
+}
+
+export interface MarlinWalletMaterial {
+  address: string;
+  privateKey: string;
+  storageChain: 'ethereum' | 'solana';
+}
+
+const HARDENED_OFFSET = 0x80000000;
+
+function canonicalMarlinWalletContext(chain: string, network: string): [string, string] {
+  const normalizedChain = chain.trim().toLowerCase().replace(/_/g, '-');
+  const normalizedNetwork = network.trim().toLowerCase().replace(/_/g, '-');
+  if (normalizedChain === 'ethereum' && normalizedNetwork === 'ethereum-base') {
+    return ['base', 'mainnet'];
+  }
+  if (normalizedChain === 'ethereum' && normalizedNetwork === 'ethereum-base-sepolia') {
+    return ['base', 'sepolia'];
+  }
+  return [normalizedChain, normalizedNetwork];
+}
+
+function marlinWalletPolicyFor(chain: string, network: string): MarlinWalletPolicy | undefined {
+  const [canonicalChain, canonicalNetwork] = canonicalMarlinWalletContext(chain, network);
+  if (canonicalChain === 'solana' && canonicalNetwork === 'mainnet-beta') {
+    return {
+      derivationPath: "m/44'/501'/0'/0'",
+      family: 'solana',
+      storageChain: 'solana',
+      walletRef: 'solana:mainnet-beta:solana_gateway',
+    };
+  }
+  if (canonicalChain === 'solana' && canonicalNetwork === 'devnet') {
+    return {
+      derivationPath: "m/44'/501'/1'/0'",
+      family: 'solana',
+      storageChain: 'solana',
+      walletRef: 'solana:devnet:solana_gateway',
+    };
+  }
+  if (canonicalChain === 'base' && canonicalNetwork === 'mainnet') {
+    return {
+      derivationPath: "m/44'/60'/0'/0/0",
+      family: 'evm',
+      storageChain: 'ethereum',
+      walletRef: 'base:mainnet:evm_gateway',
+    };
+  }
+  if (canonicalChain === 'base' && canonicalNetwork === 'sepolia') {
+    return {
+      derivationPath: "m/44'/60'/11'/0/0",
+      family: 'evm',
+      storageChain: 'ethereum',
+      walletRef: 'base:sepolia:evm_gateway',
+    };
+  }
+  return undefined;
+}
 
 function expectedMarlinWalletRefs(chain: string, network: string): Set<string> {
-  const normalizedChain = chain.trim().toLowerCase();
-  const normalizedNetwork = network.trim().toLowerCase();
-  if (normalizedChain === 'solana') {
-    return new Set([`solana:${normalizedNetwork}:solana_gateway`]);
+  const policy = marlinWalletPolicyFor(chain, network);
+  return policy === undefined ? new Set() : new Set([policy.walletRef]);
+}
+
+function normalizedMnemonicFromEnv(): string {
+  let mnemonic = (process.env.MARLIN_MNEMONIC ?? '').trim();
+  if (!mnemonic) {
+    throw new Error('MARLIN_MNEMONIC is required for Marlin wallet reconcile');
   }
-  if (normalizedChain === 'ethereum') {
-    if (normalizedNetwork === 'ethereum-base') {
-      return new Set(['base:mainnet:evm_gateway']);
-    }
-    if (normalizedNetwork === 'ethereum-base-sepolia') {
-      return new Set(['base:sepolia:evm_gateway']);
-    }
-    if (normalizedNetwork === 'arbitrum-mainnet') {
-      return new Set(['arbitrum:mainnet:evm_gateway']);
-    }
-    if (normalizedNetwork === 'arbitrum-sepolia') {
-      return new Set(['arbitrum:sepolia:evm_gateway']);
-    }
-    return new Set([
-      `ethereum:${normalizedNetwork}:evm_gateway`,
-      `base:${normalizedNetwork}:evm_gateway`,
-      `arbitrum:${normalizedNetwork}:evm_gateway`,
-    ]);
+  if (mnemonic.length >= 2 && ["'", '"'].includes(mnemonic[0]) && mnemonic[mnemonic.length - 1] === mnemonic[0]) {
+    mnemonic = mnemonic.slice(1, -1).trim();
   }
-  return new Set();
+  return mnemonic;
+}
+
+function bip39Seed(mnemonic: string): Buffer {
+  return crypto.pbkdf2Sync(mnemonic.normalize('NFKD'), 'mnemonic', 2048, 64, 'sha512');
+}
+
+function deriveSlip10Ed25519Seed(seed: Buffer, derivationPath: string): Buffer {
+  let digest = crypto.createHmac('sha512', 'ed25519 seed').update(new Uint8Array(seed)).digest();
+  let key = digest.subarray(0, 32);
+  let chainCode = digest.subarray(32);
+  for (const part of derivationPath.split('/').slice(1)) {
+    if (!part.endsWith("'")) {
+      throw new Error(`unsupported non-hardened Solana derivation path: ${derivationPath}`);
+    }
+    const index = Number.parseInt(part.slice(0, -1), 10);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error(`unsupported Solana derivation path index: ${derivationPath}`);
+    }
+    const data = Buffer.alloc(37);
+    data[0] = 0;
+    data.set(new Uint8Array(key), 1);
+    data.writeUInt32BE(index + HARDENED_OFFSET, 33);
+    digest = crypto.createHmac('sha512', new Uint8Array(chainCode)).update(new Uint8Array(data)).digest();
+    key = digest.subarray(0, 32);
+    chainCode = digest.subarray(32);
+  }
+  return key;
+}
+
+export function deriveMarlinDefaultWalletMaterial(mnemonic: string, policy: MarlinWalletPolicy): MarlinWalletMaterial {
+  if (policy.family === 'evm') {
+    const wallet = Wallet.fromMnemonic(mnemonic, policy.derivationPath);
+    return {
+      address: Ethereum.validateAddress(wallet.address),
+      privateKey: wallet.privateKey,
+      storageChain: policy.storageChain,
+    };
+  }
+  const seed = deriveSlip10Ed25519Seed(bip39Seed(mnemonic), policy.derivationPath);
+  const keypair = Keypair.fromSeed(new Uint8Array(seed));
+  return {
+    address: keypair.publicKey.toBase58(),
+    privateKey: bs58.encode(keypair.secretKey),
+    storageChain: policy.storageChain,
+  };
+}
+
+async function encryptSolanaPrivateKey(privateKey: string, walletKey: string): Promise<string> {
+  const algorithm = 'aes-256-ctr';
+  const iv = crypto.randomBytes(16);
+  const salt = crypto.randomBytes(32);
+  const key = crypto.pbkdf2Sync(walletKey, new Uint8Array(salt), 5000, 32, 'sha512');
+  const cipher = crypto.createCipheriv(algorithm, new Uint8Array(key), new Uint8Array(iv));
+  const encrypted = Buffer.concat([
+    new Uint8Array(cipher.update(new Uint8Array(Buffer.from(privateKey)))),
+    new Uint8Array(cipher.final()),
+  ]);
+  return JSON.stringify({
+    algorithm,
+    encrypted: encrypted.toJSON(),
+    iv: iv.toJSON(),
+    salt: salt.toJSON(),
+  });
+}
+
+async function ensureMarlinWalletExists({
+  address,
+  chain,
+  network,
+  walletRef,
+}: {
+  address: string;
+  chain: string;
+  network: string;
+  walletRef: string;
+}): Promise<{ storageChain: 'ethereum' | 'solana'; validatedAddress: string }> {
+  const policy = marlinWalletPolicyFor(chain, network);
+  if (policy === undefined || policy.walletRef !== walletRef) {
+    throw new Error(`walletRef does not match Marlin policy for ${chain}/${network}`);
+  }
+  const material = deriveMarlinDefaultWalletMaterial(normalizedMnemonicFromEnv(), policy);
+  const validatedAddress =
+    material.storageChain === 'ethereum'
+      ? Ethereum.validateAddress(material.address)
+      : Solana.validateAddress(material.address);
+  if (validatedAddress !== address) {
+    throw new Error('wallet address does not match MARLIN_MNEMONIC-derived policy address');
+  }
+  const path = getSafeWalletFilePath(material.storageChain, validatedAddress);
+  if (await fse.pathExists(path)) {
+    return { storageChain: material.storageChain, validatedAddress };
+  }
+  const walletKey = ConfigManagerCertPassphrase.readWalletKey();
+  if (!walletKey) {
+    throw new Error('No wallet encryption key configured');
+  }
+  await mkdirIfDoesNotExist(`${walletPath}/${material.storageChain}`);
+  const encryptedPrivateKey =
+    material.storageChain === 'ethereum'
+      ? await new Wallet(material.privateKey).encrypt(walletKey)
+      : await encryptSolanaPrivateKey(material.privateKey, walletKey);
+  await fse.writeFile(path, encryptedPrivateKey);
+  return { storageChain: material.storageChain, validatedAddress };
 }
 
 export const setMarlinDefaultRoute: FastifyPluginAsync = async (fastify) => {
@@ -66,47 +236,45 @@ export const setMarlinDefaultRoute: FastifyPluginAsync = async (fastify) => {
       if (!walletRef.trim()) {
         throw fastify.httpErrors.badRequest('walletRef is required');
       }
-      if (!validateChainName(chain)) {
-        throw fastify.httpErrors.badRequest(`Unrecognized chain name: ${chain}`);
-      }
-
-      let validatedAddress: string;
-      try {
-        if (chain.toLowerCase() === 'ethereum') {
-          validatedAddress = Ethereum.validateAddress(address);
-        } else if (chain.toLowerCase() === 'solana') {
-          validatedAddress = Solana.validateAddress(address);
-        } else {
-          throw new Error(`Unsupported chain: ${chain}`);
-        }
-      } catch {
-        throw fastify.httpErrors.badRequest(`Invalid address for ${chain}: ${address}`);
-      }
       if (!expectedMarlinWalletRefs(chain, network).has(walletRef)) {
         throw fastify.httpErrors.badRequest(`walletRef does not match Marlin policy for ${chain}/${network}`);
       }
-      const walletPath = getSafeWalletFilePath(chain, validatedAddress);
-      const fs = await import('fs-extra');
-      if (!(await fs.pathExists(walletPath))) {
-        throw fastify.httpErrors.notFound(
-          `Wallet ${validatedAddress} not found for chain ${chain}. Reconcile cannot set an unknown wallet.`,
-        );
+      const policy = marlinWalletPolicyFor(chain, network);
+      if (policy === undefined || !validateChainName(policy.storageChain)) {
+        throw fastify.httpErrors.badRequest(`Unsupported chain: ${chain}`);
       }
-
+      let reconciled: { storageChain: 'ethereum' | 'solana'; validatedAddress: string };
       try {
-        updateDefaultWallet(fastify, chain, validatedAddress);
-        await writeMarlinDefaultWalletMetadata(chain, {
-          address: validatedAddress,
+        reconciled = await ensureMarlinWalletExists({
+          address,
+          chain,
           network,
           walletRef,
         });
-        logger.info(`Set Marlin default wallet for ${chain}/${network}: ${validatedAddress}`);
+      } catch (error) {
+        if (error.message.includes('wallet address does not match')) {
+          throw fastify.httpErrors.forbidden(error.message);
+        }
+        if (error.message.includes('Invalid')) {
+          throw fastify.httpErrors.badRequest(`Invalid address for ${chain}: ${address}`);
+        }
+        throw fastify.httpErrors.badRequest(error.message);
+      }
+
+      try {
+        updateDefaultWallet(fastify, reconciled.storageChain, reconciled.validatedAddress);
+        await writeMarlinDefaultWalletMetadata(reconciled.storageChain, {
+          address: reconciled.validatedAddress,
+          network,
+          walletRef,
+        });
+        logger.info(`Set Marlin default wallet for ${chain}/${network}: ${reconciled.validatedAddress}`);
 
         return {
           message: `Successfully set Marlin default wallet for ${chain}`,
           chain,
           network,
-          address: validatedAddress,
+          address: reconciled.validatedAddress,
           walletRef,
         };
       } catch (error) {
