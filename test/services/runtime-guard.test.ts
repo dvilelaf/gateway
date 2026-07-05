@@ -101,7 +101,7 @@ describe('runtime guard', () => {
   });
 
   it('keeps direct mainnet mutations blocked in Marlin runtime profile', () => {
-    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED = 'true';
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
 
     expect(() =>
@@ -110,7 +110,7 @@ describe('runtime guard', () => {
         network: 'mainnet-beta',
         operation: 'solana_raw_transaction',
       }),
-    ).toThrow(/GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED=true/);
+    ).toThrow(/direct mainnet mutation disabled/);
   });
 
   it('allows Marlin provider-intent swap raw transaction authorization', () => {
@@ -168,7 +168,7 @@ describe('runtime guard', () => {
         network: 'mainnet',
         operation: 'ethereum_transaction',
       }),
-    ).toThrow(/GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED=true/);
+    ).toThrow(/direct mainnet mutation disabled/);
     expect(() =>
       assertMainnetMutationAllowed({
         chain: 'solana',
@@ -176,7 +176,7 @@ describe('runtime guard', () => {
         network: 'mainnet-beta',
         operation: 'wallet_send',
       }),
-    ).toThrow(/GATEWAY_LIVE_WALLET_SEND_ENABLED=true/);
+    ).toThrow(/direct mainnet mutation disabled/);
 
     expect(() =>
       assertMainnetMutationAllowed({
@@ -190,7 +190,7 @@ describe('runtime guard', () => {
         network: 'mainnet',
         operation: 'ethereum_transaction',
       }),
-    ).toThrow(/GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED=true/);
+    ).toThrow(/direct mainnet mutation disabled/);
   });
 
   it('does not let public provider-intent markers bypass Solana raw transaction guard', () => {
@@ -208,7 +208,7 @@ describe('runtime guard', () => {
         network: 'mainnet-beta',
         operation: 'solana_raw_transaction',
       }),
-    ).toThrow(/GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED=true/);
+    ).toThrow(/direct mainnet mutation disabled/);
   });
 
   it('does not let public provider-intent source markers bypass Solana raw transaction guard', () => {
@@ -227,7 +227,7 @@ describe('runtime guard', () => {
         network: 'mainnet-beta',
         operation: 'solana_raw_transaction',
       }),
-    ).toThrow(/GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED=true/);
+    ).toThrow(/direct mainnet mutation disabled/);
   });
 
   it('does not allow mainnet mutations with only the broad flag enabled', () => {

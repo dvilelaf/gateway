@@ -65,6 +65,12 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
   if (isMarlinProviderIntentSwapAuthorization(input)) {
     return;
   }
+  if (isMarlinRuntimeProfile()) {
+    throw new Error(
+      `direct mainnet mutation disabled for ${input.chain}/${input.network}/${input.operation} in Marlin runtime; ` +
+        'submit through a scoped Marlin provider intent',
+    );
+  }
   const operationEnv = liveOperationEnv(input.operation);
   if (envFlagEnabled(operationEnv)) {
     return;
@@ -114,6 +120,10 @@ function assertProviderAllowlisted(provider: unknown): void {
 
 function envFlagEnabled(name: string): boolean {
   return ['1', 'true', 'yes', 'on'].includes((process.env[name] ?? '').trim().toLowerCase());
+}
+
+function isMarlinRuntimeProfile(): boolean {
+  return (process.env.MARLIN_RUNTIME_PROFILE ?? '').trim().toLowerCase() === 'marlin';
 }
 
 function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInput): boolean {
