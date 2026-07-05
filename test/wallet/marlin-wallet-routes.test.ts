@@ -68,6 +68,7 @@ describe('Marlin wallet route profile', () => {
     expect(source).toContain('walletRef does not match Marlin policy');
     expect(source).toContain('deriveMarlinDefaultWalletMaterial(normalizedMnemonicFromEnv(), policy)');
     expect(source).toContain('writeMarlinDefaultWalletMetadata(reconciled.storageChain');
+    expect(source).not.toContain('if (await fse.pathExists(path))');
   });
 
   it('derives Marlin wallet material from the canonical mnemonic policies', () => {

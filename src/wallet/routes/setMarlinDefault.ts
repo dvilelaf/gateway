@@ -195,9 +195,6 @@ async function ensureMarlinWalletExists({
     throw new Error('wallet address does not match MARLIN_MNEMONIC-derived policy address');
   }
   const path = getSafeWalletFilePath(material.storageChain, validatedAddress);
-  if (await fse.pathExists(path)) {
-    return { storageChain: material.storageChain, validatedAddress };
-  }
   const walletKey = ConfigManagerCertPassphrase.readWalletKey();
   if (!walletKey) {
     throw new Error('No wallet encryption key configured');
