@@ -8,6 +8,7 @@ import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import { quoteCache } from '../../../services/quote-cache';
 import { sanitizeErrorMessage, sanitizeString } from '../../../services/sanitize';
+import { approximateBuyViaSellLeg } from '../../router-utils';
 import { Jupiter } from '../jupiter';
 import { JupiterConfig } from '../jupiter.config';
 import { JupiterQuoteSwapRequest, JupiterQuoteSwapResponse } from '../schemas';
@@ -21,6 +22,7 @@ export async function quoteSwap(
   slippagePct: number = JupiterConfig.config.slippagePct,
   onlyDirectRoutes?: boolean,
   restrictIntermediateTokens?: boolean,
+  approximateIfNoExactOut: boolean = true,
 ): Promise<Static<typeof JupiterQuoteSwapResponse>> {
   const solana = await Solana.getInstance(network);
   const jupiter = await Jupiter.getInstance(network);
@@ -41,7 +43,12 @@ export async function quoteSwap(
 
   logger.info(`Getting quote for ${amount} ${inputToken.symbol} -> ${outputToken.symbol}`);
 
+  const effectiveOnlyDirectRoutes = onlyDirectRoutes ?? JupiterConfig.config.onlyDirectRoutes;
+  const effectiveRestrictIntermediateTokens =
+    restrictIntermediateTokens ?? JupiterConfig.config.restrictIntermediateTokens;
+
   let quoteResponse;
+  let isApproximation = false;
 
   try {
     // Get quote with the appropriate swap mode
@@ -50,16 +57,41 @@ export async function quoteSwap(
       outputToken.address,
       inputAmount / Math.pow(10, inputToken.decimals),
       slippagePct,
-      onlyDirectRoutes ?? JupiterConfig.config.onlyDirectRoutes,
-      restrictIntermediateTokens ?? JupiterConfig.config.restrictIntermediateTokens,
+      effectiveOnlyDirectRoutes,
+      effectiveRestrictIntermediateTokens,
       side === 'BUY' ? 'ExactOut' : 'ExactIn',
     );
   } catch (error) {
-    // Pass through Jupiter's error with context
     const errorMessage = error?.message || String(error);
-    const tokenPair = `${sanitizeString(baseToken)} -> ${sanitizeString(quoteToken)}`;
-    const swapMode = side === 'BUY' ? 'ExactOut' : 'ExactIn';
-    throw httpErrors.noRouteFound(`No route found for ${tokenPair} (${swapMode}). ${errorMessage}`);
+
+    // BUY orders where the pair has no ExactOut route: approximate via a sell-leg
+    // ExactIn quote (shared router behavior, controlled by approximateIfNoExactOut)
+    if (side === 'BUY' && approximateIfNoExactOut && errorMessage.includes('ExactOut not supported')) {
+      const approximated = await approximateBuyViaSellLeg({
+        getExactInQuote: async (inputTokenInfo, outputTokenInfo, amountRaw) => {
+          const quote = await jupiter.getQuote(
+            inputTokenInfo.address,
+            outputTokenInfo.address,
+            Number(amountRaw) / Math.pow(10, inputTokenInfo.decimals),
+            slippagePct,
+            effectiveOnlyDirectRoutes,
+            effectiveRestrictIntermediateTokens,
+            'ExactIn',
+          );
+          return { inAmount: quote.inAmount, outAmount: quote.outAmount, quote };
+        },
+        baseToken: baseTokenInfo,
+        quoteToken: quoteTokenInfo,
+        baseAmount: amount,
+      });
+      quoteResponse = approximated.forwardQuote.quote;
+      isApproximation = true;
+    } else {
+      // Pass through Jupiter's error with context
+      const tokenPair = `${sanitizeString(baseToken)} -> ${sanitizeString(quoteToken)}`;
+      const swapMode = side === 'BUY' ? 'ExactOut' : 'ExactIn';
+      throw httpErrors.noRouteFound(`No route found for ${tokenPair} (${swapMode}). ${errorMessage}`);
+    }
   }
 
   if (!quoteResponse) {
@@ -70,9 +102,15 @@ export async function quoteSwap(
   const estimatedAmountIn = Number(quoteResponse.inAmount) / Math.pow(10, inputToken.decimals);
   const estimatedAmountOut = Number(quoteResponse.outAmount) / Math.pow(10, outputToken.decimals);
 
-  // Calculate min/max amounts based on slippage
-  const minAmountOut = side === 'SELL' ? estimatedAmountOut * (1 - slippagePct / 100) : amount;
-  const maxAmountIn = side === 'BUY' ? estimatedAmountIn * (1 + slippagePct / 100) : amount;
+  // Calculate min/max amounts based on slippage.
+  // Approximated BUY quotes are ExactIn (input fixed, output estimated), so slippage
+  // applies to the output rather than the input.
+  const minAmountOut = side === 'SELL' || isApproximation ? estimatedAmountOut * (1 - slippagePct / 100) : amount;
+  const maxAmountIn = isApproximation
+    ? estimatedAmountIn
+    : side === 'BUY'
+      ? estimatedAmountIn * (1 + slippagePct / 100)
+      : amount;
 
   // Calculate price based on side
   const price = side === 'SELL' ? estimatedAmountOut / estimatedAmountIn : estimatedAmountIn / estimatedAmountOut;
@@ -96,7 +134,7 @@ export async function quoteSwap(
     tokenIn: inputToken.address,
     tokenOut: outputToken.address,
     amountIn: side === 'SELL' ? amount : estimatedAmountIn,
-    amountOut: side === 'SELL' ? estimatedAmountOut : amount,
+    amountOut: side === 'SELL' || isApproximation ? estimatedAmountOut : amount,
     price,
     priceImpactPct: parseFloat(quoteResponse.priceImpactPct || '0'),
     minAmountOut,
@@ -115,6 +153,7 @@ export async function quoteSwap(
       contextSlot: quoteResponse.contextSlot,
       timeTaken: quoteResponse.timeTaken,
     },
+    ...(isApproximation ? { approximation: true } : {}),
   };
 }
 
@@ -143,6 +182,7 @@ export const quoteSwapRoute: FastifyPluginAsync = async (fastify) => {
           slippagePct,
           onlyDirectRoutes,
           restrictIntermediateTokens,
+          approximateIfNoExactOut,
         } = request.query as typeof JupiterQuoteSwapRequest._type;
 
         return await quoteSwap(
@@ -154,6 +194,7 @@ export const quoteSwapRoute: FastifyPluginAsync = async (fastify) => {
           slippagePct,
           onlyDirectRoutes,
           restrictIntermediateTokens,
+          approximateIfNoExactOut,
         );
       } catch (e) {
         if (e.statusCode) throw e;
