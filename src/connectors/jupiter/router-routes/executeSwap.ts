@@ -3,14 +3,18 @@ import { FastifyPluginAsync } from 'fastify';
 import { ExecuteSwapRequestType, SwapExecuteResponseType, SwapExecuteResponse } from '../../../schemas/router-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
-import { LiveActionAuthorization } from '../../../services/runtime-guard';
+import {
+  LiveActionAuthorization,
+  marlinGatewayProviderIntentTokenMatches,
+  marlinProviderIntentAuthorizationMatches,
+} from '../../../services/runtime-guard';
 import { JupiterConfig } from '../jupiter.config';
 import { JupiterExecuteSwapRequest } from '../schemas';
 
 import { executeQuote } from './executeQuote';
 import { quoteSwap } from './quoteSwap';
 
-const MARLIN_PROVIDER_INTENT_HEADER = 'x-marlin-provider-intent';
+const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token';
 
 async function executeSwap(
   walletAddress: string,
@@ -65,11 +69,22 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
         const bodyWithInternalFields = request.body as typeof JupiterExecuteSwapRequest._type & {
           liveActionAuthorization?: LiveActionAuthorization;
         };
-        const liveActionAuthorization = marlinProviderIntentHeaderMatches(
-          request.headers[MARLIN_PROVIDER_INTENT_HEADER],
-        )
-          ? bodyWithInternalFields.liveActionAuthorization
-          : undefined;
+        const tokenAuthorized = marlinGatewayProviderIntentTokenMatches(
+          request.headers[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER],
+        );
+        const liveActionAuthorization =
+          tokenAuthorized &&
+          marlinProviderIntentAuthorizationMatches(bodyWithInternalFields.liveActionAuthorization, {
+            action: 'gateway_swap',
+            connector_id: 'jupiter',
+            network,
+            notional: amount,
+            scope: 'provider_intent',
+            source: 'marlin',
+            wallet_address: walletAddress,
+          })
+            ? bodyWithInternalFields.liveActionAuthorization
+            : undefined;
         const internalProviderIntentSource = liveActionAuthorization ? 'jupiter_execute_swap' : undefined;
 
         return await executeSwap(
@@ -95,12 +110,3 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
 };
 
 export default executeSwapRoute;
-
-function marlinProviderIntentHeaderMatches(value: unknown): boolean {
-  const expected = (process.env.GATEWAY_PASSPHRASE ?? '').trim();
-  if (!expected) {
-    return false;
-  }
-  const provided = Array.isArray(value) ? value[0] : value;
-  return typeof provided === 'string' && provided === expected;
-}

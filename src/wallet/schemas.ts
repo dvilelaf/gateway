@@ -133,6 +133,9 @@ export const SignTypedDataResponseSchema = Type.Object({
 export const MarlinCowSignTypedDataRequestSchema = Type.Composite([
   Type.Omit(SignTypedDataRequestSchema, ['liveActionAuthorization']),
   Type.Object({
+    liveActionAuthorization: Type.Any({
+      description: 'Scoped Marlin provider-intent authorization bound to this CoW typed-data payload',
+    }),
     walletRef: Type.String(),
   }),
 ]);

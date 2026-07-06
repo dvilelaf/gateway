@@ -3,11 +3,15 @@ import { FastifyPluginAsync } from 'fastify';
 
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
-import { LiveActionAuthorization } from '../../../services/runtime-guard';
+import {
+  LiveActionAuthorization,
+  marlinGatewayProviderIntentTokenMatches,
+  marlinProviderIntentAuthorizationMatches,
+} from '../../../services/runtime-guard';
 import { executeAerodromeSwap } from '../aerodrome.adapter';
 import { AerodromeExecuteSwapRequest, AerodromeSwapExecuteResponse } from '../schemas';
 
-const MARLIN_PROVIDER_INTENT_HEADER = 'x-marlin-provider-intent';
+const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token';
 
 export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{
@@ -29,11 +33,22 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           liveActionAuthorization?: LiveActionAuthorization;
         };
         const { network = 'base' } = bodyWithInternalFields;
-        const liveActionAuthorization = marlinProviderIntentHeaderMatches(
-          request.headers[MARLIN_PROVIDER_INTENT_HEADER],
-        )
-          ? bodyWithInternalFields.liveActionAuthorization
-          : undefined;
+        const tokenAuthorized = marlinGatewayProviderIntentTokenMatches(
+          request.headers[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER],
+        );
+        const liveActionAuthorization =
+          tokenAuthorized &&
+          marlinProviderIntentAuthorizationMatches(bodyWithInternalFields.liveActionAuthorization, {
+            action: 'gateway_swap',
+            connector_id: 'aerodrome',
+            network,
+            notional: bodyWithInternalFields.amount,
+            scope: 'provider_intent',
+            source: 'marlin',
+            wallet_address: bodyWithInternalFields.walletAddress,
+          })
+            ? bodyWithInternalFields.liveActionAuthorization
+            : undefined;
         const internalProviderIntentSource = liveActionAuthorization ? 'aerodrome_execute_swap' : undefined;
         return (await executeAerodromeSwap(
           network,
@@ -49,13 +64,5 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
   );
 };
-
-function marlinProviderIntentHeaderMatches(value: string | string[] | undefined): boolean {
-  if (typeof value !== 'string') {
-    return false;
-  }
-  const passphrase = process.env.GATEWAY_PASSPHRASE?.trim();
-  return passphrase !== undefined && passphrase !== '' && value === passphrase;
-}
 
 export default executeSwapRoute;

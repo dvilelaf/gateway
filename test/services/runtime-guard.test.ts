@@ -18,7 +18,7 @@ describe('runtime guard', () => {
   const originalBridgeAllowlist = process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST;
   const originalAuthSecret = process.env.MARLIN_LIVE_ACTION_AUTH_SECRET;
   const originalMarlinRuntimeProfile = process.env.MARLIN_RUNTIME_PROFILE;
-  const originalGatewayPassphrase = process.env.GATEWAY_PASSPHRASE;
+  const originalGatewayProviderIntentToken = process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN;
 
   afterEach(() => {
     if (originalEnv === undefined) {
@@ -56,10 +56,10 @@ describe('runtime guard', () => {
     } else {
       process.env.MARLIN_RUNTIME_PROFILE = originalMarlinRuntimeProfile;
     }
-    if (originalGatewayPassphrase === undefined) {
-      delete process.env.GATEWAY_PASSPHRASE;
+    if (originalGatewayProviderIntentToken === undefined) {
+      delete process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN;
     } else {
-      process.env.GATEWAY_PASSPHRASE = originalGatewayPassphrase;
+      process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = originalGatewayProviderIntentToken;
     }
   });
 
@@ -123,11 +123,20 @@ describe('runtime guard', () => {
         internalProviderIntentSource: 'jupiter_execute_swap',
         liveActionAuthorization: {
           action: 'gateway_swap',
+          connector_id: 'jupiter',
+          network: 'mainnet-beta',
+          notional: '0.0001',
           scope: 'provider_intent',
+          slippage_bps: '100',
           source: 'marlin',
+          wallet_address: 'solana-wallet',
         },
         network: 'mainnet-beta',
         operation: 'solana_raw_transaction',
+        expectedConnectorId: 'jupiter',
+        expectedNotional: '0.0001',
+        expectedSlippageBps: '100',
+        expectedWalletAddress: 'solana-wallet',
       }),
     ).not.toThrow();
   });
@@ -142,11 +151,20 @@ describe('runtime guard', () => {
         internalProviderIntentSource: 'aerodrome_execute_swap',
         liveActionAuthorization: {
           action: 'gateway_swap',
+          connector_id: 'aerodrome',
+          network: 'base',
+          notional: '100',
           scope: 'provider_intent',
+          slippage_bps: '100',
           source: 'marlin',
+          wallet_address: '0x00000000000000000000000000000000000000aa',
         },
         network: 'base',
         operation: 'ethereum_transaction',
+        expectedConnectorId: 'aerodrome',
+        expectedNotional: '100',
+        expectedSlippageBps: '100',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000aa',
       }),
     ).not.toThrow();
   });
@@ -840,8 +858,10 @@ describe('runtime guard wiring', () => {
       path.join(ROOT, 'src/connectors/aerodrome/router-routes/executeSwap.ts'),
       'utf8',
     );
-    expect(aerodromeExecuteSwap).toContain("const MARLIN_PROVIDER_INTENT_HEADER = 'x-marlin-provider-intent'");
-    expect(aerodromeExecuteSwap).toContain('marlinProviderIntentHeaderMatches');
+    expect(aerodromeExecuteSwap).toContain(
+      "const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token'",
+    );
+    expect(aerodromeExecuteSwap).toContain('marlinGatewayProviderIntentTokenMatches');
     expect(aerodromeExecuteSwap).toContain(
       "const internalProviderIntentSource = liveActionAuthorization ? 'aerodrome_execute_swap' : undefined",
     );
@@ -910,13 +930,15 @@ describe('runtime guard wiring', () => {
       executeSwap.indexOf('} catch (e)', executeSwap.indexOf('export const executeSwapRoute')),
     );
     expect(executeSwapRoute).toContain('liveActionAuthorization');
-    expect(executeSwapRoute).toContain('marlinProviderIntentHeaderMatches');
+    expect(executeSwapRoute).toContain('marlinGatewayProviderIntentTokenMatches');
     expect(executeSwap).toContain(
       "const internalProviderIntentSource = liveActionAuthorization ? 'jupiter_execute_swap' : undefined",
     );
     expect(executeSwapRoute).toContain('request.body as typeof JupiterExecuteSwapRequest._type &');
-    expect(executeSwap).toContain("const MARLIN_PROVIDER_INTENT_HEADER = 'x-marlin-provider-intent'");
-    expect(executeSwap).toContain('process.env.GATEWAY_PASSPHRASE');
+    expect(executeSwap).toContain(
+      "const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token'",
+    );
+    expect(executeSwap).not.toContain('process.env.GATEWAY_PASSPHRASE');
   });
 
   it('passes live action authorization through CLMM position mutations', () => {

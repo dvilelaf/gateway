@@ -1,6 +1,10 @@
+import { readFileSync } from 'fs';
+
 export const LIVE_MUTATIONS_ENV = 'GATEWAY_LIVE_MUTATIONS_ENABLED';
 export const BRIDGE_EXECUTE_ENV = 'GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED';
 export const BRIDGE_PROVIDER_ALLOWLIST_ENV = 'GATEWAY_BRIDGE_PROVIDER_ALLOWLIST';
+export const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV = 'MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN';
+export const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_FILE_ENV = 'MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_FILE';
 
 const SAFE_NETWORK_MARKERS = ['testnet', 'devnet', 'sepolia', 'goerli', 'amoy', 'fuji', 'local'];
 const usedBridgeAuthorizationNonces = new Set<string>();
@@ -39,10 +43,12 @@ export interface LiveActionAuthorization {
   network?: unknown;
   notional?: unknown;
   signature?: unknown;
+  signing_type?: unknown;
   slippage_bps?: unknown;
   source?: unknown;
   scope?: unknown;
   status?: unknown;
+  payload_hash?: unknown;
   version?: unknown;
   wallet_address?: unknown;
 }
@@ -78,6 +84,24 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
   throw new Error(
     `mainnet mutation disabled for ${input.chain}/${input.network}/${input.operation}; ` +
       `set ${operationEnv}=true only for the Marlin runtime`,
+  );
+}
+
+export function marlinGatewayProviderIntentTokenMatches(value: unknown): boolean {
+  const expected = marlinGatewayProviderIntentToken();
+  if (!expected) {
+    return false;
+  }
+  const provided = Array.isArray(value) ? value[0] : value;
+  return typeof provided === 'string' && provided === expected;
+}
+
+export function marlinProviderIntentAuthorizationMatches(
+  authorization: LiveActionAuthorization | undefined,
+  expectations: Record<string, unknown>,
+): boolean {
+  return Object.entries(expectations).every(([key, expected]) =>
+    authorizationMatches(expected, authorization?.[key as keyof LiveActionAuthorization]),
   );
 }
 
@@ -135,6 +159,15 @@ function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInpu
   if (!marlinProviderIntent) {
     return false;
   }
+  if (
+    !authorizationMatches(input.network, authorization?.network) ||
+    !authorizationMatches(input.expectedConnectorId, authorization?.connector_id) ||
+    !authorizationMatches(input.expectedWalletAddress, authorization?.wallet_address) ||
+    !authorizationMatches(input.expectedNotional, authorization?.notional) ||
+    !authorizationMatches(input.expectedSlippageBps, authorization?.slippage_bps)
+  ) {
+    return false;
+  }
   return (
     (input.chain === 'solana' &&
       input.operation === 'solana_raw_transaction' &&
@@ -144,6 +177,32 @@ function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInpu
       input.operation === 'ethereum_transaction' &&
       input.internalProviderIntentSource === 'aerodrome_execute_swap')
   );
+}
+
+function authorizationMatches(expected: unknown, provided: unknown): boolean {
+  if (expected === undefined || expected === null || String(expected).trim() === '') {
+    return true;
+  }
+  if (provided === undefined || provided === null || String(provided).trim() === '') {
+    return false;
+  }
+  return String(provided).trim() === String(expected).trim();
+}
+
+function marlinGatewayProviderIntentToken(): string {
+  const value = (process.env[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV] ?? '').trim();
+  if (value) {
+    return value;
+  }
+  const filePath = (process.env[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_FILE_ENV] ?? '').trim();
+  if (!filePath) {
+    return '';
+  }
+  try {
+    return readFileSync(filePath, 'utf8').trim();
+  } catch {
+    return '';
+  }
 }
 
 function liveOperationEnv(operation: string): string {

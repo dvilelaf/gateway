@@ -1,7 +1,10 @@
+import { createHash } from 'crypto';
+
 import { FastifyPluginAsync } from 'fastify';
 
 import { Ethereum } from '../../chains/ethereum/ethereum';
 import { isMarlinRuntimeProfile } from '../../services/marlin-runtime';
+import { LiveActionAuthorization, marlinGatewayProviderIntentTokenMatches } from '../../services/runtime-guard';
 import {
   MarlinCowSignTypedDataRequest,
   MarlinCowSignTypedDataRequestSchema,
@@ -21,6 +24,7 @@ const COW_SETTLEMENT_CONTRACTS = new Set([
   '0xf553d092b50bdcbddeD1A99aF2cA29FBE5E2CB13'.toLowerCase(),
 ]);
 const COW_TYPED_DATA_TYPES = new Set(['Order', 'OrderCancellations']);
+const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token';
 
 export const marlinCowSignTypedDataRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: MarlinCowSignTypedDataRequest; Reply: MarlinCowSignTypedDataResponse }>(
@@ -36,9 +40,12 @@ export const marlinCowSignTypedDataRoute: FastifyPluginAsync = async (fastify) =
       },
     },
     async (request) => {
-      const { chain, network, address, domain, types, value, walletRef } = request.body;
+      const { chain, network, address, domain, types, value, walletRef, liveActionAuthorization } = request.body;
       if (!isMarlinRuntimeProfile()) {
         throw fastify.httpErrors.forbidden('Marlin CoW signing route requires MARLIN_RUNTIME_PROFILE=marlin');
+      }
+      if (!marlinGatewayProviderIntentTokenMatches(request.headers[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER])) {
+        throw fastify.httpErrors.forbidden('Marlin Gateway provider-intent token required for CoW signing');
       }
       if (chain !== 'ethereum') {
         throw fastify.httpErrors.badRequest('CoW typed-data signing is only supported for ethereum wallets');
@@ -82,6 +89,17 @@ export const marlinCowSignTypedDataRoute: FastifyPluginAsync = async (fastify) =
       if (signingTypeNames.length !== 1 || !COW_TYPED_DATA_TYPES.has(signingTypeNames[0])) {
         throw fastify.httpErrors.badRequest('EIP-712 types must be scoped to a CoW Order or OrderCancellations');
       }
+      if (
+        !cowSigningAuthorizationMatches({
+          authorization: liveActionAuthorization,
+          network,
+          address: validatedAddress,
+          signingType: signingTypeNames[0],
+          value,
+        })
+      ) {
+        throw fastify.httpErrors.forbidden('CoW signing authorization does not match typed-data payload');
+      }
 
       const wallet = await ethereum.getWallet(validatedAddress);
       const signature = await wallet._signTypedData(
@@ -95,3 +113,42 @@ export const marlinCowSignTypedDataRoute: FastifyPluginAsync = async (fastify) =
 };
 
 export default marlinCowSignTypedDataRoute;
+
+function cowSigningAuthorizationMatches(input: {
+  authorization: LiveActionAuthorization;
+  network: string;
+  address: string;
+  signingType: string;
+  value: Record<string, unknown>;
+}): boolean {
+  const authorization = input.authorization;
+  return (
+    (authorization?.source !== 'marlin' ||
+      authorization?.scope !== 'provider_intent' ||
+      authorization?.action !== 'cowswap_sign_typed_data' ||
+      authorization?.connector_id !== 'cowswap' ||
+      String(authorization?.network ?? '').trim() !== input.network ||
+      String(authorization?.wallet_address ?? '')
+        .trim()
+        .toLowerCase() !== input.address.toLowerCase() ||
+      String(authorization?.signing_type ?? '').trim() !== input.signingType ||
+      String(authorization?.payload_hash ?? '').trim() !== cowSigningPayloadHash(input.value)) === false
+  );
+}
+
+function cowSigningPayloadHash(value: Record<string, unknown>): string {
+  return createHash('sha256').update(stableJson(value)).digest('hex');
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}

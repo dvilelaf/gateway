@@ -8,11 +8,13 @@ import walletRoutes, { MARLIN_RUNTIME_PROFILE_ENV, isMarlinRuntimeProfile } from
 
 const ROOT = path.resolve(__dirname, '../..');
 const MARLIN_MNEMONIC_ENV = 'MARLIN_MNEMONIC';
+const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV = 'MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN';
 const TEST_MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 describe('Marlin wallet route profile', () => {
   const originalProfile = process.env[MARLIN_RUNTIME_PROFILE_ENV];
   const originalMnemonic = process.env[MARLIN_MNEMONIC_ENV];
+  const originalGatewayProviderIntentToken = process.env[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV];
 
   afterEach(() => {
     if (originalProfile === undefined) {
@@ -24,6 +26,11 @@ describe('Marlin wallet route profile', () => {
       delete process.env[MARLIN_MNEMONIC_ENV];
     } else {
       process.env[MARLIN_MNEMONIC_ENV] = originalMnemonic;
+    }
+    if (originalGatewayProviderIntentToken === undefined) {
+      delete process.env[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV];
+    } else {
+      process.env[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV] = originalGatewayProviderIntentToken;
     }
   });
 
@@ -121,9 +128,11 @@ describe('Marlin wallet route profile', () => {
       expect(response.statusCode).toBe(404);
     }
 
+    process.env[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV] = 'gateway-token';
     const scopedCowSigner = await app.inject({
       method: 'POST',
       url: '/wallet/marlin-cow/sign-typed-data',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
       payload: {
         chain: 'ethereum',
         network: 'base',
@@ -137,6 +146,16 @@ describe('Marlin wallet route profile', () => {
           Order: [{ name: 'sellToken', type: 'address' }],
         },
         value: { sellToken: '0x4200000000000000000000000000000000000006' },
+        liveActionAuthorization: {
+          action: 'cowswap_sign_typed_data',
+          connector_id: 'cowswap',
+          network: 'base',
+          payload_hash: '77b6ab11dcd3b978588d9f82727f7adbcf60ff4efc05d6d48ecd301baa4e060a',
+          scope: 'provider_intent',
+          signing_type: 'Order',
+          source: 'marlin',
+          wallet_address: '0x0000000000000000000000000000000000000123',
+        },
       },
     });
     expect(scopedCowSigner.statusCode).toBe(400);
