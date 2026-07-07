@@ -35,6 +35,8 @@ export interface LiveActionAuthorization {
   bridge_tx_target?: unknown;
   bridge_tx_value?: unknown;
   connector_id?: unknown;
+  destination_address?: unknown;
+  destination_network?: unknown;
   expires_at_utc?: unknown;
   gas?: unknown;
   gateway_live_flags?: unknown;
@@ -189,11 +191,19 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
     return false;
   }
   if (
-    !authorizationMatches(input.network, authorization?.network) ||
     !authorizationMatches(input.expectedConnectorId, authorization?.connector_id) ||
-    !authorizationMatches(input.expectedWalletAddress, authorization?.wallet_address) ||
     !authorizationMatches(input.expectedNotional, authorization?.notional)
   ) {
+    return false;
+  }
+  const sourceMatches =
+    authorizationMatches(input.network, authorization?.network) &&
+    authorizationMatches(input.expectedWalletAddress, authorization?.wallet_address);
+  const destinationMatches =
+    input.internalProviderIntentSource === 'cctp_base_arbitrum_usdc_rebalance' &&
+    authorizationMatches(input.network, authorization?.destination_network) &&
+    authorizationMatches(input.expectedWalletAddress, authorization?.destination_address);
+  if (!sourceMatches && !destinationMatches) {
     return false;
   }
   return (
@@ -203,6 +213,10 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
       input.internalProviderIntentSource === 'hyperliquid_bridge2_rebalance') ||
     (input.chain === 'ethereum' &&
       input.network === 'base' &&
+      input.operation === 'ethereum_transaction' &&
+      input.internalProviderIntentSource === 'cctp_base_arbitrum_usdc_rebalance') ||
+    (input.chain === 'ethereum' &&
+      input.network === 'arbitrum' &&
       input.operation === 'ethereum_transaction' &&
       input.internalProviderIntentSource === 'cctp_base_arbitrum_usdc_rebalance')
   );
@@ -215,7 +229,12 @@ function authorizationMatches(expected: unknown, provided: unknown): boolean {
   if (provided === undefined || provided === null || String(provided).trim() === '') {
     return false;
   }
-  return String(provided).trim() === String(expected).trim();
+  const expectedText = String(expected).trim();
+  const providedText = String(provided).trim();
+  if (expectedText.startsWith('0x') && providedText.startsWith('0x') && expectedText.length === providedText.length) {
+    return expectedText.toLowerCase() === providedText.toLowerCase();
+  }
+  return providedText === expectedText;
 }
 
 function marlinGatewayProviderIntentToken(): string {

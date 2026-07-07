@@ -561,6 +561,15 @@ describe('runtime guard wiring', () => {
     expect(execute.indexOf('assertBridgeExecutionAllowed(')).toBeLessThan(execute.indexOf('sendTransaction('));
   });
 
+  it('fails closed for legacy raw bridge execution in Marlin runtime before broadcast', () => {
+    const source = readFileSync(path.join(ROOT, 'src/bridge/bridge.routes.ts'), 'utf8');
+    const execute = source.slice(source.indexOf("'/execute'"));
+
+    expect(execute).toContain('MARLIN_RUNTIME_PROFILE');
+    expect(execute).toContain('raw bridge execution disabled in Marlin runtime');
+    expect(execute.indexOf('MARLIN_RUNTIME_PROFILE')).toBeLessThan(execute.indexOf('sendTransaction('));
+  });
+
   it('checks wallet sends before chain-specific send paths', () => {
     const source = readFileSync(path.join(ROOT, 'src/wallet/utils.ts'), 'utf8');
     const sendTransaction = source.slice(

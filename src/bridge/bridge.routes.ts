@@ -45,6 +45,9 @@ export const bridgeRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request) => {
+      if ((process.env.MARLIN_RUNTIME_PROFILE ?? '').trim().toLowerCase() === 'marlin') {
+        throw new Error('raw bridge execution disabled in Marlin runtime; use provider-owned rebalance execution');
+      }
       const txCalldataHash = request.body.txCalldataHash ?? sha256(request.body.txCalldata);
       assertBridgeExecutionAllowed(request.body.liveActionAuthorization as LiveActionAuthorization, {
         calldataHash: txCalldataHash,
