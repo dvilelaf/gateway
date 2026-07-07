@@ -7,7 +7,11 @@ jest.mock('../../src/chains/ethereum/ethereum', () => ({
   },
 }));
 
-import { rebalanceRoutes, buildHyperliquidBridge2Transfer } from '../../src/bridge/rebalance.routes';
+import {
+  rebalanceRoutes,
+  buildCctpBaseArbitrumUsdcTransfer,
+  buildHyperliquidBridge2Transfer,
+} from '../../src/bridge/rebalance.routes';
 import { Ethereum } from '../../src/chains/ethereum/ethereum';
 import { assertMainnetMutationAllowed } from '../../src/services/runtime-guard';
 
@@ -232,6 +236,65 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
 
     expect(response.statusCode).toBe(400);
   });
+
+  it('builds the CCTP Base to Arbitrum USDC transfer internally', async () => {
+    const result = await buildCctpBaseArbitrumUsdcTransfer(cctpRequest());
+
+    expect(result.provider).toBe('cctp_base_arbitrum_usdc');
+    expect(result.sourceNetwork).toBe('base');
+    expect(result.destinationNetwork).toBe('arbitrum');
+    expect(result.approvalTxTarget).toBe('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+    expect(result.txTarget).toBe('0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d');
+    expect(result.approvalTxCalldata).toMatch(/^0x/);
+    expect(result.txCalldata).toMatch(/^0x/);
+  });
+
+  it('rejects CCTP Base to Arbitrum transfer to a different EVM address', async () => {
+    await expect(
+      buildCctpBaseArbitrumUsdcTransfer({
+        ...cctpRequest(),
+        destinationAddress: '0x00000000000000000000000000000000000000bb',
+      }),
+    ).rejects.toThrow(/same mnemonic-derived EVM address/);
+  });
+
+  it('executes CCTP Base to Arbitrum with provider-owned approve and burn transactions', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xapprove' })
+      .mockResolvedValueOnce({ hash: '0xburn' });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: { ...cctpRequest(), liveActionAuthorization: cctpAuthorization('1.5') },
+    });
+    const status = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-rebalance-1',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().signature).toBe('0xburn');
+    expect(sendTransaction).toHaveBeenCalledTimes(2);
+    expect(status.json()).toMatchObject({
+      approvalTransactionHash: '0xapprove',
+      idempotencyKey: 'cctp-rebalance-1',
+      status: 'burn_confirmed',
+      transactionHash: '0xburn',
+    });
+  });
 });
 
 function baseRequest() {
@@ -255,6 +318,34 @@ function treasuryAuthorization(notional: string) {
     action: 'gateway_rebalance',
     connector_id: 'hyperliquid',
     network: 'arbitrum',
+    notional,
+    scope: 'provider_treasury',
+    source: 'marlin',
+    wallet_address: WALLET,
+  };
+}
+
+function cctpRequest() {
+  return {
+    amount: '1.5',
+    destinationAddress: WALLET,
+    destinationAsset: 'USDC' as const,
+    destinationNetwork: 'arbitrum' as const,
+    idempotencyKey: 'cctp-rebalance-1',
+    mode: 'mainnet' as const,
+    provider: 'cctp_base_arbitrum_usdc' as const,
+    sourceAsset: 'USDC' as const,
+    sourceChain: 'ethereum' as const,
+    sourceNetwork: 'base' as const,
+    walletAddress: WALLET,
+  };
+}
+
+function cctpAuthorization(notional: string) {
+  return {
+    action: 'gateway_rebalance',
+    connector_id: 'treasury',
+    network: 'base',
     notional,
     scope: 'provider_treasury',
     source: 'marlin',

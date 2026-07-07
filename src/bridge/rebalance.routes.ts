@@ -14,8 +14,14 @@ import {
 const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token';
 const HYPERLIQUID_BRIDGE2_ADDRESS = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
 const ARBITRUM_USDC_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
+const BASE_USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const CCTP_V2_TOKEN_MESSENGER_ADDRESS = '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d';
+const CCTP_ARBITRUM_DOMAIN = 3;
+const CCTP_STANDARD_FINALITY_THRESHOLD = 2000;
 const HYPERLIQUID_BRIDGE2_MIN_USDC = '5';
 const HYPERLIQUID_BRIDGE2_GAS_LIMIT = 120000;
+const CCTP_APPROVE_GAS_LIMIT = 90000;
+const CCTP_BURN_GAS_LIMIT = 220000;
 const USDC_DECIMALS = 6;
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
@@ -29,7 +35,7 @@ const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'walletFile',
 ];
 
-const BridgeRebalanceRequestSchema = Type.Object(
+const HyperliquidBridge2RebalanceRequestSchema = Type.Object(
   {
     provider: Type.Literal('hyperliquid_bridge2'),
     idempotencyKey: Type.String({ minLength: 1 }),
@@ -47,34 +53,69 @@ const BridgeRebalanceRequestSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const CctpBaseArbitrumRebalanceRequestSchema = Type.Object(
+  {
+    provider: Type.Literal('cctp_base_arbitrum_usdc'),
+    idempotencyKey: Type.String({ minLength: 1 }),
+    mode: Type.Literal('mainnet'),
+    sourceChain: Type.Literal('ethereum'),
+    sourceNetwork: Type.Literal('base'),
+    sourceAsset: Type.Literal('USDC'),
+    destinationNetwork: Type.Literal('arbitrum'),
+    destinationAsset: Type.Literal('USDC'),
+    walletAddress: Type.String({ minLength: 1 }),
+    destinationAddress: Type.String({ minLength: 1 }),
+    amount: Type.String({ minLength: 1 }),
+    liveActionAuthorization: Type.Optional(Type.Any()),
+  },
+  { additionalProperties: false },
+);
+
+const BridgeRebalanceRequestSchema = Type.Union([
+  HyperliquidBridge2RebalanceRequestSchema,
+  CctpBaseArbitrumRebalanceRequestSchema,
+]);
+
 const BridgeRebalanceExecutionStatusSchema = Type.Object({
   idempotencyKey: Type.String(),
   status: Type.String(),
+  approvalTransactionHash: Type.Optional(Type.String()),
   transactionHash: Type.Optional(Type.String()),
   providerError: Type.Optional(Type.String()),
 });
 
 const BridgeRebalanceBuildResponseSchema = Type.Object({
-  provider: Type.Literal('hyperliquid_bridge2'),
+  provider: Type.String(),
   idempotencyKey: Type.String(),
   sourceChain: Type.Literal('ethereum'),
-  sourceNetwork: Type.Literal('arbitrum'),
+  sourceNetwork: Type.String(),
   sourceAsset: Type.Literal('USDC'),
-  destinationVenue: Type.Literal('hyperliquid'),
+  destinationVenue: Type.Optional(Type.String()),
+  destinationNetwork: Type.Optional(Type.String()),
   destinationAsset: Type.Literal('USDC'),
   walletAddress: Type.String(),
   destinationAddress: Type.String(),
   amount: Type.String(),
   txTarget: Type.String(),
   txCalldataHash: Type.String(),
+  approvalTxTarget: Type.Optional(Type.String()),
+  approvalCalldataHash: Type.Optional(Type.String()),
   minAmount: Type.String(),
 });
 
 type BridgeRebalanceRequest = Static<typeof BridgeRebalanceRequestSchema>;
 type BridgeRebalanceStatus = Static<typeof BridgeRebalanceExecutionStatusSchema>;
+type HyperliquidBridge2RebalanceRequest = Static<typeof HyperliquidBridge2RebalanceRequestSchema>;
+type CctpBaseArbitrumRebalanceRequest = Static<typeof CctpBaseArbitrumRebalanceRequestSchema>;
 
 const rebalanceStore = new Map<string, BridgeRebalanceStatus>();
 const erc20Interface = new utils.Interface(['function transfer(address to, uint256 amount) returns (bool)']);
+const erc20ApprovalInterface = new utils.Interface([
+  'function approve(address spender, uint256 amount) returns (bool)',
+]);
+const cctpTokenMessengerInterface = new utils.Interface([
+  'function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold)',
+]);
 
 export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: BridgeRebalanceRequest }>(
@@ -89,7 +130,7 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
       preValidation: rejectRawTransactionPayloadFields,
     },
     async (request) => {
-      const built = await buildHyperliquidBridge2Transfer(request.body);
+      const built = await buildProviderOwnedRebalance(request.body);
       rebalanceStore.set(request.body.idempotencyKey, {
         idempotencyKey: request.body.idempotencyKey,
         status: 'built',
@@ -98,10 +139,13 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
         amount: built.amount,
         destinationAddress: built.destinationAddress,
         destinationAsset: built.destinationAsset,
+        destinationNetwork: built.destinationNetwork,
         destinationVenue: built.destinationVenue,
         idempotencyKey: built.idempotencyKey,
         minAmount: built.minAmount,
         provider: built.provider,
+        approvalCalldataHash: built.approvalCalldataHash,
+        approvalTxTarget: built.approvalTxTarget,
         sourceAsset: built.sourceAsset,
         sourceChain: built.sourceChain,
         sourceNetwork: built.sourceNetwork,
@@ -138,7 +182,7 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
         tokenAuthorized &&
         marlinProviderIntentAuthorizationMatches(request.body.liveActionAuthorization as LiveActionAuthorization, {
           action: 'gateway_rebalance',
-          connector_id: 'hyperliquid',
+          connector_id: providerTreasuryConnectorId(request.body.provider),
           network: request.body.sourceNetwork,
           notional: request.body.amount,
           scope: 'provider_treasury',
@@ -151,13 +195,13 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
         throw new Error('provider treasury authorization required');
       }
 
-      const built = await buildHyperliquidBridge2Transfer(request.body);
+      const built = await buildProviderOwnedRebalance(request.body);
       assertMainnetMutationAllowed({
         chain: 'ethereum',
-        expectedConnectorId: 'hyperliquid',
+        expectedConnectorId: providerTreasuryConnectorId(request.body.provider),
         expectedNotional: request.body.amount,
         expectedWalletAddress: request.body.walletAddress,
-        internalProviderIntentSource: 'hyperliquid_bridge2_rebalance',
+        internalProviderIntentSource: providerTreasuryIntentSource(request.body.provider),
         liveActionAuthorization,
         network: request.body.sourceNetwork,
         operation: 'ethereum_transaction',
@@ -167,28 +211,15 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
         status: 'pending',
       });
       try {
-        const ethereum = await Ethereum.getInstance(request.body.sourceNetwork);
-        const wallet = await ethereum.getWallet(built.walletAddress);
-        const gasOptions = await ethereum.prepareGasOptions(
-          undefined,
-          HYPERLIQUID_BRIDGE2_GAS_LIMIT,
-          liveActionAuthorization,
-          'hyperliquid_bridge2_rebalance',
-        );
-        const txResponse = await wallet.sendTransaction({
-          data: built.txCalldata,
-          to: built.tokenAddress,
-          value: BigNumber.from(0),
-          ...gasOptions,
-        });
-        const receipt = await ethereum.handleTransactionExecution(txResponse);
-        const status = receipt?.status === 1 ? 'confirmed' : receipt?.status === 0 ? 'failed' : 'submitted';
+        const execution = await executeProviderOwnedRebalance(built, liveActionAuthorization);
+        const status = execution.status;
         rebalanceStore.set(request.body.idempotencyKey, {
+          approvalTransactionHash: execution.approvalTransactionHash,
           idempotencyKey: request.body.idempotencyKey,
           status,
-          transactionHash: txResponse.hash,
+          transactionHash: execution.transactionHash,
         });
-        return { signature: txResponse.hash, status: receipt?.status === 1 ? 1 : receipt?.status === 0 ? -1 : 0 };
+        return { signature: execution.transactionHash, status: execution.responseStatus };
       } catch (error: any) {
         rebalanceStore.set(request.body.idempotencyKey, {
           idempotencyKey: request.body.idempotencyKey,
@@ -218,23 +249,45 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
   );
 };
 
-export async function buildHyperliquidBridge2Transfer(body: BridgeRebalanceRequest): Promise<{
+type BuiltProviderOwnedRebalance = {
   amount: string;
+  approvalCalldataHash?: string;
+  approvalTxCalldata?: string;
+  approvalTxTarget?: string;
   destinationAddress: string;
   destinationAsset: 'USDC';
-  destinationVenue: 'hyperliquid';
+  destinationNetwork?: string;
+  destinationVenue?: string;
   idempotencyKey: string;
   minAmount: string;
-  provider: 'hyperliquid_bridge2';
+  provider: 'hyperliquid_bridge2' | 'cctp_base_arbitrum_usdc';
   sourceAsset: 'USDC';
   sourceChain: 'ethereum';
-  sourceNetwork: 'arbitrum';
+  sourceNetwork: 'arbitrum' | 'base';
   tokenAddress: string;
   txCalldata: string;
   txCalldataHash: string;
   txTarget: string;
   walletAddress: string;
-}> {
+};
+
+type ProviderOwnedRebalanceExecution = {
+  approvalTransactionHash?: string;
+  responseStatus: -1 | 0 | 1;
+  status: string;
+  transactionHash: string;
+};
+
+export async function buildProviderOwnedRebalance(body: BridgeRebalanceRequest): Promise<BuiltProviderOwnedRebalance> {
+  if (body.provider === 'cctp_base_arbitrum_usdc') {
+    return buildCctpBaseArbitrumUsdcTransfer(body);
+  }
+  return buildHyperliquidBridge2Transfer(body);
+}
+
+export async function buildHyperliquidBridge2Transfer(
+  body: HyperliquidBridge2RebalanceRequest,
+): Promise<BuiltProviderOwnedRebalance> {
   if (!addressesEqual(body.walletAddress, body.destinationAddress)) {
     throw new Error('hyperliquid Bridge2 credits sender; destinationAddress must equal walletAddress');
   }
@@ -261,6 +314,156 @@ export async function buildHyperliquidBridge2Transfer(body: BridgeRebalanceReque
     txTarget: ARBITRUM_USDC_ADDRESS,
     walletAddress: utils.getAddress(body.walletAddress),
   };
+}
+
+export async function buildCctpBaseArbitrumUsdcTransfer(
+  body: CctpBaseArbitrumRebalanceRequest,
+): Promise<BuiltProviderOwnedRebalance> {
+  const amountUnits = utils.parseUnits(body.amount, USDC_DECIMALS);
+  if (amountUnits.lte(0)) {
+    throw new Error('CCTP transfer amount must be positive');
+  }
+  const walletAddress = utils.getAddress(body.walletAddress);
+  const destinationAddress = utils.getAddress(body.destinationAddress);
+  if (!addressesEqual(walletAddress, destinationAddress)) {
+    throw new Error('CCTP Base->Arbitrum treasury transfer requires same mnemonic-derived EVM address');
+  }
+  const mintRecipient = addressToBytes32(destinationAddress);
+  const destinationCaller = utils.hexZeroPad('0x', 32);
+  const approvalTxCalldata = erc20ApprovalInterface.encodeFunctionData('approve', [
+    CCTP_V2_TOKEN_MESSENGER_ADDRESS,
+    amountUnits,
+  ]);
+  const txCalldata = cctpTokenMessengerInterface.encodeFunctionData('depositForBurn', [
+    amountUnits,
+    CCTP_ARBITRUM_DOMAIN,
+    mintRecipient,
+    BASE_USDC_ADDRESS,
+    destinationCaller,
+    BigNumber.from(0),
+    CCTP_STANDARD_FINALITY_THRESHOLD,
+  ]);
+  return {
+    amount: body.amount,
+    approvalCalldataHash: utils.keccak256(approvalTxCalldata),
+    approvalTxCalldata,
+    approvalTxTarget: BASE_USDC_ADDRESS,
+    destinationAddress,
+    destinationAsset: 'USDC',
+    destinationNetwork: 'arbitrum',
+    idempotencyKey: body.idempotencyKey,
+    minAmount: '0.000001',
+    provider: 'cctp_base_arbitrum_usdc',
+    sourceAsset: 'USDC',
+    sourceChain: 'ethereum',
+    sourceNetwork: 'base',
+    tokenAddress: BASE_USDC_ADDRESS,
+    txCalldata,
+    txCalldataHash: utils.keccak256(txCalldata),
+    txTarget: CCTP_V2_TOKEN_MESSENGER_ADDRESS,
+    walletAddress,
+  };
+}
+
+async function executeProviderOwnedRebalance(
+  built: BuiltProviderOwnedRebalance,
+  liveActionAuthorization: LiveActionAuthorization,
+): Promise<ProviderOwnedRebalanceExecution> {
+  if (built.provider === 'cctp_base_arbitrum_usdc') {
+    return executeCctpBaseArbitrumUsdcTransfer(built, liveActionAuthorization);
+  }
+  return executeSingleTransactionRebalance(
+    built,
+    liveActionAuthorization,
+    HYPERLIQUID_BRIDGE2_GAS_LIMIT,
+    'hyperliquid_bridge2_rebalance',
+  );
+}
+
+async function executeSingleTransactionRebalance(
+  built: BuiltProviderOwnedRebalance,
+  liveActionAuthorization: LiveActionAuthorization,
+  gasLimit: number,
+  providerIntentSource: string,
+): Promise<ProviderOwnedRebalanceExecution> {
+  const ethereum = await Ethereum.getInstance(built.sourceNetwork);
+  const wallet = await ethereum.getWallet(built.walletAddress);
+  const gasOptions = await ethereum.prepareGasOptions(
+    undefined,
+    gasLimit,
+    liveActionAuthorization,
+    providerIntentSource,
+  );
+  const txResponse = await wallet.sendTransaction({
+    data: built.txCalldata,
+    to: built.txTarget,
+    value: BigNumber.from(0),
+    ...gasOptions,
+  });
+  const receipt = await ethereum.handleTransactionExecution(txResponse);
+  return {
+    responseStatus: receipt?.status === 1 ? 1 : receipt?.status === 0 ? -1 : 0,
+    status: receipt?.status === 1 ? 'confirmed' : receipt?.status === 0 ? 'failed' : 'submitted',
+    transactionHash: txResponse.hash,
+  };
+}
+
+async function executeCctpBaseArbitrumUsdcTransfer(
+  built: BuiltProviderOwnedRebalance,
+  liveActionAuthorization: LiveActionAuthorization,
+): Promise<ProviderOwnedRebalanceExecution> {
+  if (!built.approvalTxCalldata || !built.approvalTxTarget) {
+    throw new Error('CCTP approval transaction missing from provider-owned build');
+  }
+  const ethereum = await Ethereum.getInstance('base');
+  const wallet = await ethereum.getWallet(built.walletAddress);
+  const approvalGasOptions = await ethereum.prepareGasOptions(
+    undefined,
+    CCTP_APPROVE_GAS_LIMIT,
+    liveActionAuthorization,
+    'cctp_base_arbitrum_usdc_rebalance',
+  );
+  const approvalTx = await wallet.sendTransaction({
+    data: built.approvalTxCalldata,
+    to: built.approvalTxTarget,
+    value: BigNumber.from(0),
+    ...approvalGasOptions,
+  });
+  const approvalReceipt = await ethereum.handleTransactionExecution(approvalTx);
+  if (approvalReceipt?.status === 0) {
+    throw new Error('CCTP USDC approval failed');
+  }
+  const burnGasOptions = await ethereum.prepareGasOptions(
+    undefined,
+    CCTP_BURN_GAS_LIMIT,
+    liveActionAuthorization,
+    'cctp_base_arbitrum_usdc_rebalance',
+  );
+  const burnTx = await wallet.sendTransaction({
+    data: built.txCalldata,
+    to: built.txTarget,
+    value: BigNumber.from(0),
+    ...burnGasOptions,
+  });
+  const burnReceipt = await ethereum.handleTransactionExecution(burnTx);
+  return {
+    approvalTransactionHash: approvalTx.hash,
+    responseStatus: burnReceipt?.status === 1 ? 1 : burnReceipt?.status === 0 ? -1 : 0,
+    status: burnReceipt?.status === 1 ? 'burn_confirmed' : burnReceipt?.status === 0 ? 'failed' : 'burn_submitted',
+    transactionHash: burnTx.hash,
+  };
+}
+
+function providerTreasuryConnectorId(provider: BridgeRebalanceRequest['provider']): string {
+  return provider === 'cctp_base_arbitrum_usdc' ? 'treasury' : 'hyperliquid';
+}
+
+function providerTreasuryIntentSource(provider: BridgeRebalanceRequest['provider']): string {
+  return provider === 'cctp_base_arbitrum_usdc' ? 'cctp_base_arbitrum_usdc_rebalance' : 'hyperliquid_bridge2_rebalance';
+}
+
+function addressToBytes32(address: string): string {
+  return utils.hexZeroPad(utils.getAddress(address), 32);
 }
 
 function addressesEqual(left: string, right: string): boolean {

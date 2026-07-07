@@ -197,10 +197,14 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
     return false;
   }
   return (
-    input.chain === 'ethereum' &&
-    input.network === 'arbitrum' &&
-    input.operation === 'ethereum_transaction' &&
-    input.internalProviderIntentSource === 'hyperliquid_bridge2_rebalance'
+    (input.chain === 'ethereum' &&
+      input.network === 'arbitrum' &&
+      input.operation === 'ethereum_transaction' &&
+      input.internalProviderIntentSource === 'hyperliquid_bridge2_rebalance') ||
+    (input.chain === 'ethereum' &&
+      input.network === 'base' &&
+      input.operation === 'ethereum_transaction' &&
+      input.internalProviderIntentSource === 'cctp_base_arbitrum_usdc_rebalance')
   );
 }
 
