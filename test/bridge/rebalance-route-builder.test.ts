@@ -249,13 +249,14 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(result.txCalldata).toMatch(/^0x/);
   });
 
-  it('rejects CCTP Base to Arbitrum transfer to a different EVM address', async () => {
-    await expect(
-      buildCctpBaseArbitrumUsdcTransfer({
-        ...cctpRequest(),
-        destinationAddress: '0x00000000000000000000000000000000000000bb',
-      }),
-    ).rejects.toThrow(/same mnemonic-derived EVM address/);
+  it('allows CCTP Base to Arbitrum transfer to a different derived destination address', async () => {
+    const result = await buildCctpBaseArbitrumUsdcTransfer({
+      ...cctpRequest(),
+      destinationAddress: '0x00000000000000000000000000000000000000bb',
+    });
+
+    expect(result.walletAddress).toBe(utils.getAddress(WALLET));
+    expect(result.destinationAddress).toBe(utils.getAddress('0x00000000000000000000000000000000000000bb'));
   });
 
   it('executes CCTP Base to Arbitrum with provider-owned approve and burn transactions', async () => {
@@ -294,6 +295,50 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       status: 'burn_confirmed',
       transactionHash: '0xburn',
     });
+  });
+
+  it('does not double-submit concurrent CCTP executes for the same idempotency key', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xapprove-concurrent' })
+      .mockResolvedValueOnce({ hash: '0xburn-concurrent' });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(
+        async () => new Promise((resolve) => setTimeout(() => resolve({ status: 1 }), 10)),
+      ),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const payload = {
+      ...cctpRequest(),
+      idempotencyKey: 'cctp-concurrent',
+      liveActionAuthorization: cctpAuthorization('1.5'),
+    };
+
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+        payload,
+      }),
+      app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+        payload,
+      }),
+    ]);
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect([first.json().signature, second.json().signature]).toEqual(['0xburn-concurrent', '0xburn-concurrent']);
+    expect(sendTransaction).toHaveBeenCalledTimes(2);
   });
 });
 

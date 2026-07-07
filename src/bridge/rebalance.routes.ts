@@ -167,68 +167,69 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preValidation: rejectRawTransactionPayloadFields,
     },
-    async (request) => {
-      const existing = rebalanceStore.get(request.body.idempotencyKey);
-      if (existing?.transactionHash || existing?.status === 'pending' || existing?.status === 'failed') {
-        return {
-          signature: existing.transactionHash ?? '',
-          status: existing.status === 'confirmed' ? 1 : existing.status === 'failed' ? -1 : 0,
-        };
-      }
-      const tokenAuthorized = marlinGatewayProviderIntentTokenMatches(
-        request.headers[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER],
-      );
-      const liveActionAuthorization =
-        tokenAuthorized &&
-        marlinProviderIntentAuthorizationMatches(request.body.liveActionAuthorization as LiveActionAuthorization, {
-          action: 'gateway_rebalance',
-          connector_id: providerTreasuryConnectorId(request.body.provider),
-          network: request.body.sourceNetwork,
-          notional: request.body.amount,
-          scope: 'provider_treasury',
-          source: 'marlin',
-          wallet_address: request.body.walletAddress,
-        })
-          ? (request.body.liveActionAuthorization as LiveActionAuthorization)
-          : undefined;
-      if (!liveActionAuthorization) {
-        throw new Error('provider treasury authorization required');
-      }
+    async (request) =>
+      withRebalanceLock(request.body.idempotencyKey, async () => {
+        const existing = rebalanceStore.get(request.body.idempotencyKey);
+        if (existing?.transactionHash || existing?.status === 'pending' || existing?.status === 'failed') {
+          return {
+            signature: existing.transactionHash ?? '',
+            status: existing.status === 'confirmed' ? 1 : existing.status === 'failed' ? -1 : 0,
+          };
+        }
+        const tokenAuthorized = marlinGatewayProviderIntentTokenMatches(
+          request.headers[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER],
+        );
+        const liveActionAuthorization =
+          tokenAuthorized &&
+          marlinProviderIntentAuthorizationMatches(request.body.liveActionAuthorization as LiveActionAuthorization, {
+            action: 'gateway_rebalance',
+            connector_id: providerTreasuryConnectorId(request.body.provider),
+            network: request.body.sourceNetwork,
+            notional: request.body.amount,
+            scope: 'provider_treasury',
+            source: 'marlin',
+            wallet_address: request.body.walletAddress,
+          })
+            ? (request.body.liveActionAuthorization as LiveActionAuthorization)
+            : undefined;
+        if (!liveActionAuthorization) {
+          throw new Error('provider treasury authorization required');
+        }
 
-      const built = await buildProviderOwnedRebalance(request.body);
-      assertMainnetMutationAllowed({
-        chain: 'ethereum',
-        expectedConnectorId: providerTreasuryConnectorId(request.body.provider),
-        expectedNotional: request.body.amount,
-        expectedWalletAddress: request.body.walletAddress,
-        internalProviderIntentSource: providerTreasuryIntentSource(request.body.provider),
-        liveActionAuthorization,
-        network: request.body.sourceNetwork,
-        operation: 'ethereum_transaction',
-      });
-      rebalanceStore.set(request.body.idempotencyKey, {
-        idempotencyKey: request.body.idempotencyKey,
-        status: 'pending',
-      });
-      try {
-        const execution = await executeProviderOwnedRebalance(built, liveActionAuthorization);
-        const status = execution.status;
-        rebalanceStore.set(request.body.idempotencyKey, {
-          approvalTransactionHash: execution.approvalTransactionHash,
-          idempotencyKey: request.body.idempotencyKey,
-          status,
-          transactionHash: execution.transactionHash,
+        const built = await buildProviderOwnedRebalance(request.body);
+        assertMainnetMutationAllowed({
+          chain: 'ethereum',
+          expectedConnectorId: providerTreasuryConnectorId(request.body.provider),
+          expectedNotional: request.body.amount,
+          expectedWalletAddress: request.body.walletAddress,
+          internalProviderIntentSource: providerTreasuryIntentSource(request.body.provider),
+          liveActionAuthorization,
+          network: request.body.sourceNetwork,
+          operation: 'ethereum_transaction',
         });
-        return { signature: execution.transactionHash, status: execution.responseStatus };
-      } catch (error: any) {
         rebalanceStore.set(request.body.idempotencyKey, {
           idempotencyKey: request.body.idempotencyKey,
-          providerError: error?.message ?? String(error),
-          status: 'failed',
+          status: 'pending',
         });
-        throw error;
-      }
-    },
+        try {
+          const execution = await executeProviderOwnedRebalance(built, liveActionAuthorization);
+          const status = execution.status;
+          rebalanceStore.set(request.body.idempotencyKey, {
+            approvalTransactionHash: execution.approvalTransactionHash,
+            idempotencyKey: request.body.idempotencyKey,
+            status,
+            transactionHash: execution.transactionHash,
+          });
+          return { signature: execution.transactionHash, status: execution.responseStatus };
+        } catch (error: any) {
+          rebalanceStore.set(request.body.idempotencyKey, {
+            idempotencyKey: request.body.idempotencyKey,
+            providerError: error?.message ?? String(error),
+            status: 'failed',
+          });
+          throw error;
+        }
+      }),
   );
 
   fastify.get<{ Params: { idempotencyKey: string } }>(
@@ -278,6 +279,8 @@ type ProviderOwnedRebalanceExecution = {
   transactionHash: string;
 };
 
+const rebalanceLocks = new Map<string, Promise<void>>();
+
 export async function buildProviderOwnedRebalance(body: BridgeRebalanceRequest): Promise<BuiltProviderOwnedRebalance> {
   if (body.provider === 'cctp_base_arbitrum_usdc') {
     return buildCctpBaseArbitrumUsdcTransfer(body);
@@ -325,9 +328,6 @@ export async function buildCctpBaseArbitrumUsdcTransfer(
   }
   const walletAddress = utils.getAddress(body.walletAddress);
   const destinationAddress = utils.getAddress(body.destinationAddress);
-  if (!addressesEqual(walletAddress, destinationAddress)) {
-    throw new Error('CCTP Base->Arbitrum treasury transfer requires same mnemonic-derived EVM address');
-  }
   const mintRecipient = addressToBytes32(destinationAddress);
   const destinationCaller = utils.hexZeroPad('0x', 32);
   const approvalTxCalldata = erc20ApprovalInterface.encodeFunctionData('approve', [
@@ -464,6 +464,27 @@ function providerTreasuryIntentSource(provider: BridgeRebalanceRequest['provider
 
 function addressToBytes32(address: string): string {
   return utils.hexZeroPad(utils.getAddress(address), 32);
+}
+
+async function withRebalanceLock<T>(idempotencyKey: string, fn: () => Promise<T>): Promise<T> {
+  const previous = rebalanceLocks.get(idempotencyKey) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  rebalanceLocks.set(
+    idempotencyKey,
+    previous.then(() => current),
+  );
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (rebalanceLocks.get(idempotencyKey) === current) {
+      rebalanceLocks.delete(idempotencyKey);
+    }
+  }
 }
 
 function addressesEqual(left: string, right: string): boolean {
