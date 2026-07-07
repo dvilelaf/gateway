@@ -14,6 +14,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 
 // Routes
 import { bridgeRoutes } from './bridge/bridge.routes';
+import { rebalanceRoutes } from './bridge/rebalance.routes';
 import { ethereumRoutes } from './chains/ethereum/ethereum.routes';
 import { solanaRoutes } from './chains/solana/solana.routes';
 import { configRoutes } from './config/config.routes';
@@ -245,6 +246,7 @@ const configureGatewayServer = () => {
 
     // Register Marlin-approved bridge execution routes
     app.register(bridgeRoutes, { prefix: '/bridge' });
+    app.register(rebalanceRoutes, { prefix: '/bridge' });
 
     // Register chain routes
     app.register(solanaRoutes, { prefix: '/chains/solana' });

@@ -69,6 +69,9 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
   if (isMarlinProviderIntentSwapAuthorization(input)) {
     return;
   }
+  if (isMarlinProviderTreasuryAuthorization(input)) {
+    return;
+  }
   if (isMarlinRuntimeProfile()) {
     throw new Error(
       `direct mainnet mutation disabled for ${input.chain}/${input.network}/${input.operation} in Marlin runtime; ` +
@@ -173,6 +176,31 @@ function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInpu
       input.network === 'base' &&
       input.operation === 'ethereum_transaction' &&
       input.internalProviderIntentSource === 'aerodrome_execute_swap')
+  );
+}
+
+function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput): boolean {
+  const authorization = input.liveActionAuthorization;
+  const marlinProviderTreasury =
+    authorization?.source === 'marlin' &&
+    authorization?.scope === 'provider_treasury' &&
+    authorization?.action === 'gateway_rebalance';
+  if (!marlinProviderTreasury) {
+    return false;
+  }
+  if (
+    !authorizationMatches(input.network, authorization?.network) ||
+    !authorizationMatches(input.expectedConnectorId, authorization?.connector_id) ||
+    !authorizationMatches(input.expectedWalletAddress, authorization?.wallet_address) ||
+    !authorizationMatches(input.expectedNotional, authorization?.notional)
+  ) {
+    return false;
+  }
+  return (
+    input.chain === 'ethereum' &&
+    input.network === 'arbitrum' &&
+    input.operation === 'ethereum_transaction' &&
+    input.internalProviderIntentSource === 'hyperliquid_bridge2_rebalance'
   );
 }
 

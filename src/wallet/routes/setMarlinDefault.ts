@@ -52,6 +52,12 @@ function canonicalMarlinWalletContext(chain: string, network: string): [string, 
   if (normalizedChain === 'ethereum' && normalizedNetwork === 'ethereum-base-sepolia') {
     return ['base', 'sepolia'];
   }
+  if (
+    normalizedChain === 'ethereum' &&
+    ['arbitrum', 'arbitrum-mainnet', 'ethereum-arbitrum-mainnet'].includes(normalizedNetwork)
+  ) {
+    return ['arbitrum', 'mainnet'];
+  }
   return [normalizedChain, normalizedNetwork];
 }
 
@@ -87,6 +93,14 @@ export function marlinWalletPolicyFor(chain: string, network: string): MarlinWal
       family: 'evm',
       storageChain: 'ethereum',
       walletRef: 'base:sepolia:evm_gateway',
+    };
+  }
+  if (canonicalChain === 'arbitrum' && canonicalNetwork === 'mainnet') {
+    return {
+      derivationPath: "m/44'/60'/20'/0/0",
+      family: 'evm',
+      storageChain: 'ethereum',
+      walletRef: 'arbitrum:mainnet:evm_gateway',
     };
   }
   return undefined;
