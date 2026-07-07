@@ -29,6 +29,8 @@ const CCTP_APPROVE_GAS_LIMIT = 90000;
 const CCTP_BURN_GAS_LIMIT = 220000;
 const CCTP_FINALIZE_GAS_LIMIT = 300000;
 const CCTP_IRIS_MAINNET_URL = 'https://iris-api.circle.com';
+const CCTP_DESTINATION_GAS_PROVIDER_STATUS = 'destination_gas_unavailable';
+const CCTP_DESTINATION_GAS_PROVIDER_ERROR = 'CCTP destination Arbitrum wallet has no ETH for receiveMessage gas';
 const USDC_DECIMALS = 6;
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
@@ -244,13 +246,19 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
           return { signature: execution.transactionHash, status: execution.responseStatus };
         } catch (error: any) {
           const latest = (await readRebalanceState(request.body.idempotencyKey)) ?? existing;
+          const retryableCctpStatus =
+            latest.provider === 'cctp_base_arbitrum_usdc' && latest.burnTransactionHash
+              ? latest.finalizeTransactionHash
+                ? 'finalize_submitted'
+                : 'finalize_pending'
+              : 'failed';
           await saveRebalanceState({
             ...latest,
             idempotencyKey: request.body.idempotencyKey,
             providerError: redactProviderError(error),
-            status: 'failed',
+            status: retryableCctpStatus,
           });
-          throw error;
+          throw new Error(redactProviderError(error));
         }
       }),
   );
@@ -490,6 +498,23 @@ async function executeCctpBaseArbitrumUsdcTransfer(
   if (!built.approvalTxCalldata || !built.approvalTxTarget) {
     throw new Error('CCTP approval transaction missing from provider-owned build');
   }
+  if (!state.burnTransactionHash) {
+    const destinationGasPreflight = await checkCctpDestinationArbitrumGas(
+      built.destinationAddress,
+      liveActionAuthorization,
+    );
+    if (destinationGasPreflight.available === false) {
+      return {
+        approvalTransactionHash: state.approvalTransactionHash,
+        burnTransactionHash: state.burnTransactionHash,
+        providerError: destinationGasPreflight.providerError,
+        providerStatus: CCTP_DESTINATION_GAS_PROVIDER_STATUS,
+        responseStatus: 0,
+        status: 'destination_gas_unavailable',
+        transactionHash: '',
+      };
+    }
+  }
   const ethereum = await Ethereum.getInstance('base');
   const wallet = await ethereum.getWallet(built.walletAddress);
   let approvalTransactionHash = state.approvalTransactionHash;
@@ -523,6 +548,20 @@ async function executeCctpBaseArbitrumUsdcTransfer(
 
   let burnTransactionHash = state.burnTransactionHash;
   if (!burnTransactionHash) {
+    const destinationGasPreflight = await checkCctpDestinationArbitrumGas(
+      built.destinationAddress,
+      liveActionAuthorization,
+    );
+    if (destinationGasPreflight.available === false) {
+      return {
+        approvalTransactionHash,
+        providerError: destinationGasPreflight.providerError,
+        providerStatus: CCTP_DESTINATION_GAS_PROVIDER_STATUS,
+        responseStatus: 0,
+        status: 'destination_gas_unavailable',
+        transactionHash: approvalTransactionHash ?? '',
+      };
+    }
     const burnGasOptions = await ethereum.prepareGasOptions(
       undefined,
       CCTP_BURN_GAS_LIMIT,
@@ -556,7 +595,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     await saveRebalanceState(state);
   }
 
-  if (state.finalizeTransactionHash) {
+  if (state.finalizeTransactionHash && state.status !== 'finalize_pending') {
     return {
       approvalTransactionHash,
       burnTransactionHash,
@@ -622,7 +661,20 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     value: BigNumber.from(0),
     ...finalizeGasOptions,
   });
+  state = {
+    ...state,
+    finalizeTransactionHash: finalizeTx.hash,
+    status: 'finalize_submitted',
+    transactionHash: finalizeTx.hash,
+  };
+  await saveRebalanceState(state);
   const finalizeReceipt = await finalizeEthereum.handleTransactionExecution(finalizeTx);
+  const finalizeStatus =
+    finalizeReceipt?.status === 1
+      ? 'confirmed'
+      : finalizeReceipt?.status === 0
+        ? 'finalize_pending'
+        : 'finalize_submitted';
   return {
     approvalTransactionHash,
     burnTransactionHash,
@@ -632,10 +684,39 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     finalizeTransactionHash: finalizeTx.hash,
     providerStatus: state.providerStatus,
     responseStatus: finalizeReceipt?.status === 1 ? 1 : finalizeReceipt?.status === 0 ? -1 : 0,
-    status:
-      finalizeReceipt?.status === 1 ? 'confirmed' : finalizeReceipt?.status === 0 ? 'failed' : 'finalize_submitted',
+    status: finalizeStatus,
     transactionHash: finalizeTx.hash,
   };
+}
+
+async function checkCctpDestinationArbitrumGas(
+  destinationAddress: string,
+  liveActionAuthorization: LiveActionAuthorization,
+): Promise<{ available: true } | { available: false; providerError: string }> {
+  try {
+    const finalizeEthereum = await Ethereum.getInstance('arbitrum');
+    const gasOptions = await finalizeEthereum.prepareGasOptions(
+      undefined,
+      CCTP_FINALIZE_GAS_LIMIT,
+      liveActionAuthorization,
+      'cctp_base_arbitrum_usdc_rebalance',
+    );
+    const feePerGas = BigNumber.from(gasOptions.maxFeePerGas ?? gasOptions.gasPrice ?? 0);
+    const requiredGas = BigNumber.from(gasOptions.gasLimit ?? CCTP_FINALIZE_GAS_LIMIT).mul(feePerGas);
+    const nativeBalance = await finalizeEthereum.getNativeBalanceByAddress(destinationAddress);
+    if (BigNumber.from(nativeBalance.value).gte(requiredGas) && requiredGas.gt(0)) {
+      return { available: true };
+    }
+    return {
+      available: false,
+      providerError: CCTP_DESTINATION_GAS_PROVIDER_ERROR,
+    };
+  } catch (error: any) {
+    return {
+      available: false,
+      providerError: `CCTP destination Arbitrum ETH gas balance unavailable before burn: ${redactProviderError(error)}`,
+    };
+  }
 }
 
 async function fetchCctpAttestation(state: DurableRebalanceState): Promise<
@@ -890,6 +971,7 @@ function redactProviderError(error: unknown): string {
   return raw
     .replace(/0x[a-fA-F0-9]{80,}/g, '[redacted-hex]')
     .replace(/([?&](?:api_?key|token|signature|attestation)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/\b(token|api[-_]?key|signature|attestation|secret)\b[:=\s]+[^\s&]+/gi, '$1 [redacted]')
     .slice(0, 300);
 }
 

@@ -1,7 +1,7 @@
 import { rmSync } from 'fs';
 import path from 'path';
 
-import { utils } from 'ethers';
+import { BigNumber, utils } from 'ethers';
 import Fastify from 'fastify';
 
 jest.mock('../../src/chains/ethereum/ethereum', () => ({
@@ -38,6 +38,10 @@ const REBALANCE_STATE_IDS = [
   'cctp-destination-auth-mismatch',
   'cctp-iris-rate-limited',
   'cctp-message-mismatch',
+  'cctp-destination-gas-zero',
+  'cctp-destination-gas-after-approval',
+  'cctp-finalize-failed-retryable',
+  'cctp-finalize-receipt-unknown',
   'rebalance-build-status',
 ];
 
@@ -124,7 +128,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -156,7 +160,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -210,7 +214,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -298,7 +302,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       .mockResolvedValueOnce({ hash: '0xburn' })
       .mockResolvedValueOnce({ hash: '0xfinalize' });
     const getWallet = jest.fn(async () => ({ sendTransaction }));
-    const prepareGasOptions = jest.fn(async () => ({ gasLimit: 120000 }));
+    const prepareGasOptions = jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) }));
     mockEthereum({
       getWallet,
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
@@ -335,9 +339,9 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(sendTransaction.mock.calls[2][0].data).toMatch(/^0x57ecfd28/);
     expect(getWallet).toHaveBeenNthCalledWith(1, utils.getAddress(WALLET));
     expect(getWallet).toHaveBeenNthCalledWith(2, utils.getAddress(DESTINATION_WALLET));
-    expect(prepareGasOptions).toHaveBeenCalledTimes(3);
+    expect(prepareGasOptions).toHaveBeenCalledTimes(5);
     expect(prepareGasOptions).toHaveBeenNthCalledWith(
-      3,
+      5,
       undefined,
       300000,
       cctpAuthorization('1.5', DESTINATION_WALLET),
@@ -367,7 +371,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       handleTransactionExecution: jest.fn(
         async () => new Promise((resolve) => setTimeout(() => resolve({ status: 1 }), 10)),
       ),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     mockIris(cctpIrisMessage('0xburn-concurrent'));
     const app = Fastify();
@@ -410,7 +414,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => null),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -430,6 +434,100 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(response.statusCode).toBe(500);
     expect(response.body).toContain('CCTP USDC approval not confirmed');
     expect(sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not approve or burn CCTP USDC when destination Arbitrum wallet has no ETH for finalize gas', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest.fn();
+    const getNativeBalanceByAddress = jest.fn(async () => ({ value: BigNumber.from(0), decimals: 18 }));
+    mockEthereum({
+      getNativeBalanceByAddress,
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...cctpRequest(),
+        idempotencyKey: 'cctp-destination-gas-zero',
+        destinationAddress: DESTINATION_WALLET,
+        liveActionAuthorization: cctpAuthorization('1.5', DESTINATION_WALLET),
+      },
+    });
+    const status = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-destination-gas-zero',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ signature: '', status: 0 });
+    expect(getNativeBalanceByAddress).toHaveBeenCalledWith(utils.getAddress(DESTINATION_WALLET));
+    expect(sendTransaction).not.toHaveBeenCalled();
+    expect(status.json()).toMatchObject({
+      idempotencyKey: 'cctp-destination-gas-zero',
+      providerError: 'CCTP destination Arbitrum wallet has no ETH for receiveMessage gas',
+      providerStatus: 'destination_gas_unavailable',
+      status: 'destination_gas_unavailable',
+    });
+  });
+
+  it('does not burn CCTP USDC after approval when destination Arbitrum gas disappears', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest.fn().mockResolvedValueOnce({ hash: '0xapprove-gas-after-approval' });
+    const getNativeBalanceByAddress = jest
+      .fn()
+      .mockResolvedValueOnce({ value: BigNumber.from(1200000), decimals: 18 })
+      .mockResolvedValue({ value: BigNumber.from(0), decimals: 18 });
+    mockEthereum({
+      getNativeBalanceByAddress,
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    mockIris(cctpIrisMessage('0xburn-gas-after-approval'));
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const payload = {
+      ...cctpRequest(),
+      idempotencyKey: 'cctp-destination-gas-after-approval',
+      liveActionAuthorization: cctpAuthorization('1.5'),
+    };
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const status = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-destination-gas-after-approval',
+    });
+
+    expect(first.json()).toMatchObject({ signature: '0xapprove-gas-after-approval', status: 0 });
+    expect(second.json()).toMatchObject({ status: 0 });
+    expect(sendTransaction).toHaveBeenCalledTimes(1);
+    expect(status.json()).toMatchObject({
+      approvalTransactionHash: '0xapprove-gas-after-approval',
+      providerStatus: 'destination_gas_unavailable',
+      status: 'destination_gas_unavailable',
+    });
   });
 
   it('rejects the same idempotency key with a different immutable request fingerprint', async () => {
@@ -460,7 +558,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -495,7 +593,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     mockIris({ messages: [{ status: 'pending_confirmations' }] });
     const app = Fastify();
@@ -537,7 +635,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     mockIrisHttpError(429, { message: 'rate limited' });
     const app = Fastify();
@@ -579,7 +677,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     const badMessage = cctpIrisMessage('0xburn-message-mismatch');
     (badMessage.messages[0].decodedMessage.decodedMessageBody as any).amount = '1500001';
@@ -615,7 +713,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
     mockIrisSequence([{ messages: [{ status: 'pending_confirmations' }] }, cctpIrisMessage('0xburn-resume')]);
     const app = Fastify();
@@ -642,6 +740,131 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
 
     expect(first.json()).toMatchObject({ signature: '0xburn-resume', status: 0 });
     expect(second.json()).toMatchObject({ signature: '0xfinalize-resume', status: 1 });
+    expect(sendTransaction).toHaveBeenCalledTimes(3);
+    expect(sendTransaction.mock.calls[2][0].to).toBe(CCTP_MESSAGE_TRANSMITTER);
+  });
+
+  it('keeps failed CCTP finalize receipts retryable after burn', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xapprove-finalize-failed' })
+      .mockResolvedValueOnce({ hash: '0xburn-finalize-failed' })
+      .mockResolvedValueOnce({ hash: '0xfinalize-failed' })
+      .mockResolvedValueOnce({ hash: '0xfinalize-retry' });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest
+        .fn()
+        .mockResolvedValueOnce({ status: 1 })
+        .mockResolvedValueOnce({ status: 1 })
+        .mockResolvedValueOnce({ status: 0 })
+        .mockResolvedValueOnce({ status: 1 }),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    mockIris(cctpIrisMessage('0xburn-finalize-failed'));
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...cctpRequest(),
+        idempotencyKey: 'cctp-finalize-failed-retryable',
+        liveActionAuthorization: cctpAuthorization('1.5'),
+      },
+    });
+    const firstStatus = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-finalize-failed-retryable',
+    });
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...cctpRequest(),
+        idempotencyKey: 'cctp-finalize-failed-retryable',
+        liveActionAuthorization: cctpAuthorization('1.5'),
+      },
+    });
+    const retryStatus = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-finalize-failed-retryable',
+    });
+
+    expect(response.json()).toMatchObject({ signature: '0xfinalize-failed', status: -1 });
+    expect(firstStatus.json()).toMatchObject({
+      burnTransactionHash: '0xburn-finalize-failed',
+      finalizeTransactionHash: '0xfinalize-failed',
+      status: 'finalize_pending',
+    });
+    expect(retry.json()).toMatchObject({ signature: '0xfinalize-retry', status: 1 });
+    expect(retryStatus.json()).toMatchObject({
+      burnTransactionHash: '0xburn-finalize-failed',
+      finalizeTransactionHash: '0xfinalize-retry',
+      status: 'confirmed',
+    });
+    expect(sendTransaction.mock.calls[3][0].to).toBe(CCTP_MESSAGE_TRANSMITTER);
+  });
+
+  it('does not rebroadcast CCTP finalize when receipt status is unknown after hash submission', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xapprove-finalize-unknown' })
+      .mockResolvedValueOnce({ hash: '0xburn-finalize-unknown' })
+      .mockResolvedValueOnce({ hash: '0xfinalize-unknown' });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest
+        .fn()
+        .mockResolvedValueOnce({ status: 1 })
+        .mockResolvedValueOnce({ status: 1 })
+        .mockRejectedValueOnce(new Error('receipt provider timeout with token secret')),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    mockIris(cctpIrisMessage('0xburn-finalize-unknown'));
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const payload = {
+      ...cctpRequest(),
+      idempotencyKey: 'cctp-finalize-receipt-unknown',
+      liveActionAuthorization: cctpAuthorization('1.5'),
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const firstStatus = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-finalize-receipt-unknown',
+    });
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('[redacted]');
+    expect(firstStatus.json()).toMatchObject({
+      burnTransactionHash: '0xburn-finalize-unknown',
+      finalizeTransactionHash: '0xfinalize-unknown',
+      providerError: expect.stringContaining('[redacted]'),
+      status: 'finalize_submitted',
+    });
+    expect(retry.json()).toMatchObject({ signature: '0xfinalize-unknown', status: 0 });
     expect(sendTransaction).toHaveBeenCalledTimes(3);
     expect(sendTransaction.mock.calls[2][0].to).toBe(CCTP_MESSAGE_TRANSMITTER);
   });
@@ -707,6 +930,10 @@ function cctpAuthorization(notional: string, destinationAddress: string = WALLET
 
 function mockEthereum(overrides: Record<string, unknown> = {}) {
   const ethereum = {
+    getNativeBalanceByAddress: jest.fn(async () => ({
+      decimals: 18,
+      value: BigNumber.from('1000000000000000000'),
+    })),
     getToken: jest.fn(async () => ({
       address: TOKEN,
       chainId: 42161,

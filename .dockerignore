@@ -4,3 +4,8 @@
 /logs
 /gateway.level
 /transactions.level
+/.git
+/.pytest_cache
+/coverage
+/dist
+/node_modules
