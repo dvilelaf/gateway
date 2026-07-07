@@ -20,9 +20,16 @@ import { getSolanaChainConfig } from '../../../chains/solana/solana.config';
 import { ExecuteSwapRequestType, ExecuteSwapResponseType, ExecuteSwapResponse } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
+import {
+  LiveActionAuthorization,
+  marlinGatewayProviderIntentTokenMatches,
+  marlinProviderIntentAuthorizationMatches,
+} from '../../../services/runtime-guard';
 import { Orca } from '../orca';
 import { handleWsolAta } from '../orca.utils';
 import { OrcaClmmExecuteSwapRequest, OrcaClmmExecuteSwapRequestType } from '../schemas';
+
+const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token';
 
 export async function executeSwap(
   network: string,
@@ -33,7 +40,8 @@ export async function executeSwap(
   side: 'BUY' | 'SELL',
   poolAddress: string,
   slippagePct: number = 1,
-  liveActionAuthorization?: ExecuteSwapRequestType['liveActionAuthorization'],
+  liveActionAuthorization?: LiveActionAuthorization,
+  internalProviderIntentSource?: string,
 ): Promise<ExecuteSwapResponseType> {
   const solana = await Solana.getInstance(network);
   const orca = await Orca.getInstance(network);
@@ -247,6 +255,7 @@ export async function executeSwap(
     [wallet],
     undefined,
     liveActionAuthorization,
+    internalProviderIntentSource,
   );
 
   // Calculate balance changes based on side
@@ -291,21 +300,31 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request) => {
       try {
-        const {
-          network,
-          walletAddress,
-          baseToken,
-          quoteToken,
-          amount,
-          side,
-          poolAddress,
-          slippagePct,
-          liveActionAuthorization,
-        } = request.body;
+        const { network, walletAddress, baseToken, quoteToken, amount, side, poolAddress, slippagePct } = request.body;
+        const bodyWithInternalFields = request.body as OrcaClmmExecuteSwapRequestType & {
+          liveActionAuthorization?: LiveActionAuthorization;
+        };
 
         // Use defaults if not provided
         const networkUsed = network || getSolanaChainConfig().defaultNetwork;
         const walletAddressUsed = walletAddress || getSolanaChainConfig().defaultWallet;
+        const tokenAuthorized = marlinGatewayProviderIntentTokenMatches(
+          request.headers[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER],
+        );
+        const liveActionAuthorization =
+          tokenAuthorized &&
+          marlinProviderIntentAuthorizationMatches(bodyWithInternalFields.liveActionAuthorization, {
+            action: 'gateway_swap',
+            connector_id: 'orca',
+            network: networkUsed,
+            notional: amount,
+            scope: 'provider_intent',
+            source: 'marlin',
+            wallet_address: walletAddressUsed,
+          })
+            ? bodyWithInternalFields.liveActionAuthorization
+            : undefined;
+        const internalProviderIntentSource = liveActionAuthorization ? 'orca_execute_swap' : undefined;
 
         let poolAddressUsed = poolAddress;
 
@@ -353,6 +372,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           poolAddressUsed,
           slippagePct,
           liveActionAuthorization,
+          internalProviderIntentSource,
         );
       } catch (e: any) {
         logger.error('Error executing swap:', e.message || e);

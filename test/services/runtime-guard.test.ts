@@ -141,6 +141,34 @@ describe('runtime guard', () => {
     ).not.toThrow();
   });
 
+  it('allows Marlin provider-intent Orca swap Solana transaction authorization', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        internalProviderIntentSource: 'orca_execute_swap',
+        liveActionAuthorization: {
+          action: 'gateway_swap',
+          connector_id: 'orca',
+          network: 'mainnet-beta',
+          notional: '0.0001',
+          scope: 'provider_intent',
+          slippage_bps: '100',
+          source: 'marlin',
+          wallet_address: 'solana-wallet',
+        },
+        network: 'mainnet-beta',
+        operation: 'solana_transaction',
+        expectedConnectorId: 'orca',
+        expectedNotional: '0.0001',
+        expectedSlippageBps: '100',
+        expectedWalletAddress: 'solana-wallet',
+      }),
+    ).not.toThrow();
+  });
+
   it('allows Marlin provider-intent Aerodrome swap Ethereum transaction authorization', () => {
     delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
@@ -884,10 +912,18 @@ describe('runtime guard wiring', () => {
       source.indexOf('} catch (e: any)', source.indexOf('export const executeSwapRoute')),
     );
     expect(route).toContain('liveActionAuthorization');
+    expect(route).toContain('marlinGatewayProviderIntentTokenMatches');
+    expect(source).toContain(
+      "const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token'",
+    );
+    expect(source).toContain(
+      "const internalProviderIntentSource = liveActionAuthorization ? 'orca_execute_swap' : undefined",
+    );
 
     const callIndex = route.indexOf('return await executeSwap(');
     const executeSwapCall = route.slice(callIndex, route.indexOf(');', callIndex));
     expect(executeSwapCall).toContain('liveActionAuthorization');
+    expect(executeSwapCall).toContain('internalProviderIntentSource');
   });
 
   it('does not require live authorization for universal-router gas estimates', () => {

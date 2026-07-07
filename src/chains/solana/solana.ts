@@ -1230,10 +1230,13 @@ export class Solana {
     tx: Transaction | VersionedTransaction,
     signers: Signer[] = [],
     priorityFeePerCU?: number,
-    _liveActionAuthorization?: LiveActionAuthorization,
+    liveActionAuthorization?: LiveActionAuthorization,
+    internalProviderIntentSource?: string,
   ): Promise<{ signature: string; fee: number }> {
     assertMainnetMutationAllowed({
       chain: 'solana',
+      internalProviderIntentSource,
+      liveActionAuthorization,
       network: this.network,
       operation: 'solana_transaction',
     });

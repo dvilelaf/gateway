@@ -170,8 +170,8 @@ function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInpu
   }
   return (
     (input.chain === 'solana' &&
-      input.operation === 'solana_raw_transaction' &&
-      input.internalProviderIntentSource === 'jupiter_execute_swap') ||
+      ['solana_raw_transaction', 'solana_transaction'].includes(input.operation) &&
+      ['jupiter_execute_swap', 'orca_execute_swap'].includes(input.internalProviderIntentSource ?? '')) ||
     (input.chain === 'ethereum' &&
       input.network === 'base' &&
       input.operation === 'ethereum_transaction' &&
