@@ -420,23 +420,7 @@ describe('runtime guard', () => {
     ).not.toThrow();
   });
 
-  it('rejects bridge execution when the provider is not allowlisted', () => {
-    process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED = 'true';
-    process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST = 'lifi';
-    process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
-
-    expect(() =>
-      assertBridgeExecutionAllowed(
-        approvedBridgeAuthorization({ nonce: 'bridge-provider-allowlist' }),
-        approvedBridgeExpectation({ provider: 'squid' }),
-      ),
-    ).toThrow(/bridge provider not allowlisted/);
-  });
-
   it('rejects bridge authorization route data mismatches', () => {
-    process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED = 'true';
-    process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST = 'lifi,squid';
-
     expect(() =>
       assertBridgeExecutionAllowed(
         approvedBridgeAuthorization({ nonce: 'bridge-route-mismatch' }),
@@ -446,8 +430,6 @@ describe('runtime guard', () => {
   });
 
   it('rejects bridge execution when the same authorization nonce is reused', () => {
-    process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED = 'true';
-    process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST = 'lifi,squid';
     process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';
     const authorization = approvedBridgeAuthorization({ nonce: 'bridge-nonce-replay' });
 

@@ -1,8 +1,6 @@
 import { readFileSync } from 'fs';
 
 export const LIVE_MUTATIONS_ENV = 'GATEWAY_LIVE_MUTATIONS_ENABLED';
-export const BRIDGE_EXECUTE_ENV = 'GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED';
-export const BRIDGE_PROVIDER_ALLOWLIST_ENV = 'GATEWAY_BRIDGE_PROVIDER_ALLOWLIST';
 export const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV = 'MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN';
 export const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_FILE_ENV = 'MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_FILE';
 
@@ -109,10 +107,6 @@ export function assertBridgeExecutionAllowed(
   authorization: LiveActionAuthorization | undefined,
   expectation: BridgeExecutionExpectation,
 ): void {
-  if (!envFlagEnabled(BRIDGE_EXECUTE_ENV)) {
-    throw new Error(`bridge execution disabled; set ${BRIDGE_EXECUTE_ENV}=true only for the Marlin runtime`);
-  }
-  assertProviderAllowlisted(expectation.provider);
   if (
     !marlinProviderIntentAuthorizationMatches(authorization, {
       bridge_provider: expectation.provider,
@@ -143,17 +137,6 @@ export function isMainnetNetwork(network: string): boolean {
     return false;
   }
   return !SAFE_NETWORK_MARKERS.some((marker) => normalized.includes(marker));
-}
-
-function assertProviderAllowlisted(provider: unknown): void {
-  const providerText = String(provider).trim();
-  const allowed = (process.env[BRIDGE_PROVIDER_ALLOWLIST_ENV] ?? '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => item !== '');
-  if (providerText === '' || !allowed.includes(providerText)) {
-    throw new Error('bridge provider not allowlisted');
-  }
 }
 
 function envFlagEnabled(name: string): boolean {
