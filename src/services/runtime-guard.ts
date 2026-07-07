@@ -113,6 +113,20 @@ export function assertBridgeExecutionAllowed(
     throw new Error(`bridge execution disabled; set ${BRIDGE_EXECUTE_ENV}=true only for the Marlin runtime`);
   }
   assertProviderAllowlisted(expectation.provider);
+  if (
+    !marlinProviderIntentAuthorizationMatches(authorization, {
+      bridge_provider: expectation.provider,
+      bridge_provider_route_id: expectation.providerRouteId,
+      bridge_quote_id: expectation.quoteId,
+      bridge_route_payload_hash: expectation.routePayloadHash,
+      bridge_source_chain_id: expectation.sourceChainId,
+      bridge_tx_calldata_hash: expectation.calldataHash,
+      bridge_tx_target: expectation.target,
+      bridge_tx_value: expectation.value,
+    })
+  ) {
+    throw new Error('bridge authorization does not match execution payload');
+  }
   const nonce = authorization?.bridge_authorization_nonce;
   if (typeof nonce !== 'string' || nonce.trim() === '') {
     throw new Error('bridge authorization nonce missing');

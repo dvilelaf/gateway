@@ -433,7 +433,7 @@ describe('runtime guard', () => {
     ).toThrow(/bridge provider not allowlisted/);
   });
 
-  it('ignores bridge authorization route data once provider and nonce checks pass', () => {
+  it('rejects bridge authorization route data mismatches', () => {
     process.env.GATEWAY_LIVE_BRIDGE_EXECUTE_ENABLED = 'true';
     process.env.GATEWAY_BRIDGE_PROVIDER_ALLOWLIST = 'lifi,squid';
 
@@ -442,7 +442,7 @@ describe('runtime guard', () => {
         approvedBridgeAuthorization({ nonce: 'bridge-route-mismatch' }),
         approvedBridgeExpectation({ providerRouteId: 'route-999' }),
       ),
-    ).not.toThrow();
+    ).toThrow(/bridge authorization does not match execution payload/);
   });
 
   it('rejects bridge execution when the same authorization nonce is reused', () => {
