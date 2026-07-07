@@ -430,8 +430,8 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     ...approvalGasOptions,
   });
   const approvalReceipt = await ethereum.handleTransactionExecution(approvalTx);
-  if (approvalReceipt?.status === 0) {
-    throw new Error('CCTP USDC approval failed');
+  if (approvalReceipt?.status !== 1) {
+    throw new Error('CCTP USDC approval not confirmed');
   }
   const burnGasOptions = await ethereum.prepareGasOptions(
     undefined,

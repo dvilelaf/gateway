@@ -18,6 +18,8 @@ import { assertMainnetMutationAllowed } from '../../src/services/runtime-guard';
 const WALLET = '0x00000000000000000000000000000000000000aa';
 const TOKEN = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
 const BRIDGE2 = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
+const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const CCTP_TOKEN_MESSENGER = '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d';
 
 describe('Hyperliquid Bridge2 treasury rebalance route', () => {
   const originalProfile = process.env.MARLIN_RUNTIME_PROFILE;
@@ -289,6 +291,10 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().signature).toBe('0xburn');
     expect(sendTransaction).toHaveBeenCalledTimes(2);
+    expect(sendTransaction.mock.calls[0][0].to).toBe(BASE_USDC);
+    expect(sendTransaction.mock.calls[0][0].data).toMatch(/^0x095ea7b3/);
+    expect(sendTransaction.mock.calls[1][0].to).toBe(CCTP_TOKEN_MESSENGER);
+    expect(sendTransaction.mock.calls[1][0].data).toMatch(/^0x8e0250ee/);
     expect(status.json()).toMatchObject({
       approvalTransactionHash: '0xapprove',
       idempotencyKey: 'cctp-rebalance-1',
@@ -339,6 +345,35 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(second.statusCode).toBe(200);
     expect([first.json().signature, second.json().signature]).toEqual(['0xburn-concurrent', '0xburn-concurrent']);
     expect(sendTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not burn CCTP USDC before approval is confirmed', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest.fn().mockResolvedValueOnce({ hash: '0xapprove-pending' });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => null),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000 })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...cctpRequest(),
+        idempotencyKey: 'cctp-approval-pending',
+        liveActionAuthorization: cctpAuthorization('1.5'),
+      },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('CCTP USDC approval not confirmed');
+    expect(sendTransaction).toHaveBeenCalledTimes(1);
   });
 });
 
