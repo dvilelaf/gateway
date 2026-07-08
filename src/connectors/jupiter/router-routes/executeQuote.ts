@@ -21,7 +21,7 @@ export async function executeQuote(
   internalProviderIntentSource?: string,
   guardContext: Pick<
     MainnetMutationGuardInput,
-    'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+    'expectedConnectorId' | 'expectedNotional' | 'expectedSlippageBps' | 'expectedWalletAddress'
   > = {},
 ): Promise<SwapExecuteResponseType> {
   // Retrieve cached quote

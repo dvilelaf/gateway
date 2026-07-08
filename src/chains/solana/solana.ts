@@ -1234,7 +1234,7 @@ export class Solana {
     internalProviderIntentSource?: string,
     guardContext: Pick<
       MainnetMutationGuardInput,
-      'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+      'expectedConnectorId' | 'expectedNotional' | 'expectedSlippageBps' | 'expectedWalletAddress'
     > = {},
   ): Promise<{ signature: string; fee: number }> {
     assertMainnetMutationAllowed({
@@ -1477,7 +1477,7 @@ export class Solana {
     internalProviderIntentSource?: string,
     guardContext: Pick<
       MainnetMutationGuardInput,
-      'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+      'expectedConnectorId' | 'expectedNotional' | 'expectedSlippageBps' | 'expectedWalletAddress'
     > = {},
   ): Promise<{ confirmed: boolean; signature: string; txData: any }> {
     assertMainnetMutationAllowed({
@@ -1680,7 +1680,7 @@ export class Solana {
     internalProviderIntentSource?: string,
     guardContext: Pick<
       MainnetMutationGuardInput,
-      'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+      'expectedConnectorId' | 'expectedNotional' | 'expectedSlippageBps' | 'expectedWalletAddress'
     > = {},
   ): Promise<string> {
     assertMainnetMutationAllowed({

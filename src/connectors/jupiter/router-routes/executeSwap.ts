@@ -31,7 +31,7 @@ async function executeSwap(
   internalProviderIntentSource?: string,
   guardContext: Pick<
     MainnetMutationGuardInput,
-    'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+    'expectedConnectorId' | 'expectedNotional' | 'expectedSlippageBps' | 'expectedWalletAddress'
   > = {},
 ): Promise<SwapExecuteResponseType> {
   // Step 1: Get a fresh quote using the quoteSwap function
@@ -116,6 +116,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           {
             expectedConnectorId: 'jupiter',
             expectedNotional: amount,
+            expectedSlippageBps: (slippagePct ?? JupiterConfig.config.slippagePct) * 100,
             expectedWalletAddress: walletAddress,
           },
         );

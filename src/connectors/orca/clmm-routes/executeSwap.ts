@@ -45,7 +45,7 @@ export async function executeSwap(
   internalProviderIntentSource?: string,
   guardContext: Pick<
     MainnetMutationGuardInput,
-    'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+    'expectedConnectorId' | 'expectedNotional' | 'expectedSlippageBps' | 'expectedWalletAddress'
   > = {},
 ): Promise<ExecuteSwapResponseType> {
   const solana = await Solana.getInstance(network);
@@ -381,6 +381,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           {
             expectedConnectorId: 'orca',
             expectedNotional: amount,
+            expectedSlippageBps: (slippagePct ?? 1) * 100,
             expectedWalletAddress: walletAddressUsed,
           },
         );

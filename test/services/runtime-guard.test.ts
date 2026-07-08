@@ -181,6 +181,19 @@ describe('runtime guard', () => {
         operation: 'solana_raw_transaction',
       }),
     ).toThrow(/notional_matches=false/);
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        expectedConnectorId: 'jupiter',
+        expectedNotional: Number('0.0019269450000000005'),
+        expectedSlippageBps: '2',
+        expectedWalletAddress: 'solana-wallet',
+        internalProviderIntentSource: 'jupiter_execute_swap',
+        liveActionAuthorization: authorization,
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).toThrow(/slippage_matches=false/);
   });
 
   it('allows Marlin provider-intent Orca swap Solana transaction authorization', () => {
