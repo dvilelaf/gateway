@@ -1454,6 +1454,9 @@ function bytes32ToAddress(value: string): string {
 }
 
 function isZeroBytes32OrAddress(value: unknown): boolean {
+  if (value === '11111111111111111111111111111111') {
+    return true;
+  }
   if (typeof value !== 'string' || !utils.isHexString(value)) {
     return false;
   }
