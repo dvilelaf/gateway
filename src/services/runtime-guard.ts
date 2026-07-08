@@ -207,12 +207,27 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
   if (!sourceMatches && !destinationMatches) {
     return false;
   }
+  const requiredGuardContextPresent =
+    input.expectedConnectorId !== undefined &&
+    input.expectedConnectorId !== null &&
+    String(input.expectedConnectorId).trim() !== '' &&
+    input.expectedNotional !== undefined &&
+    input.expectedNotional !== null &&
+    String(input.expectedNotional).trim() !== '' &&
+    input.expectedWalletAddress !== undefined &&
+    input.expectedWalletAddress !== null &&
+    String(input.expectedWalletAddress).trim() !== '';
   return (
     (input.chain === 'ethereum' &&
       input.network === 'arbitrum' &&
       input.operation === 'ethereum_transaction' &&
       input.internalProviderIntentSource === 'hyperliquid_bridge2_rebalance') ||
-    (input.chain === 'ethereum' && input.operation === 'ethereum_transaction' && isCctpTreasury)
+    (input.chain === 'ethereum' && input.operation === 'ethereum_transaction' && isCctpTreasury) ||
+    (input.chain === 'solana' &&
+      input.operation === 'solana_raw_transaction' &&
+      isCctpTreasury &&
+      destinationMatches &&
+      requiredGuardContextPresent)
   );
 }
 

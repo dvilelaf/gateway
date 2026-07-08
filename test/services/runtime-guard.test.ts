@@ -493,6 +493,86 @@ describe('runtime guard', () => {
     ).not.toThrow();
   });
 
+  it('allows Marlin CCTP treasury authorization on Solana destination receiveMessage', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    const authorization = {
+      action: 'gateway_rebalance',
+      connector_id: 'treasury',
+      destination_address: '9AtFd6KcR9tx5Etxc9SVkYrkZb7yC5BDibao7yPT5Ce1',
+      destination_network: 'mainnet-beta',
+      network: 'base',
+      notional: '1',
+      scope: 'provider_treasury',
+      source: 'marlin',
+      wallet_address: '0x043F9e880763576c15eBCB7d4f0D7453F2Db1708',
+    };
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '1',
+        expectedWalletAddress: '9AtFd6KcR9tx5Etxc9SVkYrkZb7yC5BDibao7yPT5Ce1',
+        internalProviderIntentSource: 'cctp_usdc_rebalance',
+        liveActionAuthorization: authorization,
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).not.toThrow();
+  });
+
+  it('blocks Solana CCTP treasury authorization without destination-scoped fields', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '1',
+        expectedWalletAddress: '9AtFd6KcR9tx5Etxc9SVkYrkZb7yC5BDibao7yPT5Ce1',
+        internalProviderIntentSource: 'cctp_usdc_rebalance',
+        liveActionAuthorization: {
+          action: 'gateway_rebalance',
+          connector_id: 'treasury',
+          network: 'mainnet-beta',
+          notional: '1',
+          scope: 'provider_treasury',
+          source: 'marlin',
+          wallet_address: '9AtFd6KcR9tx5Etxc9SVkYrkZb7yC5BDibao7yPT5Ce1',
+        },
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).toThrow(/direct mainnet mutation disabled/);
+  });
+
+  it('blocks Solana CCTP treasury authorization without explicit raw transaction guard context', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        internalProviderIntentSource: 'cctp_usdc_rebalance',
+        liveActionAuthorization: {
+          action: 'gateway_rebalance',
+          connector_id: 'treasury',
+          destination_address: '9AtFd6KcR9tx5Etxc9SVkYrkZb7yC5BDibao7yPT5Ce1',
+          destination_network: 'mainnet-beta',
+          network: 'base',
+          notional: '1',
+          scope: 'provider_treasury',
+          source: 'marlin',
+          wallet_address: '0x043F9e880763576c15eBCB7d4f0D7453F2Db1708',
+        },
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).toThrow(/direct mainnet mutation disabled/);
+  });
+
   it('allows wallet send authorizations to pass the lower-level Ethereum transaction guard', () => {
     process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED = 'true';
     process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';

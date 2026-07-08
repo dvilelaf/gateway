@@ -936,6 +936,11 @@ async function executeCctpSolanaReceiveMessage(
     lastValidBlockHeight,
     liveActionAuthorization,
     CCTP_USDC_PROVIDER_INTENT_SOURCE,
+    {
+      expectedConnectorId: providerTreasuryConnectorId(built.provider),
+      expectedNotional: built.amount,
+      expectedWalletAddress: built.destinationAddress,
+    },
   );
   await saveRebalanceState({
     ...state,

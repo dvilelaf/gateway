@@ -665,6 +665,11 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       123,
       expect.objectContaining({ destination_address: destinationAddress }),
       'cctp_usdc_rebalance',
+      {
+        expectedConnectorId: 'treasury',
+        expectedNotional: '1.5',
+        expectedWalletAddress: destinationAddress,
+      },
     );
     expect(confirmTransaction).toHaveBeenCalledWith(
       {
