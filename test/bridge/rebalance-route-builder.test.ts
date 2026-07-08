@@ -23,6 +23,7 @@ import {
   rebalanceRoutes,
   buildCctpBaseArbitrumUsdcTransfer,
   buildHyperliquidBridge2Transfer,
+  buildSquidRouterRebalance,
 } from '../../src/bridge/rebalance.routes';
 import { Ethereum } from '../../src/chains/ethereum/ethereum';
 import { Solana } from '../../src/chains/solana/solana';
@@ -125,6 +126,8 @@ const REBALANCE_STATE_IDS = [
   'squid-solana-destination',
   'squid-xrpl-destination',
   'squid-built-no-status',
+  'squid-erc20-build',
+  'squid-erc20-execute',
 ];
 
 describe('Hyperliquid Bridge2 treasury rebalance route', () => {
@@ -735,7 +738,6 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       'unsupported Squid Router destination network',
     ],
     [{ destinationChain: 'xrpl', destinationNetwork: 'unknown-chain' }, 'unsupported Squid Router destination network'],
-    [{ sourceAsset: 'USDC' }, 'native EVM asset only'],
   ])('rejects unsupported Squid request %j before calling Squid', async (override, expected) => {
     global.fetch = jest.fn() as any;
     const app = Fastify();
@@ -755,6 +757,112 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(response.statusCode).toBe(500);
     expect(response.body).toContain(expected);
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('builds a Squid Router ERC20 source route with approval bound to the quoted target', async () => {
+    mockSquidRoute({
+      route: {
+        id: 'route-erc20',
+        quoteId: 'quote-erc20',
+        transactionRequest: {
+          data: '0x1234abcd',
+          target: '0x00000000000000000000000000000000000000cc',
+          value: '0',
+        },
+      },
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload: { ...squidRequest(), idempotencyKey: 'squid-erc20-build', sourceAsset: BASE_USDC },
+    });
+    const body = response.json();
+    mockSquidRoute({
+      route: {
+        id: 'route-erc20-direct',
+        quoteId: 'quote-erc20-direct',
+        transactionRequest: {
+          data: '0x1234abcd',
+          target: '0x00000000000000000000000000000000000000cc',
+          value: '0',
+        },
+      },
+    });
+    const built = await buildSquidRouterRebalance({
+      ...squidRequest(),
+      idempotencyKey: 'squid-erc20-build-direct',
+      sourceAsset: BASE_USDC,
+    });
+    const approval = new utils.Interface([
+      'function approve(address spender, uint256 amount) returns (bool)',
+    ]).decodeFunctionData('approve', built.approvalTxCalldata as string);
+    const quoteBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+
+    expect(response.statusCode).toBe(200);
+    expect(quoteBody.fromToken).toBe(BASE_USDC);
+    expect(quoteBody.fromAmount).toBe('2500000');
+    expect(body).toMatchObject({
+      approvalTxTarget: BASE_USDC,
+      provider: 'squid_router',
+      sourceAsset: BASE_USDC,
+    });
+    expect(approval[0]).toBe('0x00000000000000000000000000000000000000cc');
+    expect(approval[1].toString()).toBe('2500000');
+    expect(body.approvalTxCalldata).toBeUndefined();
+  });
+
+  it('executes Squid ERC20 source approval before the quoted route transaction', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    mockSquidRoute({
+      route: {
+        id: 'route-erc20-execute',
+        quoteId: 'quote-erc20-execute',
+        transactionRequest: {
+          data: '0x1234abcd',
+          target: '0x00000000000000000000000000000000000000cc',
+          value: '0',
+        },
+      },
+    });
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xsquid-approval' })
+      .mockResolvedValueOnce({ hash: '0xsquid-route' });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...squidRequest(),
+        sourceAsset: BASE_USDC,
+        idempotencyKey: 'squid-erc20-execute',
+        liveActionAuthorization: squidAuthorization('2.5'),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ signature: '0xsquid-route', status: 1 });
+    expect(sendTransaction).toHaveBeenCalledTimes(2);
+    expect(sendTransaction.mock.calls[0][0]).toMatchObject({ to: BASE_USDC, value: BigNumber.from(0) });
+    expect(sendTransaction.mock.calls[1][0]).toMatchObject({
+      data: '0x1234abcd',
+      to: '0x00000000000000000000000000000000000000cc',
+      value: BigNumber.from(0),
+    });
   });
 
   it('builds the CCTP Base to Arbitrum USDC transfer internally', async () => {

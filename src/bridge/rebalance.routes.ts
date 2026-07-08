@@ -47,6 +47,7 @@ const SQUID_ROUTER_PROVIDER = 'squid_router';
 const SQUID_ROUTER_PROVIDER_INTENT_SOURCE = 'squid_router_rebalance';
 const SQUID_ROUTER_MAINNET_URL = 'https://v2.api.squidrouter.com';
 const SQUID_ROUTER_GAS_LIMIT = 450000;
+const SQUID_ROUTER_APPROVE_GAS_LIMIT = 90000;
 const SQUID_NATIVE_TOKEN_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const SQUID_NATIVE_ASSET_DECIMALS = 18;
 const CCTP_REGISTRY_VERSION = 'cctp-v2-evm-usdc-configured-2026-07-08';
@@ -145,6 +146,9 @@ const SquidRouterRebalanceRequestSchema = Type.Object(
     sourceChain: Type.Literal('ethereum'),
     sourceNetwork: Type.String({ minLength: 1 }),
     sourceAsset: Type.String({ minLength: 1 }),
+    sourceAssetDecimals: Type.Optional(
+      Type.Union([Type.Number({ minimum: 0, maximum: 36 }), Type.String({ minLength: 1 })]),
+    ),
     destinationChain: Type.String({ minLength: 1 }),
     destinationNetwork: Type.String({ minLength: 1 }),
     destinationAsset: Type.String({ minLength: 1 }),
@@ -158,17 +162,15 @@ const SquidRouterRebalanceRequestSchema = Type.Object(
 
 const BridgeRebalanceRequestSchema = Type.Object(
   {
-    provider: Type.Union([
-      Type.Literal('hyperliquid_bridge2'),
-      Type.Literal(CCTP_BASE_ARBITRUM_USDC_PROVIDER),
-      Type.Literal(CCTP_USDC_PROVIDER),
-      Type.Literal(SQUID_ROUTER_PROVIDER),
-    ]),
+    provider: Type.Union([Type.Literal('hyperliquid_bridge2'), Type.Literal(SQUID_ROUTER_PROVIDER)]),
     idempotencyKey: Type.String({ minLength: 1 }),
     mode: Type.Literal('mainnet'),
     sourceChain: Type.Literal('ethereum'),
     sourceNetwork: Type.String({ minLength: 1 }),
     sourceAsset: Type.String({ minLength: 1 }),
+    sourceAssetDecimals: Type.Optional(
+      Type.Union([Type.Number({ minimum: 0, maximum: 36 }), Type.String({ minLength: 1 })]),
+    ),
     destinationAsset: Type.String({ minLength: 1 }),
     walletAddress: Type.String({ minLength: 1 }),
     destinationAddress: Type.String({ minLength: 1 }),
@@ -544,7 +546,7 @@ export async function buildProviderOwnedRebalance(body: BridgeRebalanceRequest):
     return buildSquidRouterRebalance(body as SquidRouterRebalanceRequest);
   }
   if (body.provider !== 'hyperliquid_bridge2') {
-    return buildCctpBaseArbitrumUsdcTransfer(body as CctpBaseArbitrumRebalanceRequest);
+    throw new Error('CCTP treasury rebalance is disabled; use squid_router');
   }
   return buildHyperliquidBridge2Transfer(body as HyperliquidBridge2RebalanceRequest);
 }
@@ -552,10 +554,9 @@ export async function buildProviderOwnedRebalance(body: BridgeRebalanceRequest):
 export async function buildSquidRouterRebalance(
   body: SquidRouterRebalanceRequest,
 ): Promise<BuiltProviderOwnedRebalance> {
-  if (!isSquidNativeToken(body.sourceAsset)) {
-    throw new Error('Squid Router source asset currently supports native EVM asset only');
-  }
-  const amountUnits = utils.parseUnits(body.amount, SQUID_NATIVE_ASSET_DECIMALS);
+  const sourceAsset = normalizeSquidSourceAsset(body.sourceAsset);
+  const sourceAssetDecimals = squidSourceAssetDecimals(sourceAsset, body.sourceNetwork, body.sourceAssetDecimals);
+  const amountUnits = utils.parseUnits(body.amount, sourceAssetDecimals);
   if (amountUnits.lte(0)) {
     throw new Error('Squid Router rebalance amount must be positive');
   }
@@ -571,12 +572,19 @@ export async function buildSquidRouterRebalance(
     amountUnits.toString(),
     squidSourceChainId,
     squidDestinationChainId,
+    sourceAsset,
   );
   const transactionRequest = quote.route?.transactionRequest ?? quote.transactionRequest;
   const txTarget = requireAddress(transactionRequest?.target ?? transactionRequest?.to, 'Squid transaction target');
   const txCalldata = requireHex(transactionRequest?.data, 'Squid transaction calldata');
   const txValue = normalizeTransactionValue(transactionRequest?.value ?? '0');
+  const approvalTxCalldata = isSquidNativeToken(sourceAsset)
+    ? undefined
+    : erc20ApprovalInterface.encodeFunctionData('approve', [txTarget, amountUnits]);
   return {
+    approvalCalldataHash: approvalTxCalldata ? utils.keccak256(approvalTxCalldata) : undefined,
+    approvalTxCalldata,
+    approvalTxTarget: isSquidNativeToken(sourceAsset) ? undefined : sourceAsset,
     amount: body.amount,
     destinationAddress,
     destinationAsset: body.destinationAsset,
@@ -587,7 +595,7 @@ export async function buildSquidRouterRebalance(
     provider: SQUID_ROUTER_PROVIDER,
     providerRouteId: optionalText(quote.route?.id ?? quote.routeId ?? quote.id),
     quoteId: optionalText(quote.route?.quoteId ?? quote.quoteId ?? quote.route?.requestId ?? quote.requestId),
-    sourceAsset: SQUID_NATIVE_TOKEN_ADDRESS,
+    sourceAsset,
     sourceChain: 'ethereum',
     sourceNetwork: body.sourceNetwork,
     squidDestinationChainId,
@@ -595,7 +603,7 @@ export async function buildSquidRouterRebalance(
     squidStatusRequestId: optionalText(
       quote.xRequestId ?? quote.route?.requestId ?? quote.requestId ?? quote.route?.id ?? quote.id,
     ),
-    tokenAddress: txTarget,
+    tokenAddress: sourceAsset,
     txCalldata,
     txCalldataHash: utils.keccak256(txCalldata),
     txTarget,
@@ -612,13 +620,14 @@ async function fetchSquidRouteQuote(
   amountUnits: string,
   squidSourceChainId: string,
   squidDestinationChainId: string,
+  sourceAsset: string,
 ): Promise<SquidRouteQuoteResponse> {
   const response = await fetch(squidApiUrl('/v2/route').toString(), {
     body: JSON.stringify({
       fromAddress: walletAddress,
       fromAmount: amountUnits,
       fromChain: squidSourceChainId,
-      fromToken: SQUID_NATIVE_TOKEN_ADDRESS,
+      fromToken: sourceAsset,
       toAddress: destinationAddress,
       toChain: squidDestinationChainId,
       toToken: body.destinationAsset,
@@ -717,6 +726,45 @@ function squidEvmChainId(network: string): string {
 
 function isSquidNativeToken(value: string): boolean {
   return value.trim().toLowerCase() === SQUID_NATIVE_TOKEN_ADDRESS.toLowerCase();
+}
+
+function normalizeSquidSourceAsset(value: string): string {
+  if (isSquidNativeToken(value)) {
+    return SQUID_NATIVE_TOKEN_ADDRESS;
+  }
+  return requireAddress(value, 'Squid source asset');
+}
+
+function squidSourceAssetDecimals(sourceAsset: string, sourceNetwork: string, override: unknown): number {
+  if (override !== undefined) {
+    const decimals = Number(override);
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) {
+      throw new Error('Squid source asset decimals must be an integer between 0 and 36');
+    }
+    return decimals;
+  }
+  if (isSquidNativeToken(sourceAsset)) {
+    return SQUID_NATIVE_ASSET_DECIMALS;
+  }
+  const known = knownSquidSourceAssetDecimals(sourceNetwork, sourceAsset);
+  if (known !== undefined) {
+    return known;
+  }
+  throw new Error('Squid ERC20 source asset decimals required for unknown token');
+}
+
+function knownSquidSourceAssetDecimals(sourceNetwork: string, sourceAsset: string): number | undefined {
+  const network = sourceNetwork.trim().toLowerCase();
+  const asset = sourceAsset.trim().toLowerCase();
+  const usdcByNetwork: Record<string, string> = {
+    arbitrum: '0xaf88d065e77c8cc2239327c5edb3a432268e5831',
+    avalanche: '0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e',
+    base: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    mainnet: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+    optimism: '0x0b2c639c533813f4aa9d7837caf62653d097ff85',
+    polygon: '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359',
+  };
+  return usdcByNetwork[network] === asset ? USDC_DECIMALS : undefined;
 }
 
 export async function buildHyperliquidBridge2Transfer(
@@ -850,6 +898,50 @@ async function executeSingleTransactionRebalance(
   }
   const ethereum = await Ethereum.getInstance(built.sourceNetwork);
   const wallet = await ethereum.getWallet(built.walletAddress);
+  let approvalTransactionHash = state.approvalTransactionHash;
+  if (built.approvalTxCalldata && built.approvalTxTarget) {
+    if (approvalTransactionHash && state.status === 'approval_submitted') {
+      return {
+        approvalTransactionHash,
+        responseStatus: 0,
+        status: 'approval_submitted',
+        transactionHash: approvalTransactionHash,
+      };
+    }
+    if (!approvalTransactionHash) {
+      const approvalGasOptions = await ethereum.prepareGasOptions(
+        undefined,
+        SQUID_ROUTER_APPROVE_GAS_LIMIT,
+        liveActionAuthorization,
+        providerIntentSource,
+      );
+      const approvalTx = await wallet.sendTransaction({
+        data: built.approvalTxCalldata,
+        to: built.approvalTxTarget,
+        value: BigNumber.from(0),
+        ...approvalGasOptions,
+      });
+      approvalTransactionHash = approvalTx.hash;
+      state = {
+        ...state,
+        approvalTransactionHash,
+        status: 'approval_submitted',
+        transactionHash: approvalTransactionHash,
+      };
+      await saveRebalanceState(state);
+      const approvalReceipt = await ethereum.handleTransactionExecution(approvalTx);
+      if (approvalReceipt?.status !== 1) {
+        throw new Error('Squid ERC20 approval not confirmed');
+      }
+      state = {
+        ...state,
+        approvalTransactionHash,
+        status: 'approval_confirmed',
+        transactionHash: approvalTransactionHash,
+      };
+      await saveRebalanceState(state);
+    }
+  }
   const gasOptions = await ethereum.prepareGasOptions(
     undefined,
     gasLimit,
@@ -869,6 +961,7 @@ async function executeSingleTransactionRebalance(
   });
   const receipt = await ethereum.handleTransactionExecution(txResponse);
   return {
+    approvalTransactionHash,
     responseStatus: receipt?.status === 1 ? 1 : receipt?.status === 0 ? -1 : 0,
     status: receipt?.status === 1 ? 'confirmed' : receipt?.status === 0 ? 'failed' : 'submitted',
     transactionHash: txResponse.hash,
@@ -1896,14 +1989,14 @@ function removeUndefinedFields<T extends Record<string, any>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined)) as T;
 }
 
-function providerTreasuryConnectorId(provider: BridgeRebalanceRequest['provider']): string {
+function providerTreasuryConnectorId(provider: string): string {
   if (isCctpProvider(provider) || provider === SQUID_ROUTER_PROVIDER) {
     return 'treasury';
   }
   return 'hyperliquid';
 }
 
-function providerTreasuryIntentSource(provider: BridgeRebalanceRequest['provider']): string {
+function providerTreasuryIntentSource(provider: string): string {
   if (isCctpProvider(provider)) {
     return CCTP_USDC_PROVIDER_INTENT_SOURCE;
   }
