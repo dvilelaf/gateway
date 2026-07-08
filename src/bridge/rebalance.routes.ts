@@ -1013,6 +1013,12 @@ async function buildCctpSolanaReceiveMessageInstruction(
       },
       { pubkey: tokenMessengerMinterProgram, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      {
+        pubkey: findSolanaProgramAddress(messageTransmitterProgram, '__event_authority'),
+        isSigner: false,
+        isWritable: false,
+      },
+      { pubkey: messageTransmitterProgram, isSigner: false, isWritable: false },
       { pubkey: tokenMessenger, isSigner: false, isWritable: false },
       {
         pubkey: findSolanaProgramAddress(tokenMessengerMinterProgram, 'remote_token_messenger', String(sourceDomain)),

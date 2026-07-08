@@ -694,6 +694,8 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       ).toBase58(),
       SOLANA_CCTP_TOKEN_MESSENGER,
       '11111111111111111111111111111111',
+      solanaPda(new PublicKey(SOLANA_CCTP_MESSAGE_TRANSMITTER), '__event_authority').toBase58(),
+      SOLANA_CCTP_MESSAGE_TRANSMITTER,
       tokenMessenger.toBase58(),
       solanaPda(new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER), 'remote_token_messenger', '6').toBase58(),
       solanaPda(new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER), 'token_minter').toBase58(),
