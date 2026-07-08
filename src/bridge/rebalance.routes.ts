@@ -884,6 +884,14 @@ async function executeProviderOwnedRebalance(
   );
 }
 
+function rebalanceGasGuardContext(built: BuiltProviderOwnedRebalance, walletAddress = built.walletAddress) {
+  return {
+    expectedConnectorId: providerTreasuryConnectorId(built.provider),
+    expectedNotional: built.amount,
+    expectedWalletAddress: walletAddress,
+  };
+}
+
 async function executeSingleTransactionRebalance(
   built: BuiltProviderOwnedRebalance,
   liveActionAuthorization: LiveActionAuthorization,
@@ -916,6 +924,7 @@ async function executeSingleTransactionRebalance(
         SQUID_ROUTER_APPROVE_GAS_LIMIT,
         liveActionAuthorization,
         providerIntentSource,
+        rebalanceGasGuardContext(built),
       );
       const approvalTx = await wallet.sendTransaction({
         data: built.approvalTxCalldata,
@@ -949,6 +958,7 @@ async function executeSingleTransactionRebalance(
     gasLimit,
     liveActionAuthorization,
     providerIntentSource,
+    rebalanceGasGuardContext(built),
   );
   const txResponse = await wallet.sendTransaction({
     data: built.txCalldata,
@@ -1016,6 +1026,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
       CCTP_APPROVE_GAS_LIMIT,
       liveActionAuthorization,
       CCTP_USDC_PROVIDER_INTENT_SOURCE,
+      rebalanceGasGuardContext(built),
     );
     const approvalTx = await wallet.sendTransaction({
       data: built.approvalTxCalldata,
@@ -1067,6 +1078,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
       CCTP_BURN_GAS_LIMIT,
       liveActionAuthorization,
       CCTP_USDC_PROVIDER_INTENT_SOURCE,
+      rebalanceGasGuardContext(built),
     );
     const burnTx = await wallet.sendTransaction({
       data: built.txCalldata,
@@ -1172,6 +1184,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     CCTP_FINALIZE_GAS_LIMIT,
     liveActionAuthorization,
     CCTP_USDC_PROVIDER_INTENT_SOURCE,
+    rebalanceGasGuardContext(built, built.destinationAddress),
   );
   const finalizeTx = await finalizeWallet.sendTransaction({
     data: finalizeCalldata,
@@ -1226,6 +1239,7 @@ async function checkCctpDestinationGas(
       CCTP_FINALIZE_GAS_LIMIT,
       liveActionAuthorization,
       CCTP_USDC_PROVIDER_INTENT_SOURCE,
+      rebalanceGasGuardContext(built, destinationAddress),
     );
     const feePerGas = BigNumber.from(gasOptions.maxFeePerGas ?? gasOptions.gasPrice ?? 0);
     const requiredGas = BigNumber.from(gasOptions.gasLimit ?? CCTP_FINALIZE_GAS_LIMIT).mul(feePerGas);

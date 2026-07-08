@@ -10,7 +10,7 @@ import { ConfigManagerCertPassphrase } from '../../services/config-manager-cert-
 import { ConfigManagerV2 } from '../../services/config-manager-v2';
 import { logger, redactUrl } from '../../services/logger';
 import { assertMainnetMutationAllowed } from '../../services/runtime-guard';
-import type { LiveActionAuthorization } from '../../services/runtime-guard';
+import type { LiveActionAuthorization, MainnetMutationGuardInput } from '../../services/runtime-guard';
 import { TokenService } from '../../services/token-service';
 import { walletPath, isHardwareWallet as checkIsHardwareWallet } from '../../wallet/utils';
 
@@ -312,9 +312,11 @@ export class Ethereum {
     gasLimit?: number,
     liveActionAuthorization?: LiveActionAuthorization,
     internalProviderIntentSource?: string,
+    guardContext: Partial<MainnetMutationGuardInput> = {},
   ): Promise<any> {
     assertMainnetMutationAllowed({
       chain: 'ethereum',
+      ...guardContext,
       internalProviderIntentSource,
       liveActionAuthorization,
       network: this.network,
