@@ -452,6 +452,47 @@ describe('runtime guard', () => {
     ).not.toThrow();
   });
 
+  it('allows Marlin CCTP treasury authorization on source and destination EVM networks', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    const authorization = {
+      action: 'gateway_rebalance',
+      connector_id: 'treasury',
+      destination_address: '0x00000000000000000000000000000000000000bb',
+      destination_network: 'base',
+      network: 'mainnet',
+      notional: '1.5',
+      scope: 'provider_treasury',
+      source: 'marlin',
+      wallet_address: '0x00000000000000000000000000000000000000aa',
+    };
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '1.5',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000aa',
+        internalProviderIntentSource: 'cctp_usdc_rebalance',
+        liveActionAuthorization: authorization,
+        network: 'mainnet',
+        operation: 'ethereum_transaction',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '1.5',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000bb',
+        internalProviderIntentSource: 'cctp_usdc_rebalance',
+        liveActionAuthorization: authorization,
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).not.toThrow();
+  });
+
   it('allows wallet send authorizations to pass the lower-level Ethereum transaction guard', () => {
     process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED = 'true';
     process.env.MARLIN_LIVE_ACTION_AUTH_SECRET = 'test-secret';

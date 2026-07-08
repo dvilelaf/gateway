@@ -199,8 +199,9 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
   const sourceMatches =
     authorizationMatches(input.network, authorization?.network) &&
     authorizationMatches(input.expectedWalletAddress, authorization?.wallet_address);
+  const isCctpTreasury = input.internalProviderIntentSource === 'cctp_usdc_rebalance';
   const destinationMatches =
-    input.internalProviderIntentSource === 'cctp_base_arbitrum_usdc_rebalance' &&
+    isCctpTreasury &&
     authorizationMatches(input.network, authorization?.destination_network) &&
     authorizationMatches(input.expectedWalletAddress, authorization?.destination_address);
   if (!sourceMatches && !destinationMatches) {
@@ -211,14 +212,7 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
       input.network === 'arbitrum' &&
       input.operation === 'ethereum_transaction' &&
       input.internalProviderIntentSource === 'hyperliquid_bridge2_rebalance') ||
-    (input.chain === 'ethereum' &&
-      input.network === 'base' &&
-      input.operation === 'ethereum_transaction' &&
-      input.internalProviderIntentSource === 'cctp_base_arbitrum_usdc_rebalance') ||
-    (input.chain === 'ethereum' &&
-      input.network === 'arbitrum' &&
-      input.operation === 'ethereum_transaction' &&
-      input.internalProviderIntentSource === 'cctp_base_arbitrum_usdc_rebalance')
+    (input.chain === 'ethereum' && input.operation === 'ethereum_transaction' && isCctpTreasury)
   );
 }
 

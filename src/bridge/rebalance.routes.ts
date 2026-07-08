@@ -17,11 +17,8 @@ import {
 const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token';
 const HYPERLIQUID_BRIDGE2_ADDRESS = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
 const ARBITRUM_USDC_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
-const BASE_USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const CCTP_V2_TOKEN_MESSENGER_ADDRESS = '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d';
 const CCTP_V2_MESSAGE_TRANSMITTER_ADDRESS = '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64';
-const CCTP_BASE_DOMAIN = 6;
-const CCTP_ARBITRUM_DOMAIN = 3;
 const CCTP_STANDARD_FINALITY_THRESHOLD = 2000;
 const HYPERLIQUID_BRIDGE2_MIN_USDC = '5';
 const HYPERLIQUID_BRIDGE2_GAS_LIMIT = 120000;
@@ -30,8 +27,11 @@ const CCTP_BURN_GAS_LIMIT = 220000;
 const CCTP_FINALIZE_GAS_LIMIT = 300000;
 const CCTP_IRIS_MAINNET_URL = 'https://iris-api.circle.com';
 const CCTP_DESTINATION_GAS_PROVIDER_STATUS = 'destination_gas_unavailable';
-const CCTP_DESTINATION_GAS_PROVIDER_ERROR = 'CCTP destination Arbitrum wallet has no ETH for receiveMessage gas';
 const USDC_DECIMALS = 6;
+const CCTP_USDC_PROVIDER = 'cctp_usdc';
+const CCTP_BASE_ARBITRUM_USDC_PROVIDER = 'cctp_base_arbitrum_usdc';
+const CCTP_USDC_PROVIDER_INTENT_SOURCE = 'cctp_usdc_rebalance';
+const CCTP_REGISTRY_VERSION = 'cctp-v2-evm-usdc-configured-2026-07-08';
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
   'txCalldata',
@@ -43,6 +43,17 @@ const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'mnemonic',
   'walletFile',
 ];
+
+const CCTP_EVM_USDC_NETWORKS = {
+  arbitrum: cctpEvmUsdcNetwork(3, 'arbitrum', ARBITRUM_USDC_ADDRESS),
+  avalanche: cctpEvmUsdcNetwork(1, 'avalanche', '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E'),
+  base: cctpEvmUsdcNetwork(6, 'base', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'),
+  ethereum: cctpEvmUsdcNetwork(0, 'mainnet', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'),
+  mainnet: cctpEvmUsdcNetwork(0, 'mainnet', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'),
+  optimism: cctpEvmUsdcNetwork(2, 'optimism', '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85'),
+  'op-mainnet': cctpEvmUsdcNetwork(2, 'optimism', '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85'),
+  polygon: cctpEvmUsdcNetwork(7, 'polygon', '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'),
+};
 
 const HyperliquidBridge2RebalanceRequestSchema = Type.Object(
   {
@@ -64,13 +75,13 @@ const HyperliquidBridge2RebalanceRequestSchema = Type.Object(
 
 const CctpBaseArbitrumRebalanceRequestSchema = Type.Object(
   {
-    provider: Type.Literal('cctp_base_arbitrum_usdc'),
+    provider: Type.Union([Type.Literal(CCTP_BASE_ARBITRUM_USDC_PROVIDER), Type.Literal(CCTP_USDC_PROVIDER)]),
     idempotencyKey: Type.String({ minLength: 1 }),
     mode: Type.Literal('mainnet'),
     sourceChain: Type.Literal('ethereum'),
-    sourceNetwork: Type.Literal('base'),
+    sourceNetwork: Type.String({ minLength: 1 }),
     sourceAsset: Type.Literal('USDC'),
-    destinationNetwork: Type.Literal('arbitrum'),
+    destinationNetwork: Type.String({ minLength: 1 }),
     destinationAsset: Type.Literal('USDC'),
     walletAddress: Type.String({ minLength: 1 }),
     destinationAddress: Type.String({ minLength: 1 }),
@@ -203,7 +214,7 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
           marlinProviderIntentAuthorizationMatches(request.body.liveActionAuthorization as LiveActionAuthorization, {
             action: 'gateway_rebalance',
             connector_id: providerTreasuryConnectorId(request.body.provider),
-            network: request.body.sourceNetwork,
+            network: built.sourceNetwork,
             notional: request.body.amount,
             scope: 'provider_treasury',
             source: 'marlin',
@@ -214,7 +225,7 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
         if (!liveActionAuthorization) {
           throw new Error('provider treasury authorization required');
         }
-        assertCctpDestinationAuthorization(request.body, liveActionAuthorization);
+        assertCctpDestinationAuthorization(built, liveActionAuthorization);
 
         assertMainnetMutationAllowed({
           chain: 'ethereum',
@@ -223,7 +234,7 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
           expectedWalletAddress: request.body.walletAddress,
           internalProviderIntentSource: providerTreasuryIntentSource(request.body.provider),
           liveActionAuthorization,
-          network: request.body.sourceNetwork,
+          network: built.sourceNetwork,
           operation: 'ethereum_transaction',
         });
         try {
@@ -246,12 +257,7 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
           return { signature: execution.transactionHash, status: execution.responseStatus };
         } catch (error: any) {
           const latest = (await readRebalanceState(request.body.idempotencyKey)) ?? existing;
-          const retryableCctpStatus =
-            latest.provider === 'cctp_base_arbitrum_usdc' && latest.burnTransactionHash
-              ? latest.finalizeTransactionHash
-                ? 'finalize_submitted'
-                : 'finalize_pending'
-              : 'failed';
+          const retryableCctpStatus = recoverableRebalanceErrorStatus(latest);
           await saveRebalanceState({
             ...latest,
             idempotencyKey: request.body.idempotencyKey,
@@ -292,15 +298,20 @@ type BuiltProviderOwnedRebalance = {
   destinationVenue?: string;
   idempotencyKey: string;
   minAmount: string;
-  provider: 'hyperliquid_bridge2' | 'cctp_base_arbitrum_usdc';
+  provider: 'hyperliquid_bridge2' | 'cctp_usdc';
   sourceAsset: 'USDC';
   sourceChain: 'ethereum';
-  sourceNetwork: 'arbitrum' | 'base';
+  sourceNetwork: string;
   tokenAddress: string;
   txCalldata: string;
   txCalldataHash: string;
   txTarget: string;
   walletAddress: string;
+  cctpDestinationDomain?: number;
+  cctpDestinationMessageTransmitterAddress?: string;
+  cctpDestinationTokenMessengerAddress?: string;
+  cctpSourceDomain?: number;
+  cctpSourceTokenMessengerAddress?: string;
 };
 
 type ProviderOwnedRebalanceExecution = {
@@ -360,10 +371,18 @@ type CircleCctpMessage = {
   status?: unknown;
 };
 
+type CctpEvmUsdcNetwork = {
+  domain: number;
+  gatewayNetwork: string;
+  messageTransmitterAddress: string;
+  tokenAddress: string;
+  tokenMessengerAddress: string;
+};
+
 const rebalanceLocks = new Map<string, Promise<void>>();
 
 export async function buildProviderOwnedRebalance(body: BridgeRebalanceRequest): Promise<BuiltProviderOwnedRebalance> {
-  if (body.provider === 'cctp_base_arbitrum_usdc') {
+  if (body.provider !== 'hyperliquid_bridge2') {
     return buildCctpBaseArbitrumUsdcTransfer(body);
   }
   return buildHyperliquidBridge2Transfer(body);
@@ -403,6 +422,11 @@ export async function buildHyperliquidBridge2Transfer(
 export async function buildCctpBaseArbitrumUsdcTransfer(
   body: CctpBaseArbitrumRebalanceRequest,
 ): Promise<BuiltProviderOwnedRebalance> {
+  const sourceNetwork = requireCctpEvmUsdcNetwork(body.sourceNetwork, 'source');
+  const destinationNetwork = requireCctpEvmUsdcNetwork(body.destinationNetwork, 'destination');
+  if (sourceNetwork.gatewayNetwork === destinationNetwork.gatewayNetwork) {
+    throw new Error('CCTP source and destination networks must differ');
+  }
   const amountUnits = utils.parseUnits(body.amount, USDC_DECIMALS);
   if (amountUnits.lte(0)) {
     throw new Error('CCTP transfer amount must be positive');
@@ -412,14 +436,14 @@ export async function buildCctpBaseArbitrumUsdcTransfer(
   const mintRecipient = addressToBytes32(destinationAddress);
   const destinationCaller = utils.hexZeroPad('0x', 32);
   const approvalTxCalldata = erc20ApprovalInterface.encodeFunctionData('approve', [
-    CCTP_V2_TOKEN_MESSENGER_ADDRESS,
+    sourceNetwork.tokenMessengerAddress,
     amountUnits,
   ]);
   const txCalldata = cctpTokenMessengerInterface.encodeFunctionData('depositForBurn', [
     amountUnits,
-    CCTP_ARBITRUM_DOMAIN,
+    destinationNetwork.domain,
     mintRecipient,
-    BASE_USDC_ADDRESS,
+    sourceNetwork.tokenAddress,
     destinationCaller,
     BigNumber.from(0),
     CCTP_STANDARD_FINALITY_THRESHOLD,
@@ -428,20 +452,25 @@ export async function buildCctpBaseArbitrumUsdcTransfer(
     amount: body.amount,
     approvalCalldataHash: utils.keccak256(approvalTxCalldata),
     approvalTxCalldata,
-    approvalTxTarget: BASE_USDC_ADDRESS,
+    approvalTxTarget: sourceNetwork.tokenAddress,
+    cctpDestinationDomain: destinationNetwork.domain,
+    cctpDestinationMessageTransmitterAddress: destinationNetwork.messageTransmitterAddress,
+    cctpDestinationTokenMessengerAddress: destinationNetwork.tokenMessengerAddress,
+    cctpSourceDomain: sourceNetwork.domain,
+    cctpSourceTokenMessengerAddress: sourceNetwork.tokenMessengerAddress,
     destinationAddress,
     destinationAsset: 'USDC',
-    destinationNetwork: 'arbitrum',
+    destinationNetwork: destinationNetwork.gatewayNetwork,
     idempotencyKey: body.idempotencyKey,
     minAmount: '0.000001',
-    provider: 'cctp_base_arbitrum_usdc',
+    provider: CCTP_USDC_PROVIDER,
     sourceAsset: 'USDC',
     sourceChain: 'ethereum',
-    sourceNetwork: 'base',
-    tokenAddress: BASE_USDC_ADDRESS,
+    sourceNetwork: sourceNetwork.gatewayNetwork,
+    tokenAddress: sourceNetwork.tokenAddress,
     txCalldata,
     txCalldataHash: utils.keccak256(txCalldata),
-    txTarget: CCTP_V2_TOKEN_MESSENGER_ADDRESS,
+    txTarget: sourceNetwork.tokenMessengerAddress,
     walletAddress,
   };
 }
@@ -451,12 +480,13 @@ async function executeProviderOwnedRebalance(
   liveActionAuthorization: LiveActionAuthorization,
   state: DurableRebalanceState,
 ): Promise<ProviderOwnedRebalanceExecution> {
-  if (built.provider === 'cctp_base_arbitrum_usdc') {
+  if (built.provider === CCTP_USDC_PROVIDER) {
     return executeCctpBaseArbitrumUsdcTransfer(built, liveActionAuthorization, state);
   }
   return executeSingleTransactionRebalance(
     built,
     liveActionAuthorization,
+    state,
     HYPERLIQUID_BRIDGE2_GAS_LIMIT,
     'hyperliquid_bridge2_rebalance',
   );
@@ -465,9 +495,17 @@ async function executeProviderOwnedRebalance(
 async function executeSingleTransactionRebalance(
   built: BuiltProviderOwnedRebalance,
   liveActionAuthorization: LiveActionAuthorization,
+  state: DurableRebalanceState,
   gasLimit: number,
   providerIntentSource: string,
 ): Promise<ProviderOwnedRebalanceExecution> {
+  if (state.transactionHash) {
+    return {
+      responseStatus: state.status === 'confirmed' ? 1 : state.status === 'failed' ? -1 : 0,
+      status: state.status,
+      transactionHash: state.transactionHash,
+    };
+  }
   const ethereum = await Ethereum.getInstance(built.sourceNetwork);
   const wallet = await ethereum.getWallet(built.walletAddress);
   const gasOptions = await ethereum.prepareGasOptions(
@@ -482,6 +520,11 @@ async function executeSingleTransactionRebalance(
     value: BigNumber.from(0),
     ...gasOptions,
   });
+  await saveRebalanceState({
+    ...state,
+    status: 'submitted',
+    transactionHash: txResponse.hash,
+  });
   const receipt = await ethereum.handleTransactionExecution(txResponse);
   return {
     responseStatus: receipt?.status === 1 ? 1 : receipt?.status === 0 ? -1 : 0,
@@ -495,11 +538,13 @@ async function executeCctpBaseArbitrumUsdcTransfer(
   liveActionAuthorization: LiveActionAuthorization,
   state: DurableRebalanceState,
 ): Promise<ProviderOwnedRebalanceExecution> {
+  assertBuiltCctpRegistryValues(built);
   if (!built.approvalTxCalldata || !built.approvalTxTarget) {
     throw new Error('CCTP approval transaction missing from provider-owned build');
   }
   if (!state.burnTransactionHash) {
-    const destinationGasPreflight = await checkCctpDestinationArbitrumGas(
+    const destinationGasPreflight = await checkCctpDestinationGas(
+      built.destinationNetwork,
       built.destinationAddress,
       liveActionAuthorization,
     );
@@ -515,16 +560,24 @@ async function executeCctpBaseArbitrumUsdcTransfer(
       };
     }
   }
-  const ethereum = await Ethereum.getInstance('base');
+  const ethereum = await Ethereum.getInstance(built.sourceNetwork);
   const wallet = await ethereum.getWallet(built.walletAddress);
   let approvalTransactionHash = state.approvalTransactionHash;
+  if (approvalTransactionHash && state.status === 'approval_submitted') {
+    return {
+      approvalTransactionHash,
+      responseStatus: 0,
+      status: 'approval_submitted',
+      transactionHash: approvalTransactionHash,
+    };
+  }
   if (!approvalTransactionHash) {
     await saveRebalanceState({ ...state, status: 'built' });
     const approvalGasOptions = await ethereum.prepareGasOptions(
       undefined,
       CCTP_APPROVE_GAS_LIMIT,
       liveActionAuthorization,
-      'cctp_base_arbitrum_usdc_rebalance',
+      CCTP_USDC_PROVIDER_INTENT_SOURCE,
     );
     const approvalTx = await wallet.sendTransaction({
       data: built.approvalTxCalldata,
@@ -532,11 +585,18 @@ async function executeCctpBaseArbitrumUsdcTransfer(
       value: BigNumber.from(0),
       ...approvalGasOptions,
     });
+    approvalTransactionHash = approvalTx.hash;
+    state = {
+      ...state,
+      approvalTransactionHash,
+      status: 'approval_submitted',
+      transactionHash: approvalTransactionHash,
+    };
+    await saveRebalanceState(state);
     const approvalReceipt = await ethereum.handleTransactionExecution(approvalTx);
     if (approvalReceipt?.status !== 1) {
       throw new Error('CCTP USDC approval not confirmed');
     }
-    approvalTransactionHash = approvalTx.hash;
     state = {
       ...state,
       approvalTransactionHash,
@@ -548,7 +608,8 @@ async function executeCctpBaseArbitrumUsdcTransfer(
 
   let burnTransactionHash = state.burnTransactionHash;
   if (!burnTransactionHash) {
-    const destinationGasPreflight = await checkCctpDestinationArbitrumGas(
+    const destinationGasPreflight = await checkCctpDestinationGas(
+      built.destinationNetwork,
       built.destinationAddress,
       liveActionAuthorization,
     );
@@ -566,7 +627,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
       undefined,
       CCTP_BURN_GAS_LIMIT,
       liveActionAuthorization,
-      'cctp_base_arbitrum_usdc_rebalance',
+      CCTP_USDC_PROVIDER_INTENT_SOURCE,
     );
     const burnTx = await wallet.sendTransaction({
       data: built.txCalldata,
@@ -574,6 +635,15 @@ async function executeCctpBaseArbitrumUsdcTransfer(
       value: BigNumber.from(0),
       ...burnGasOptions,
     });
+    burnTransactionHash = burnTx.hash;
+    state = {
+      ...state,
+      approvalTransactionHash,
+      burnTransactionHash,
+      status: 'burn_submitted',
+      transactionHash: burnTransactionHash,
+    };
+    await saveRebalanceState(state);
     const burnReceipt = await ethereum.handleTransactionExecution(burnTx);
     if (burnReceipt?.status !== 1) {
       return {
@@ -584,7 +654,6 @@ async function executeCctpBaseArbitrumUsdcTransfer(
         transactionHash: burnTx.hash,
       };
     }
-    burnTransactionHash = burnTx.hash;
     state = {
       ...state,
       approvalTransactionHash,
@@ -610,7 +679,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     };
   }
 
-  const attestation = await fetchCctpAttestation(state);
+  const attestation = await fetchCctpAttestation(state, built);
   if (attestation.status === 'pending') {
     return {
       approvalTransactionHash,
@@ -633,15 +702,15 @@ async function executeCctpBaseArbitrumUsdcTransfer(
   };
   await saveRebalanceState(state);
 
-  const finalizeEthereum = await Ethereum.getInstance('arbitrum');
+  const finalizeEthereum = await Ethereum.getInstance(built.destinationNetwork);
   assertMainnetMutationAllowed({
     chain: 'ethereum',
     expectedConnectorId: providerTreasuryConnectorId(built.provider),
     expectedNotional: built.amount,
     expectedWalletAddress: built.destinationAddress,
-    internalProviderIntentSource: 'cctp_base_arbitrum_usdc_rebalance',
+    internalProviderIntentSource: CCTP_USDC_PROVIDER_INTENT_SOURCE,
     liveActionAuthorization,
-    network: 'arbitrum',
+    network: built.destinationNetwork,
     operation: 'ethereum_transaction',
   });
   const finalizeWallet = await finalizeEthereum.getWallet(built.destinationAddress);
@@ -653,11 +722,11 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     undefined,
     CCTP_FINALIZE_GAS_LIMIT,
     liveActionAuthorization,
-    'cctp_base_arbitrum_usdc_rebalance',
+    CCTP_USDC_PROVIDER_INTENT_SOURCE,
   );
   const finalizeTx = await finalizeWallet.sendTransaction({
     data: finalizeCalldata,
-    to: CCTP_V2_MESSAGE_TRANSMITTER_ADDRESS,
+    to: built.cctpDestinationMessageTransmitterAddress,
     value: BigNumber.from(0),
     ...finalizeGasOptions,
   });
@@ -689,17 +758,21 @@ async function executeCctpBaseArbitrumUsdcTransfer(
   };
 }
 
-async function checkCctpDestinationArbitrumGas(
+async function checkCctpDestinationGas(
+  destinationNetwork: string | undefined,
   destinationAddress: string,
   liveActionAuthorization: LiveActionAuthorization,
 ): Promise<{ available: true } | { available: false; providerError: string }> {
+  if (!destinationNetwork) {
+    return { available: false, providerError: 'CCTP destination network missing before burn' };
+  }
   try {
-    const finalizeEthereum = await Ethereum.getInstance('arbitrum');
+    const finalizeEthereum = await Ethereum.getInstance(destinationNetwork);
     const gasOptions = await finalizeEthereum.prepareGasOptions(
       undefined,
       CCTP_FINALIZE_GAS_LIMIT,
       liveActionAuthorization,
-      'cctp_base_arbitrum_usdc_rebalance',
+      CCTP_USDC_PROVIDER_INTENT_SOURCE,
     );
     const feePerGas = BigNumber.from(gasOptions.maxFeePerGas ?? gasOptions.gasPrice ?? 0);
     const requiredGas = BigNumber.from(gasOptions.gasLimit ?? CCTP_FINALIZE_GAS_LIMIT).mul(feePerGas);
@@ -709,17 +782,26 @@ async function checkCctpDestinationArbitrumGas(
     }
     return {
       available: false,
-      providerError: CCTP_DESTINATION_GAS_PROVIDER_ERROR,
+      providerError:
+        destinationNetwork === 'arbitrum'
+          ? 'CCTP destination Arbitrum wallet has no ETH for receiveMessage gas'
+          : `CCTP destination ${destinationNetwork} wallet has no native gas for receiveMessage`,
     };
   } catch (error: any) {
     return {
       available: false,
-      providerError: `CCTP destination Arbitrum ETH gas balance unavailable before burn: ${redactProviderError(error)}`,
+      providerError:
+        destinationNetwork === 'arbitrum'
+          ? `CCTP destination Arbitrum ETH gas balance unavailable before burn: ${redactProviderError(error)}`
+          : `CCTP destination ${destinationNetwork} native gas balance unavailable before burn: ${redactProviderError(error)}`,
     };
   }
 }
 
-async function fetchCctpAttestation(state: DurableRebalanceState): Promise<
+async function fetchCctpAttestation(
+  state: DurableRebalanceState,
+  built: BuiltProviderOwnedRebalance,
+): Promise<
   | {
       attestation: string;
       message: string;
@@ -744,7 +826,7 @@ async function fetchCctpAttestation(state: DurableRebalanceState): Promise<
   let response: CircleCctpMessagesResponse;
   try {
     const url = new URL(
-      `/v2/messages/${CCTP_BASE_DOMAIN}`,
+      `/v2/messages/${built.cctpSourceDomain}`,
       (process.env.CCTP_IRIS_API_BASE_URL ?? CCTP_IRIS_MAINNET_URL).trim(),
     );
     url.searchParams.set('transactionHash', state.burnTransactionHash);
@@ -773,7 +855,7 @@ async function fetchCctpAttestation(state: DurableRebalanceState): Promise<
   if (!message || providerStatus !== 'complete') {
     return { providerStatus, status: 'pending' };
   }
-  validateCctpMessage(state, message);
+  validateCctpMessage(state, built, message);
   return {
     attestation: requireHex(message.attestation, 'CCTP attestation'),
     message: requireHex(message.message, 'CCTP message'),
@@ -783,7 +865,12 @@ async function fetchCctpAttestation(state: DurableRebalanceState): Promise<
   };
 }
 
-function validateCctpMessage(state: DurableRebalanceState, message: CircleCctpMessage): void {
+function validateCctpMessage(
+  state: DurableRebalanceState,
+  built: BuiltProviderOwnedRebalance,
+  message: CircleCctpMessage,
+): void {
+  assertBuiltCctpRegistryValues(built);
   const rawMessage = requireHex(message.message, 'CCTP message');
   const messageHash = utils.keccak256(rawMessage);
   const parsed = parseCctpRawMessage(rawMessage);
@@ -795,24 +882,27 @@ function validateCctpMessage(state: DurableRebalanceState, message: CircleCctpMe
   }
   const decoded = message.decodedMessage;
   const body = decoded?.decodedMessageBody;
-  if (parsed.sourceDomain !== CCTP_BASE_DOMAIN || String(decoded?.sourceDomain) !== String(CCTP_BASE_DOMAIN)) {
+  if (
+    parsed.sourceDomain !== built.cctpSourceDomain ||
+    String(decoded?.sourceDomain) !== String(built.cctpSourceDomain)
+  ) {
     throw new Error('CCTP source domain mismatch');
   }
   if (
-    parsed.destinationDomain !== CCTP_ARBITRUM_DOMAIN ||
-    String(decoded?.destinationDomain) !== String(CCTP_ARBITRUM_DOMAIN)
+    parsed.destinationDomain !== built.cctpDestinationDomain ||
+    String(decoded?.destinationDomain) !== String(built.cctpDestinationDomain)
   ) {
     throw new Error('CCTP destination domain mismatch');
   }
   if (
-    !addressesEqual(bytes32ToAddress(parsed.sender), CCTP_V2_TOKEN_MESSENGER_ADDRESS) ||
-    !addressesEqual(bytes32ToAddress(String(decoded?.sender ?? '')), CCTP_V2_TOKEN_MESSENGER_ADDRESS)
+    !addressesEqual(bytes32ToAddress(parsed.sender), built.cctpSourceTokenMessengerAddress) ||
+    !addressesEqual(bytes32ToAddress(String(decoded?.sender ?? '')), built.cctpSourceTokenMessengerAddress)
   ) {
     throw new Error('CCTP sender mismatch');
   }
   if (
-    !addressesEqual(bytes32ToAddress(parsed.recipient), CCTP_V2_TOKEN_MESSENGER_ADDRESS) ||
-    !addressesEqual(bytes32ToAddress(String(decoded?.recipient ?? '')), CCTP_V2_TOKEN_MESSENGER_ADDRESS)
+    !addressesEqual(bytes32ToAddress(parsed.recipient), built.cctpDestinationTokenMessengerAddress) ||
+    !addressesEqual(bytes32ToAddress(String(decoded?.recipient ?? '')), built.cctpDestinationTokenMessengerAddress)
   ) {
     throw new Error('CCTP recipient mismatch');
   }
@@ -820,8 +910,8 @@ function validateCctpMessage(state: DurableRebalanceState, message: CircleCctpMe
     throw new Error('CCTP destination caller must allow provider-owned finalize');
   }
   if (
-    !addressesEqual(bytes32ToAddress(parsed.burnToken), BASE_USDC_ADDRESS) ||
-    !addressesEqual(bytes32ToAddress(String(body?.burnToken ?? '')), BASE_USDC_ADDRESS)
+    !addressesEqual(bytes32ToAddress(parsed.burnToken), built.tokenAddress) ||
+    !addressesEqual(bytes32ToAddress(String(body?.burnToken ?? '')), built.tokenAddress)
   ) {
     throw new Error('CCTP burn token mismatch');
   }
@@ -847,16 +937,16 @@ function validateCctpMessage(state: DurableRebalanceState, message: CircleCctpMe
 }
 
 function assertCctpDestinationAuthorization(
-  body: BridgeRebalanceRequest,
+  built: BuiltProviderOwnedRebalance,
   authorization: LiveActionAuthorization,
 ): void {
-  if (body.provider !== 'cctp_base_arbitrum_usdc') {
+  if (built.provider !== CCTP_USDC_PROVIDER) {
     return;
   }
   const fields = authorization as Record<string, unknown>;
   if (
-    !authorizationValueMatches(body.destinationNetwork, fields.destination_network) ||
-    !authorizationValueMatches(body.destinationAddress, fields.destination_address)
+    !authorizationValueMatches(built.destinationNetwork, fields.destination_network) ||
+    !authorizationValueMatches(built.destinationAddress, fields.destination_address)
   ) {
     throw new Error('CCTP provider treasury authorization does not match destination');
   }
@@ -937,7 +1027,15 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
   return utils.keccak256(
     utils.toUtf8Bytes(
       JSON.stringify({
+        approvalCalldataHash: built.approvalCalldataHash,
+        approvalTxTarget: built.approvalTxTarget,
         amount: built.amount,
+        cctpDestinationDomain: built.cctpDestinationDomain,
+        cctpDestinationMessageTransmitterAddress: built.cctpDestinationMessageTransmitterAddress,
+        cctpDestinationTokenMessengerAddress: built.cctpDestinationTokenMessengerAddress,
+        cctpRegistryVersion: built.provider === CCTP_USDC_PROVIDER ? CCTP_REGISTRY_VERSION : undefined,
+        cctpSourceDomain: built.cctpSourceDomain,
+        cctpSourceTokenMessengerAddress: built.cctpSourceTokenMessengerAddress,
         destinationAddress: built.destinationAddress,
         destinationAsset: built.destinationAsset,
         destinationNetwork: built.destinationNetwork,
@@ -945,6 +1043,9 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         provider: built.provider,
         sourceChain: built.sourceChain,
         sourceNetwork: built.sourceNetwork,
+        tokenAddress: built.tokenAddress,
+        txCalldataHash: built.txCalldataHash,
+        txTarget: built.txTarget,
         walletAddress: built.walletAddress,
       }),
     ),
@@ -971,7 +1072,10 @@ function redactProviderError(error: unknown): string {
   return raw
     .replace(/0x[a-fA-F0-9]{80,}/g, '[redacted-hex]')
     .replace(/([?&](?:api_?key|token|signature|attestation)=)[^&\s]+/gi, '$1[redacted]')
-    .replace(/\b(token|api[-_]?key|signature|attestation|secret)\b[:=\s]+[^\s&]+/gi, '$1 [redacted]')
+    .replace(
+      /\b(token|api[-_]?key|signature|attestation|secret|mnemonic|private_?key|wallet_?file|bearer)\b[:=\s]+[^\s&]+/gi,
+      '$1 [redacted]',
+    )
     .slice(0, 300);
 }
 
@@ -1034,11 +1138,71 @@ function removeUndefinedFields<T extends Record<string, any>>(value: T): T {
 }
 
 function providerTreasuryConnectorId(provider: BridgeRebalanceRequest['provider']): string {
-  return provider === 'cctp_base_arbitrum_usdc' ? 'treasury' : 'hyperliquid';
+  return isCctpProvider(provider) ? 'treasury' : 'hyperliquid';
 }
 
 function providerTreasuryIntentSource(provider: BridgeRebalanceRequest['provider']): string {
-  return provider === 'cctp_base_arbitrum_usdc' ? 'cctp_base_arbitrum_usdc_rebalance' : 'hyperliquid_bridge2_rebalance';
+  return isCctpProvider(provider) ? CCTP_USDC_PROVIDER_INTENT_SOURCE : 'hyperliquid_bridge2_rebalance';
+}
+
+function isCctpProvider(provider: string): boolean {
+  return provider === CCTP_USDC_PROVIDER || provider === CCTP_BASE_ARBITRUM_USDC_PROVIDER;
+}
+
+function recoverableRebalanceErrorStatus(state: DurableRebalanceState): string {
+  if (isCctpProvider(state.provider)) {
+    if (state.finalizeTransactionHash) {
+      return 'finalize_submitted';
+    }
+    if (state.burnTransactionHash) {
+      return 'finalize_pending';
+    }
+    if (state.approvalTransactionHash) {
+      return 'approval_submitted';
+    }
+  }
+  return state.transactionHash ? 'submitted' : 'failed';
+}
+
+function cctpEvmUsdcNetwork(domain: number, gatewayNetwork: string, tokenAddress: string): CctpEvmUsdcNetwork {
+  return {
+    domain,
+    gatewayNetwork,
+    messageTransmitterAddress: CCTP_V2_MESSAGE_TRANSMITTER_ADDRESS,
+    tokenAddress,
+    tokenMessengerAddress: CCTP_V2_TOKEN_MESSENGER_ADDRESS,
+  };
+}
+
+function requireCctpEvmUsdcNetwork(rawNetwork: string, role: 'source' | 'destination'): CctpEvmUsdcNetwork {
+  const network = rawNetwork.trim().toLowerCase();
+  const config = CCTP_EVM_USDC_NETWORKS[network as keyof typeof CCTP_EVM_USDC_NETWORKS];
+  if (!config) {
+    throw new Error(`unsupported CCTP ${role} network: ${rawNetwork}`);
+  }
+  return config;
+}
+
+function assertBuiltCctpRegistryValues(
+  built: BuiltProviderOwnedRebalance,
+): asserts built is BuiltProviderOwnedRebalance & {
+  cctpDestinationDomain: number;
+  cctpDestinationMessageTransmitterAddress: string;
+  cctpDestinationTokenMessengerAddress: string;
+  cctpSourceDomain: number;
+  cctpSourceTokenMessengerAddress: string;
+  destinationNetwork: string;
+} {
+  if (
+    built.cctpSourceDomain === undefined ||
+    built.cctpDestinationDomain === undefined ||
+    !built.cctpSourceTokenMessengerAddress ||
+    !built.cctpDestinationTokenMessengerAddress ||
+    !built.cctpDestinationMessageTransmitterAddress ||
+    !built.destinationNetwork
+  ) {
+    throw new Error('CCTP registry metadata missing from provider-owned build');
+  }
 }
 
 function addressToBytes32(address: string): string {

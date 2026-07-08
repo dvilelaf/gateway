@@ -42,11 +42,22 @@ export interface MarlinWalletMaterial {
 }
 
 const HARDENED_OFFSET = 0x80000000;
+const EVM_MARLIN_WALLET_POLICIES: Record<string, { account: number; walletRef: string }> = {
+  arbitrum: { account: 20, walletRef: 'arbitrum:mainnet:evm_gateway' },
+  avalanche: { account: 30, walletRef: 'avalanche:mainnet:evm_gateway' },
+  base: { account: 0, walletRef: 'base:mainnet:evm_gateway' },
+  mainnet: { account: 10, walletRef: 'mainnet:mainnet:evm_gateway' },
+  optimism: { account: 31, walletRef: 'optimism:mainnet:evm_gateway' },
+  polygon: { account: 32, walletRef: 'polygon:mainnet:evm_gateway' },
+};
 
 function canonicalMarlinWalletContext(chain: string, network: string): [string, string] {
   const normalizedChain = chain.trim().toLowerCase().replace(/_/g, '-');
   const normalizedNetwork = network.trim().toLowerCase().replace(/_/g, '-');
-  if (normalizedChain === 'ethereum' && ['base', 'ethereum-base'].includes(normalizedNetwork)) {
+  if (
+    normalizedChain === 'ethereum' &&
+    ['base', 'base-mainnet', 'ethereum-base', 'ethereum-base-mainnet'].includes(normalizedNetwork)
+  ) {
     return ['base', 'mainnet'];
   }
   if (normalizedChain === 'ethereum' && normalizedNetwork === 'ethereum-base-sepolia') {
@@ -57,6 +68,27 @@ function canonicalMarlinWalletContext(chain: string, network: string): [string, 
     ['arbitrum', 'arbitrum-mainnet', 'ethereum-arbitrum-mainnet'].includes(normalizedNetwork)
   ) {
     return ['arbitrum', 'mainnet'];
+  }
+  if (
+    normalizedChain === 'ethereum' &&
+    ['avalanche', 'avalanche-mainnet', 'ethereum-avalanche-mainnet'].includes(normalizedNetwork)
+  ) {
+    return ['avalanche', 'mainnet'];
+  }
+  if (normalizedChain === 'ethereum' && ['ethereum-mainnet', 'mainnet'].includes(normalizedNetwork)) {
+    return ['mainnet', 'mainnet'];
+  }
+  if (
+    normalizedChain === 'ethereum' &&
+    ['op-mainnet', 'optimism', 'optimism-mainnet', 'ethereum-optimism-mainnet'].includes(normalizedNetwork)
+  ) {
+    return ['optimism', 'mainnet'];
+  }
+  if (
+    normalizedChain === 'ethereum' &&
+    ['polygon', 'polygon-mainnet', 'polygon-pos', 'ethereum-polygon-mainnet'].includes(normalizedNetwork)
+  ) {
+    return ['polygon', 'mainnet'];
   }
   return [normalizedChain, normalizedNetwork];
 }
@@ -79,14 +111,6 @@ export function marlinWalletPolicyFor(chain: string, network: string): MarlinWal
       walletRef: 'solana:devnet:solana_gateway',
     };
   }
-  if (canonicalChain === 'base' && canonicalNetwork === 'mainnet') {
-    return {
-      derivationPath: "m/44'/60'/0'/0/0",
-      family: 'evm',
-      storageChain: 'ethereum',
-      walletRef: 'base:mainnet:evm_gateway',
-    };
-  }
   if (canonicalChain === 'base' && canonicalNetwork === 'sepolia') {
     return {
       derivationPath: "m/44'/60'/11'/0/0",
@@ -95,12 +119,13 @@ export function marlinWalletPolicyFor(chain: string, network: string): MarlinWal
       walletRef: 'base:sepolia:evm_gateway',
     };
   }
-  if (canonicalChain === 'arbitrum' && canonicalNetwork === 'mainnet') {
+  const evmPolicy = EVM_MARLIN_WALLET_POLICIES[canonicalChain];
+  if (evmPolicy !== undefined && canonicalNetwork === 'mainnet') {
     return {
-      derivationPath: "m/44'/60'/20'/0/0",
+      derivationPath: `m/44'/60'/${evmPolicy.account}'/0/0`,
       family: 'evm',
       storageChain: 'ethereum',
-      walletRef: 'arbitrum:mainnet:evm_gateway',
+      walletRef: evmPolicy.walletRef,
     };
   }
   return undefined;
