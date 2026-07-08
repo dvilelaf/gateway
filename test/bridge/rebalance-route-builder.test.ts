@@ -3,6 +3,7 @@ import path from 'path';
 
 import { BigNumber, utils } from 'ethers';
 import Fastify from 'fastify';
+import yaml from 'js-yaml';
 
 jest.mock('../../src/chains/ethereum/ethereum', () => ({
   Ethereum: {
@@ -444,6 +445,25 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
           token.symbol === 'USDC',
       ),
     ).toBe(true);
+  });
+
+  it.each(CCTP_CONFIGURED_NETWORKS)('loads runtime chain config for configured $gatewayNetwork', (network) => {
+    const repoRoot = path.resolve(__dirname, '../..');
+    const chainTemplate = path.join(repoRoot, 'src/templates/chains/ethereum', `${network.gatewayNetwork}.yml`);
+    const config = yaml.load(readFileSync(chainTemplate, 'utf8')) as Record<string, unknown>;
+
+    expect(typeof config.chainID).toBe('number');
+    expect(config.chainID).toBeGreaterThan(0);
+    expect(config.nodeURL).toEqual(expect.stringMatching(/^https?:\/\//));
+    expect(typeof config.nativeCurrencySymbol).toBe('string');
+    expect((config.nativeCurrencySymbol as string).length).toBeGreaterThan(0);
+    expect(config.swapProvider).toBe('uniswap/router');
+    expect(typeof config.transactionExecutionTimeoutMs).toBe('number');
+    expect(config.eip1559 === true || config.eip1559 === false || config.eip1559 === undefined).toBe(true);
+    if (config.eip1559 === true) {
+      expect(typeof config.baseFeeMultiplier).toBe('number');
+      expect(typeof config.priorityFee).toBe('number');
+    }
   });
 
   it.each(['bsc', 'solana'])('rejects unsupported CCTP network %s before building transactions', async (network) => {
