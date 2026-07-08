@@ -1575,7 +1575,7 @@ function cctpIrisMessage(_burnTransactionHash: string, mintRecipient: string = W
           destinationDomain: '3',
           sender: CCTP_TOKEN_MESSENGER,
           recipient: CCTP_TOKEN_MESSENGER,
-          destinationCaller: '11111111111111111111111111111111',
+          destinationCaller: utils.hexZeroPad('0x', 32),
           decodedMessageBody: {
             burnToken: BASE_USDC,
             mintRecipient,
@@ -1602,7 +1602,7 @@ function cctpSolanaIrisMessage(_burnTransactionHash: string, mintRecipient: stri
           destinationDomain: '5',
           sender: CCTP_TOKEN_MESSENGER,
           recipient: SOLANA_CCTP_TOKEN_MESSENGER,
-          destinationCaller: utils.hexZeroPad('0x', 32),
+          destinationCaller: '11111111111111111111111111111111',
           decodedMessageBody: {
             burnToken: BASE_USDC,
             mintRecipient,
