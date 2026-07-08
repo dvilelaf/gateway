@@ -1,0 +1,10 @@
+chainID: 480
+nodeURL: https://worldchain-mainnet.g.alchemy.com/public
+nativeCurrencySymbol: ETH
+geckoId: world-chain
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: true
+baseFee:
+baseFeeMultiplier: 1.2
+priorityFee: 0.001

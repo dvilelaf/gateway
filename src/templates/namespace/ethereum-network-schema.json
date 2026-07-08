@@ -22,6 +22,10 @@
       "type": ["number", "null"],
       "description": "Gas price in GWEI for legacy (non-EIP-1559) networks (optional, will fetch from network RPC if not set)"
     },
+    "eip1559": {
+      "type": "boolean",
+      "description": "Whether the network should use EIP-1559 transaction fee fields instead of legacy gasPrice"
+    },
     "baseFee": {
       "type": ["number", "null"],
       "description": "EIP-1559 base fee in GWEI (optional, will fetch from network or Etherscan API if not set)"

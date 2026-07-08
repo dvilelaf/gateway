@@ -1,0 +1,10 @@
+chainID: 146
+nodeURL: https://rpc.soniclabs.com
+nativeCurrencySymbol: S
+geckoId: sonic-3
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: true
+baseFee:
+baseFeeMultiplier: 1.2
+priorityFee: 0.001

@@ -1,0 +1,10 @@
+chainID: 2818
+nodeURL: https://rpc.morphl2.io
+nativeCurrencySymbol: ETH
+geckoId: morph-l2
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: true
+baseFee:
+baseFeeMultiplier: 1.2
+priorityFee: 0.001

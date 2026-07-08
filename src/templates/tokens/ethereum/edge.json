@@ -1,0 +1,9 @@
+[
+  {
+    "chainId": 3343,
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "address": "0x98d2919b9A214E6Fa5384AC81E6864bA686Ad74c",
+    "decimals": 6
+  }
+]

@@ -1,0 +1,8 @@
+chainID: 25
+nodeURL: https://evm.cronos.org
+nativeCurrencySymbol: CRO
+geckoId: cronos
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: false
+gasPrice:

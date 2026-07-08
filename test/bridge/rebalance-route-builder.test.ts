@@ -1,4 +1,4 @@
-import { rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync } from 'fs';
 import path from 'path';
 
 import { BigNumber, utils } from 'ethers';
@@ -25,10 +25,28 @@ const BRIDGE2 = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
 const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const ETHEREUM_USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
 const AVALANCHE_USDC = '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E';
+const CODEX_USDC = '0xd996633a415985DBd7D6D12f4A4343E31f5037cf';
+const CRONOS_USDC = '0x3D7F2C478aAfdB65542BCB44bCeeC05849999d2D';
+const EDGE_USDC = '0x98d2919b9A214E6Fa5384AC81E6864bA686Ad74c';
+const HYPEREVM_USDC = '0xb88339CB7199b77E23DB6E890353E22632Ba630f';
+const INJECTIVE_USDC = '0xa00C59fF5a080D2b954d0c75e46E22a0c371235a';
+const INK_USDC = '0x2D270e6886d130D724215A266106e6832161EAEd';
+const LINEA_USDC = '0x176211869cA2b568f2A7D4EE941E073a821EE1ff';
+const MONAD_USDC = '0x754704Bc059F8C67012fEd69BC8A327a5aafb603';
+const MORPH_USDC = '0xCfb1186F4e93D60E60a8bDd997427D1F33bc372B';
 const OPTIMISM_USDC = '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85';
+const PHAROS_USDC = '0xC879C018dB60520F4355C26eD1a6D572cdAC1815';
+const PLUME_USDC = '0x222365EF19F7947e5484218551B56bb3965Aa7aF';
 const POLYGON_USDC = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+const SEI_USDC = '0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392';
+const SONIC_USDC = '0x29219dd400f2Bf60E5a23d13Be72B486D4038894';
+const UNICHAIN_USDC = '0x078D782b760474a361dDA0AF3839290b0EF57AD6';
+const WORLD_CHAIN_USDC = '0x79a02482a880bce3f13e09da970dc34db4cd24d1';
+const XDC_USDC = '0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1';
 const CCTP_TOKEN_MESSENGER = '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d';
 const CCTP_MESSAGE_TRANSMITTER = '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64';
+const EDGE_CCTP_TOKEN_MESSENGER = '0x98706A006bc632Df31CAdFCBD43F38887ce2ca5c';
+const EDGE_CCTP_MESSAGE_TRANSMITTER = '0x5b61381Fc9e58E70EfC13a4A97516997019198ee';
 const CCTP_CONFIGURED_NETWORKS = [
   { alias: 'ethereum', domain: 0, gatewayNetwork: 'mainnet', tokenAddress: ETHEREUM_USDC },
   { alias: 'avalanche', domain: 1, gatewayNetwork: 'avalanche', tokenAddress: AVALANCHE_USDC },
@@ -36,6 +54,29 @@ const CCTP_CONFIGURED_NETWORKS = [
   { alias: 'arbitrum', domain: 3, gatewayNetwork: 'arbitrum', tokenAddress: TOKEN },
   { alias: 'base', domain: 6, gatewayNetwork: 'base', tokenAddress: BASE_USDC },
   { alias: 'polygon', domain: 7, gatewayNetwork: 'polygon', tokenAddress: POLYGON_USDC },
+  { alias: 'unichain', domain: 10, gatewayNetwork: 'unichain', tokenAddress: UNICHAIN_USDC },
+  { alias: 'linea', domain: 11, gatewayNetwork: 'linea', tokenAddress: LINEA_USDC },
+  { alias: 'codex', domain: 12, gatewayNetwork: 'codex', tokenAddress: CODEX_USDC },
+  { alias: 'sonic', domain: 13, gatewayNetwork: 'sonic', tokenAddress: SONIC_USDC },
+  { alias: 'world-chain', domain: 14, gatewayNetwork: 'world-chain', tokenAddress: WORLD_CHAIN_USDC },
+  { alias: 'monad', domain: 15, gatewayNetwork: 'monad', tokenAddress: MONAD_USDC },
+  { alias: 'sei', domain: 16, gatewayNetwork: 'sei', tokenAddress: SEI_USDC },
+  { alias: 'xdc', domain: 18, gatewayNetwork: 'xdc', tokenAddress: XDC_USDC },
+  { alias: 'hyperevm', domain: 19, gatewayNetwork: 'hyperevm', tokenAddress: HYPEREVM_USDC },
+  { alias: 'ink', domain: 21, gatewayNetwork: 'ink', tokenAddress: INK_USDC },
+  { alias: 'plume', domain: 22, gatewayNetwork: 'plume', tokenAddress: PLUME_USDC },
+  {
+    alias: 'edge',
+    domain: 28,
+    gatewayNetwork: 'edge',
+    messageTransmitterAddress: EDGE_CCTP_MESSAGE_TRANSMITTER,
+    tokenAddress: EDGE_USDC,
+    tokenMessengerAddress: EDGE_CCTP_TOKEN_MESSENGER,
+  },
+  { alias: 'injective', domain: 29, gatewayNetwork: 'injective', tokenAddress: INJECTIVE_USDC },
+  { alias: 'morph', domain: 30, gatewayNetwork: 'morph', tokenAddress: MORPH_USDC },
+  { alias: 'pharos', domain: 31, gatewayNetwork: 'pharos', tokenAddress: PHAROS_USDC },
+  { alias: 'cronos', domain: 32, gatewayNetwork: 'cronos', tokenAddress: CRONOS_USDC },
 ];
 const REBALANCE_STATE_IDS = [
   'rebalance-1',
@@ -373,21 +414,58 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(result.destinationNetwork).toBe(destination.gatewayNetwork);
     expect(result.cctpSourceDomain).toBe(network.domain);
     expect(result.cctpDestinationDomain).toBe(destination.domain);
+    expect(result.cctpSourceTokenMessengerAddress).toBe(network.tokenMessengerAddress ?? CCTP_TOKEN_MESSENGER);
+    expect(result.cctpDestinationMessageTransmitterAddress).toBe(
+      destination.messageTransmitterAddress ?? CCTP_MESSAGE_TRANSMITTER,
+    );
     expect(result.approvalTxTarget).toBe(network.tokenAddress);
-    expect(result.txTarget).toBe(CCTP_TOKEN_MESSENGER);
-    expect(approval[0]).toBe(CCTP_TOKEN_MESSENGER);
+    expect(result.txTarget).toBe(network.tokenMessengerAddress ?? CCTP_TOKEN_MESSENGER);
+    expect(approval[0]).toBe(network.tokenMessengerAddress ?? CCTP_TOKEN_MESSENGER);
     expect(deposit[1]).toBe(destination.domain);
-    expect(deposit[3]).toBe(network.tokenAddress);
+    expect(String(deposit[3]).toLowerCase()).toBe(network.tokenAddress.toLowerCase());
   });
 
-  it('rejects unsupported CCTP EVM networks before building transactions', async () => {
+  it.each(CCTP_CONFIGURED_NETWORKS)('has Gateway templates for configured $gatewayNetwork CCTP USDC', (network) => {
+    const repoRoot = path.resolve(__dirname, '../..');
+    const chainTemplate = path.join(repoRoot, 'src/templates/chains/ethereum', `${network.gatewayNetwork}.yml`);
+    const tokenTemplate = path.join(repoRoot, 'src/templates/tokens/ethereum', `${network.gatewayNetwork}.json`);
+    const rootTemplate = readFileSync(path.join(repoRoot, 'src/templates/root.yml'), 'utf8');
+
+    expect(existsSync(chainTemplate)).toBe(true);
+    expect(existsSync(tokenTemplate)).toBe(true);
+    expect(rootTemplate).toContain(`$namespace ethereum-${network.gatewayNetwork}:`);
+
+    const tokens = JSON.parse(readFileSync(tokenTemplate, 'utf8'));
+    expect(
+      tokens.some(
+        (token: { address?: string; decimals?: number; symbol?: string }) =>
+          token.address?.toLowerCase() === network.tokenAddress.toLowerCase() &&
+          token.decimals === 6 &&
+          token.symbol === 'USDC',
+      ),
+    ).toBe(true);
+  });
+
+  it.each(['bsc', 'solana'])('rejects unsupported CCTP network %s before building transactions', async (network) => {
     await expect(
       buildCctpBaseArbitrumUsdcTransfer({
         ...cctpRequest(),
-        sourceNetwork: 'bsc',
+        sourceNetwork: network,
       }),
-    ).rejects.toThrow(/unsupported CCTP source network: bsc/);
+    ).rejects.toThrow(new RegExp(`unsupported CCTP source network: ${network}`));
   });
+
+  it.each(['bsc', 'solana', 'starknet', 'stellar'])(
+    'rejects unsupported CCTP destination network %s before building transactions',
+    async (network) => {
+      await expect(
+        buildCctpBaseArbitrumUsdcTransfer({
+          ...cctpRequest(),
+          destinationNetwork: network,
+        }),
+      ).rejects.toThrow(new RegExp(`unsupported CCTP destination network: ${network}`));
+    },
+  );
 
   it('allows CCTP Base to Arbitrum transfer to a different derived destination address', async () => {
     const result = await buildCctpBaseArbitrumUsdcTransfer({

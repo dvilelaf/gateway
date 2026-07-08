@@ -1,0 +1,10 @@
+chainID: 57073
+nodeURL: https://rpc-gel.inkonchain.com
+nativeCurrencySymbol: ETH
+geckoId: ink
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: true
+baseFee:
+baseFeeMultiplier: 1.2
+priorityFee: 0.001

@@ -9,6 +9,7 @@ export interface EthereumNetworkConfig {
   geckoId: string;
   swapProvider?: string;
   gasPrice?: number | null;
+  eip1559?: boolean;
   baseFee?: number | null;
   priorityFee?: number | null;
   baseFeeMultiplier?: number;
@@ -35,6 +36,7 @@ export function getEthereumNetworkConfig(network: string): EthereumNetworkConfig
     geckoId: ConfigManagerV2.getInstance().get(namespaceId + '.geckoId'),
     swapProvider: ConfigManagerV2.getInstance().get(namespaceId + '.swapProvider'),
     gasPrice: ConfigManagerV2.getInstance().get(namespaceId + '.gasPrice'),
+    eip1559: ConfigManagerV2.getInstance().get(namespaceId + '.eip1559'),
     baseFee: ConfigManagerV2.getInstance().get(namespaceId + '.baseFee'),
     priorityFee: ConfigManagerV2.getInstance().get(namespaceId + '.priorityFee'),
     baseFeeMultiplier: ConfigManagerV2.getInstance().get(namespaceId + '.baseFeeMultiplier'),

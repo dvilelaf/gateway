@@ -1,0 +1,10 @@
+chainID: 81224
+nodeURL: https://rpc.codex.xyz
+nativeCurrencySymbol: ETH
+geckoId:
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: true
+baseFee:
+baseFeeMultiplier: 1.2
+priorityFee: 0.001

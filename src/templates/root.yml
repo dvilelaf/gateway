@@ -50,6 +50,70 @@ configurations:
     configurationPath: chains/ethereum/polygon.yml
     schemaPath: ethereum-network-schema.json
 
+  $namespace ethereum-codex:
+    configurationPath: chains/ethereum/codex.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-cronos:
+    configurationPath: chains/ethereum/cronos.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-edge:
+    configurationPath: chains/ethereum/edge.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-hyperevm:
+    configurationPath: chains/ethereum/hyperevm.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-injective:
+    configurationPath: chains/ethereum/injective.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-ink:
+    configurationPath: chains/ethereum/ink.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-linea:
+    configurationPath: chains/ethereum/linea.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-monad:
+    configurationPath: chains/ethereum/monad.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-morph:
+    configurationPath: chains/ethereum/morph.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-pharos:
+    configurationPath: chains/ethereum/pharos.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-plume:
+    configurationPath: chains/ethereum/plume.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-sei:
+    configurationPath: chains/ethereum/sei.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-sonic:
+    configurationPath: chains/ethereum/sonic.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-unichain:
+    configurationPath: chains/ethereum/unichain.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-world-chain:
+    configurationPath: chains/ethereum/world-chain.yml
+    schemaPath: ethereum-network-schema.json
+
+  $namespace ethereum-xdc:
+    configurationPath: chains/ethereum/xdc.yml
+    schemaPath: ethereum-network-schema.json
+
   # Solana networks
   $namespace solana-mainnet-beta:
     configurationPath: chains/solana/mainnet-beta.yml

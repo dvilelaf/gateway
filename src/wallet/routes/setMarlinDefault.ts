@@ -46,9 +46,30 @@ const EVM_MARLIN_WALLET_POLICIES: Record<string, { account: number; walletRef: s
   arbitrum: { account: 20, walletRef: 'arbitrum:mainnet:evm_gateway' },
   avalanche: { account: 30, walletRef: 'avalanche:mainnet:evm_gateway' },
   base: { account: 0, walletRef: 'base:mainnet:evm_gateway' },
+  codex: { account: 42, walletRef: 'codex:mainnet:evm_gateway' },
+  cronos: { account: 55, walletRef: 'cronos:mainnet:evm_gateway' },
+  edge: { account: 51, walletRef: 'edge:mainnet:evm_gateway' },
+  hyperevm: { account: 48, walletRef: 'hyperevm:mainnet:evm_gateway' },
+  injective: { account: 52, walletRef: 'injective:mainnet:evm_gateway' },
+  ink: { account: 49, walletRef: 'ink:mainnet:evm_gateway' },
+  linea: { account: 41, walletRef: 'linea:mainnet:evm_gateway' },
   mainnet: { account: 10, walletRef: 'mainnet:mainnet:evm_gateway' },
+  monad: { account: 45, walletRef: 'monad:mainnet:evm_gateway' },
+  morph: { account: 53, walletRef: 'morph:mainnet:evm_gateway' },
   optimism: { account: 31, walletRef: 'optimism:mainnet:evm_gateway' },
+  pharos: { account: 54, walletRef: 'pharos:mainnet:evm_gateway' },
+  plume: { account: 50, walletRef: 'plume:mainnet:evm_gateway' },
   polygon: { account: 32, walletRef: 'polygon:mainnet:evm_gateway' },
+  sei: { account: 46, walletRef: 'sei:mainnet:evm_gateway' },
+  sonic: { account: 43, walletRef: 'sonic:mainnet:evm_gateway' },
+  unichain: { account: 40, walletRef: 'unichain:mainnet:evm_gateway' },
+  'world-chain': { account: 44, walletRef: 'world-chain:mainnet:evm_gateway' },
+  xdc: { account: 47, walletRef: 'xdc:mainnet:evm_gateway' },
+};
+
+const EVM_MARLIN_WALLET_ALIASES: Record<string, string> = {
+  'op-mainnet': 'optimism',
+  'polygon-pos': 'polygon',
 };
 
 function canonicalMarlinWalletContext(chain: string, network: string): [string, string] {
@@ -89,6 +110,20 @@ function canonicalMarlinWalletContext(chain: string, network: string): [string, 
     ['polygon', 'polygon-mainnet', 'polygon-pos', 'ethereum-polygon-mainnet'].includes(normalizedNetwork)
   ) {
     return ['polygon', 'mainnet'];
+  }
+  const directEvmAlias = EVM_MARLIN_WALLET_ALIASES[normalizedNetwork] ?? normalizedNetwork;
+  const ethereumPrefixed = normalizedNetwork.startsWith('ethereum-')
+    ? normalizedNetwork.slice('ethereum-'.length)
+    : normalizedNetwork;
+  const ethereumMainnetSuffixed = ethereumPrefixed.endsWith('-mainnet')
+    ? ethereumPrefixed.slice(0, -'-mainnet'.length)
+    : ethereumPrefixed;
+  const canonicalEvmNetwork =
+    EVM_MARLIN_WALLET_ALIASES[ethereumMainnetSuffixed] ??
+    EVM_MARLIN_WALLET_ALIASES[directEvmAlias] ??
+    ethereumMainnetSuffixed;
+  if (normalizedChain === 'ethereum' && EVM_MARLIN_WALLET_POLICIES[canonicalEvmNetwork] !== undefined) {
+    return [canonicalEvmNetwork, 'mainnet'];
   }
   return [normalizedChain, normalizedNetwork];
 }

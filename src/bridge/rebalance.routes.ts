@@ -48,11 +48,33 @@ const CCTP_EVM_USDC_NETWORKS = {
   arbitrum: cctpEvmUsdcNetwork(3, 'arbitrum', ARBITRUM_USDC_ADDRESS),
   avalanche: cctpEvmUsdcNetwork(1, 'avalanche', '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E'),
   base: cctpEvmUsdcNetwork(6, 'base', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'),
+  codex: cctpEvmUsdcNetwork(12, 'codex', '0xd996633a415985DBd7D6D12f4A4343E31f5037cf'),
+  cronos: cctpEvmUsdcNetwork(32, 'cronos', '0x3D7F2C478aAfdB65542BCB44bCeeC05849999d2D'),
+  edge: cctpEvmUsdcNetwork(
+    28,
+    'edge',
+    '0x98d2919b9A214E6Fa5384AC81E6864bA686Ad74c',
+    '0x98706A006bc632Df31CAdFCBD43F38887ce2ca5c',
+    '0x5b61381Fc9e58E70EfC13a4A97516997019198ee',
+  ),
   ethereum: cctpEvmUsdcNetwork(0, 'mainnet', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'),
+  hyperevm: cctpEvmUsdcNetwork(19, 'hyperevm', '0xb88339CB7199b77E23DB6E890353E22632Ba630f'),
+  injective: cctpEvmUsdcNetwork(29, 'injective', '0xa00C59fF5a080D2b954d0c75e46E22a0c371235a'),
+  ink: cctpEvmUsdcNetwork(21, 'ink', '0x2D270e6886d130D724215A266106e6832161EAEd'),
+  linea: cctpEvmUsdcNetwork(11, 'linea', '0x176211869cA2b568f2A7D4EE941E073a821EE1ff'),
   mainnet: cctpEvmUsdcNetwork(0, 'mainnet', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'),
+  monad: cctpEvmUsdcNetwork(15, 'monad', '0x754704Bc059F8C67012fEd69BC8A327a5aafb603'),
+  morph: cctpEvmUsdcNetwork(30, 'morph', '0xCfb1186F4e93D60E60a8bDd997427D1F33bc372B'),
   optimism: cctpEvmUsdcNetwork(2, 'optimism', '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85'),
   'op-mainnet': cctpEvmUsdcNetwork(2, 'optimism', '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85'),
+  pharos: cctpEvmUsdcNetwork(31, 'pharos', '0xC879C018dB60520F4355C26eD1a6D572cdAC1815'),
+  plume: cctpEvmUsdcNetwork(22, 'plume', '0x222365EF19F7947e5484218551B56bb3965Aa7aF'),
   polygon: cctpEvmUsdcNetwork(7, 'polygon', '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'),
+  sei: cctpEvmUsdcNetwork(16, 'sei', '0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392'),
+  sonic: cctpEvmUsdcNetwork(13, 'sonic', '0x29219dd400f2Bf60E5a23d13Be72B486D4038894'),
+  unichain: cctpEvmUsdcNetwork(10, 'unichain', '0x078D782b760474a361dDA0AF3839290b0EF57AD6'),
+  'world-chain': cctpEvmUsdcNetwork(14, 'world-chain', '0x79a02482a880bce3f13e09da970dc34db4cd24d1'),
+  xdc: cctpEvmUsdcNetwork(18, 'xdc', '0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1'),
 };
 
 const HyperliquidBridge2RebalanceRequestSchema = Type.Object(
@@ -1164,13 +1186,19 @@ function recoverableRebalanceErrorStatus(state: DurableRebalanceState): string {
   return state.transactionHash ? 'submitted' : 'failed';
 }
 
-function cctpEvmUsdcNetwork(domain: number, gatewayNetwork: string, tokenAddress: string): CctpEvmUsdcNetwork {
+function cctpEvmUsdcNetwork(
+  domain: number,
+  gatewayNetwork: string,
+  tokenAddress: string,
+  tokenMessengerAddress: string = CCTP_V2_TOKEN_MESSENGER_ADDRESS,
+  messageTransmitterAddress: string = CCTP_V2_MESSAGE_TRANSMITTER_ADDRESS,
+): CctpEvmUsdcNetwork {
   return {
     domain,
     gatewayNetwork,
-    messageTransmitterAddress: CCTP_V2_MESSAGE_TRANSMITTER_ADDRESS,
+    messageTransmitterAddress,
     tokenAddress,
-    tokenMessengerAddress: CCTP_V2_TOKEN_MESSENGER_ADDRESS,
+    tokenMessengerAddress,
   };
 }
 

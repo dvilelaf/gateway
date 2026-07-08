@@ -1,0 +1,8 @@
+chainID: 50
+nodeURL: https://rpc.xinfin.network
+nativeCurrencySymbol: XDC
+geckoId: xdc-network
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: false
+gasPrice:

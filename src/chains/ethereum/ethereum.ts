@@ -38,6 +38,7 @@ export class Ethereum {
   public rpcUrl: string;
   public swapProvider: string;
   public gasPrice?: number | null;
+  public eip1559?: boolean;
   public baseFee?: number | null;
   public priorityFee?: number | null;
   public baseFeeMultiplier: number;
@@ -62,6 +63,13 @@ export class Ethereum {
     return this.network;
   }
 
+  private supportsEip1559Fees(): boolean {
+    if (this.eip1559 !== undefined) {
+      return this.eip1559;
+    }
+    return ['mainnet', 'polygon', 'arbitrum', 'optimism', 'base'].includes(this.network);
+  }
+
   private constructor(network: string) {
     const config = getEthereumNetworkConfig(network);
     this.chainId = config.chainID;
@@ -70,6 +78,7 @@ export class Ethereum {
     this.nativeTokenSymbol = config.nativeCurrencySymbol;
     this.swapProvider = config.swapProvider || '';
     this.gasPrice = config.gasPrice;
+    this.eip1559 = config.eip1559;
     this.baseFee = config.baseFee;
     this.priorityFee = config.priorityFee;
     this.baseFeeMultiplier = config.baseFeeMultiplier || 1.2; // Default to 1.2
@@ -149,12 +158,7 @@ export class Ethereum {
     }
 
     // Check if the network supports EIP-1559
-    const supportsEIP1559 =
-      this.network === 'mainnet' ||
-      this.network === 'polygon' ||
-      this.network === 'arbitrum' ||
-      this.network === 'optimism' ||
-      this.network === 'base';
+    const supportsEIP1559 = this.supportsEip1559Fees();
 
     if (supportsEIP1559) {
       try {
@@ -324,12 +328,7 @@ export class Ethereum {
     gasOptions.gasLimit = gasLimit ?? DEFAULT_GAS_LIMIT;
 
     // Check if the network supports EIP-1559
-    const supportsEIP1559 =
-      this.network === 'mainnet' ||
-      this.network === 'polygon' ||
-      this.network === 'arbitrum' ||
-      this.network === 'optimism' ||
-      this.network === 'base';
+    const supportsEIP1559 = this.supportsEip1559Fees();
 
     if (supportsEIP1559) {
       // Use cached EIP-1559 values from estimateGasPrice if available, not stale, and gasPrice not explicitly provided

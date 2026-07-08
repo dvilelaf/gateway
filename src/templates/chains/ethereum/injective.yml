@@ -1,0 +1,10 @@
+chainID: 1776
+nodeURL: https://sentry.evm-rpc.injective.network
+nativeCurrencySymbol: INJ
+geckoId: injective-protocol
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: true
+baseFee:
+baseFeeMultiplier: 1.2
+priorityFee: 0.001

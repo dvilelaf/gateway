@@ -1,0 +1,10 @@
+chainID: 1329
+nodeURL: https://evm-rpc.sei-apis.com
+nativeCurrencySymbol: SEI
+geckoId: sei-network
+transactionExecutionTimeoutMs: 10000
+swapProvider: uniswap/router
+eip1559: true
+baseFee:
+baseFeeMultiplier: 1.2
+priorityFee: 0.001
