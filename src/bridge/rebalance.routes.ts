@@ -2,10 +2,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import path from 'path';
 
 import { Static, Type } from '@sinclair/typebox';
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { PublicKey } from '@solana/web3.js';
 import { BigNumber, utils } from 'ethers';
 import { FastifyPluginAsync } from 'fastify';
 
 import { Ethereum } from '../chains/ethereum/ethereum';
+import { Solana } from '../chains/solana/solana';
 import { ChainExecuteSwapResponseSchema } from '../schemas/chain-schema';
 import {
   LiveActionAuthorization,
@@ -19,6 +22,10 @@ const HYPERLIQUID_BRIDGE2_ADDRESS = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7'
 const ARBITRUM_USDC_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
 const CCTP_V2_TOKEN_MESSENGER_ADDRESS = '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d';
 const CCTP_V2_MESSAGE_TRANSMITTER_ADDRESS = '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64';
+const CCTP_SOLANA_DOMAIN = 5;
+const CCTP_SOLANA_MESSAGE_TRANSMITTER_V2_PROGRAM = 'CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC';
+const CCTP_SOLANA_TOKEN_MESSENGER_MINTER_V2_PROGRAM = 'CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe';
+const SOLANA_MAINNET_BETA_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const CCTP_STANDARD_FINALITY_THRESHOLD = 2000;
 const HYPERLIQUID_BRIDGE2_MIN_USDC = '5';
 const HYPERLIQUID_BRIDGE2_GAS_LIMIT = 120000;
@@ -75,6 +82,12 @@ const CCTP_EVM_USDC_NETWORKS = {
   unichain: cctpEvmUsdcNetwork(10, 'unichain', '0x078D782b760474a361dDA0AF3839290b0EF57AD6'),
   'world-chain': cctpEvmUsdcNetwork(14, 'world-chain', '0x79a02482a880bce3f13e09da970dc34db4cd24d1'),
   xdc: cctpEvmUsdcNetwork(18, 'xdc', '0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1'),
+};
+
+const CCTP_SOLANA_USDC_DESTINATION_NETWORKS = {
+  solana: cctpSolanaUsdcDestinationNetwork(),
+  'solana-mainnet-beta': cctpSolanaUsdcDestinationNetwork(),
+  'mainnet-beta': cctpSolanaUsdcDestinationNetwork(),
 };
 
 const HyperliquidBridge2RebalanceRequestSchema = Type.Object(
@@ -332,8 +345,11 @@ type BuiltProviderOwnedRebalance = {
   cctpDestinationDomain?: number;
   cctpDestinationMessageTransmitterAddress?: string;
   cctpDestinationTokenMessengerAddress?: string;
+  cctpMintRecipient?: string;
+  cctpSolanaUsdcAta?: string;
   cctpSourceDomain?: number;
   cctpSourceTokenMessengerAddress?: string;
+  destinationChain?: 'ethereum' | 'solana';
 };
 
 type ProviderOwnedRebalanceExecution = {
@@ -356,6 +372,9 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   cctpAttestation?: string;
   cctpMessage?: string;
   cctpMessageHash?: string;
+  cctpMintRecipient?: string;
+  cctpSolanaUsdcAta?: string;
+  destinationChain?: 'ethereum' | 'solana';
   destinationAddress: string;
   destinationAsset: string;
   destinationNetwork?: string;
@@ -394,12 +413,24 @@ type CircleCctpMessage = {
 };
 
 type CctpEvmUsdcNetwork = {
+  chain: 'ethereum';
   domain: number;
   gatewayNetwork: string;
   messageTransmitterAddress: string;
   tokenAddress: string;
   tokenMessengerAddress: string;
 };
+
+type CctpSolanaUsdcDestinationNetwork = {
+  chain: 'solana';
+  domain: number;
+  gatewayNetwork: string;
+  messageTransmitterAddress: string;
+  tokenMessengerAddress: string;
+  usdcMintAddress: string;
+};
+
+type CctpUsdcDestinationNetwork = CctpEvmUsdcNetwork | CctpSolanaUsdcDestinationNetwork;
 
 const rebalanceLocks = new Map<string, Promise<void>>();
 
@@ -445,7 +476,7 @@ export async function buildCctpBaseArbitrumUsdcTransfer(
   body: CctpBaseArbitrumRebalanceRequest,
 ): Promise<BuiltProviderOwnedRebalance> {
   const sourceNetwork = requireCctpEvmUsdcNetwork(body.sourceNetwork, 'source');
-  const destinationNetwork = requireCctpEvmUsdcNetwork(body.destinationNetwork, 'destination');
+  const destinationNetwork = requireCctpUsdcDestinationNetwork(body.destinationNetwork);
   if (sourceNetwork.gatewayNetwork === destinationNetwork.gatewayNetwork) {
     throw new Error('CCTP source and destination networks must differ');
   }
@@ -454,8 +485,7 @@ export async function buildCctpBaseArbitrumUsdcTransfer(
     throw new Error('CCTP transfer amount must be positive');
   }
   const walletAddress = utils.getAddress(body.walletAddress);
-  const destinationAddress = utils.getAddress(body.destinationAddress);
-  const mintRecipient = addressToBytes32(destinationAddress);
+  const destination = buildCctpDestination(body.destinationAddress, destinationNetwork);
   const destinationCaller = utils.hexZeroPad('0x', 32);
   const approvalTxCalldata = erc20ApprovalInterface.encodeFunctionData('approve', [
     sourceNetwork.tokenMessengerAddress,
@@ -464,7 +494,7 @@ export async function buildCctpBaseArbitrumUsdcTransfer(
   const txCalldata = cctpTokenMessengerInterface.encodeFunctionData('depositForBurn', [
     amountUnits,
     destinationNetwork.domain,
-    mintRecipient,
+    destination.mintRecipient,
     sourceNetwork.tokenAddress,
     destinationCaller,
     BigNumber.from(0),
@@ -478,10 +508,13 @@ export async function buildCctpBaseArbitrumUsdcTransfer(
     cctpDestinationDomain: destinationNetwork.domain,
     cctpDestinationMessageTransmitterAddress: destinationNetwork.messageTransmitterAddress,
     cctpDestinationTokenMessengerAddress: destinationNetwork.tokenMessengerAddress,
+    cctpMintRecipient: destination.mintRecipient,
+    cctpSolanaUsdcAta: destination.solanaUsdcAta,
     cctpSourceDomain: sourceNetwork.domain,
     cctpSourceTokenMessengerAddress: sourceNetwork.tokenMessengerAddress,
-    destinationAddress,
+    destinationAddress: destination.destinationAddress,
     destinationAsset: 'USDC',
+    destinationChain: destinationNetwork.chain,
     destinationNetwork: destinationNetwork.gatewayNetwork,
     idempotencyKey: body.idempotencyKey,
     minAmount: '0.000001',
@@ -566,6 +599,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
   }
   if (!state.burnTransactionHash) {
     const destinationGasPreflight = await checkCctpDestinationGas(
+      built,
       built.destinationNetwork,
       built.destinationAddress,
       liveActionAuthorization,
@@ -631,6 +665,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
   let burnTransactionHash = state.burnTransactionHash;
   if (!burnTransactionHash) {
     const destinationGasPreflight = await checkCctpDestinationGas(
+      built,
       built.destinationNetwork,
       built.destinationAddress,
       liveActionAuthorization,
@@ -724,6 +759,21 @@ async function executeCctpBaseArbitrumUsdcTransfer(
   };
   await saveRebalanceState(state);
 
+  if (built.destinationChain === 'solana') {
+    return {
+      approvalTransactionHash,
+      burnTransactionHash,
+      cctpAttestation: state.cctpAttestation,
+      cctpMessage: state.cctpMessage,
+      cctpMessageHash: state.cctpMessageHash,
+      providerError: 'Solana CCTP receiveMessage finalize is not implemented in this Gateway slice',
+      providerStatus: 'solana_finalize_unimplemented',
+      responseStatus: 0,
+      status: 'finalize_pending',
+      transactionHash: burnTransactionHash,
+    };
+  }
+
   const finalizeEthereum = await Ethereum.getInstance(built.destinationNetwork);
   assertMainnetMutationAllowed({
     chain: 'ethereum',
@@ -781,12 +831,16 @@ async function executeCctpBaseArbitrumUsdcTransfer(
 }
 
 async function checkCctpDestinationGas(
+  built: BuiltProviderOwnedRebalance,
   destinationNetwork: string | undefined,
   destinationAddress: string,
   liveActionAuthorization: LiveActionAuthorization,
 ): Promise<{ available: true } | { available: false; providerError: string }> {
   if (!destinationNetwork) {
     return { available: false, providerError: 'CCTP destination network missing before burn' };
+  }
+  if (built.destinationChain === 'solana') {
+    return checkCctpSolanaDestinationReady(built, destinationNetwork, destinationAddress);
   }
   try {
     const finalizeEthereum = await Ethereum.getInstance(destinationNetwork);
@@ -816,6 +870,47 @@ async function checkCctpDestinationGas(
         destinationNetwork === 'arbitrum'
           ? `CCTP destination Arbitrum ETH gas balance unavailable before burn: ${redactProviderError(error)}`
           : `CCTP destination ${destinationNetwork} native gas balance unavailable before burn: ${redactProviderError(error)}`,
+    };
+  }
+}
+
+async function checkCctpSolanaDestinationReady(
+  built: BuiltProviderOwnedRebalance,
+  destinationNetwork: string,
+  destinationAddress: string,
+): Promise<{ available: true } | { available: false; providerError: string }> {
+  if (!built.cctpSolanaUsdcAta) {
+    return { available: false, providerError: 'CCTP Solana USDC associated token account missing from build' };
+  }
+  try {
+    const solana = await Solana.getInstance(destinationNetwork);
+    const owner = new PublicKey(destinationAddress);
+    const ata = new PublicKey(built.cctpSolanaUsdcAta);
+    const [ataAccount, solBalance] = await Promise.all([
+      solana.connection.getAccountInfo(ata),
+      solana.connection.getBalance(owner),
+    ]);
+    const errors: string[] = [];
+    if (!ataAccount) {
+      errors.push(`USDC associated token account ${ata.toBase58()} does not exist`);
+    }
+    if (solBalance <= 0) {
+      errors.push(`destination owner ${owner.toBase58()} has no SOL for receiveMessage gas/rent`);
+    }
+    if (errors.length > 0) {
+      return {
+        available: false,
+        providerError: `CCTP destination Solana ${destinationNetwork} ${errors.join('; ')}`,
+      };
+    }
+    return {
+      available: false,
+      providerError: 'CCTP Solana receiveMessage executor is not implemented in Gateway',
+    };
+  } catch (error: any) {
+    return {
+      available: false,
+      providerError: `CCTP destination Solana ${destinationNetwork} readiness unavailable before burn: ${redactProviderError(error)}`,
     };
   }
 }
@@ -923,8 +1018,16 @@ function validateCctpMessage(
     throw new Error('CCTP sender mismatch');
   }
   if (
-    !addressesEqual(bytes32ToAddress(parsed.recipient), built.cctpDestinationTokenMessengerAddress) ||
-    !addressesEqual(bytes32ToAddress(String(decoded?.recipient ?? '')), built.cctpDestinationTokenMessengerAddress)
+    !cctpDestinationAddressMatches(
+      parsed.recipient,
+      built.cctpDestinationTokenMessengerAddress,
+      built.destinationChain,
+    ) ||
+    !cctpDestinationAddressMatches(
+      String(decoded?.recipient ?? ''),
+      built.cctpDestinationTokenMessengerAddress,
+      built.destinationChain,
+    )
   ) {
     throw new Error('CCTP recipient mismatch');
   }
@@ -938,8 +1041,8 @@ function validateCctpMessage(
     throw new Error('CCTP burn token mismatch');
   }
   if (
-    !addressesEqual(bytes32ToAddress(parsed.mintRecipient), state.destinationAddress) ||
-    !addressesEqual(bytes32ToAddress(String(body?.mintRecipient ?? '')), state.destinationAddress)
+    !cctpMintRecipientMatches(parsed.mintRecipient, state) ||
+    !cctpMintRecipientMatches(String(body?.mintRecipient ?? ''), state)
   ) {
     throw new Error('CCTP mint recipient mismatch');
   }
@@ -956,6 +1059,39 @@ function validateCctpMessage(
   ) {
     throw new Error('CCTP amount mismatch');
   }
+}
+
+function cctpDestinationAddressMatches(
+  value: string,
+  expectedAddress: string,
+  destinationChain: BuiltProviderOwnedRebalance['destinationChain'],
+): boolean {
+  if (destinationChain !== 'solana') {
+    return addressesEqual(bytes32ToAddress(value), expectedAddress);
+  }
+  try {
+    const expected = publicKeyToBytes32(new PublicKey(expectedAddress));
+    return cctpBytes32OrSolanaAddressMatches(value, expected, expectedAddress);
+  } catch {
+    return false;
+  }
+}
+
+function cctpMintRecipientMatches(value: string, state: DurableRebalanceState): boolean {
+  if (state.destinationChain !== 'solana') {
+    return addressesEqual(bytes32ToAddress(value), state.destinationAddress);
+  }
+  if (!state.cctpMintRecipient || !state.cctpSolanaUsdcAta) {
+    return false;
+  }
+  return cctpBytes32OrSolanaAddressMatches(value, state.cctpMintRecipient, state.cctpSolanaUsdcAta);
+}
+
+function cctpBytes32OrSolanaAddressMatches(value: string, expectedBytes32: string, expectedBase58: string): boolean {
+  if (utils.isHexString(value)) {
+    return value.toLowerCase() === expectedBytes32.toLowerCase();
+  }
+  return value === expectedBase58;
 }
 
 function assertCctpDestinationAuthorization(
@@ -988,6 +1124,9 @@ async function loadOrCreateRebalanceState(
   }
   const state: DurableRebalanceState = {
     amount: built.amount,
+    cctpMintRecipient: built.cctpMintRecipient,
+    cctpSolanaUsdcAta: built.cctpSolanaUsdcAta,
+    destinationChain: built.destinationChain,
     destinationAddress: built.destinationAddress,
     destinationAsset: built.destinationAsset,
     destinationNetwork: built.destinationNetwork,
@@ -1055,11 +1194,14 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         cctpDestinationDomain: built.cctpDestinationDomain,
         cctpDestinationMessageTransmitterAddress: built.cctpDestinationMessageTransmitterAddress,
         cctpDestinationTokenMessengerAddress: built.cctpDestinationTokenMessengerAddress,
+        cctpMintRecipient: built.cctpMintRecipient,
         cctpRegistryVersion: built.provider === CCTP_USDC_PROVIDER ? CCTP_REGISTRY_VERSION : undefined,
+        cctpSolanaUsdcAta: built.cctpSolanaUsdcAta,
         cctpSourceDomain: built.cctpSourceDomain,
         cctpSourceTokenMessengerAddress: built.cctpSourceTokenMessengerAddress,
         destinationAddress: built.destinationAddress,
         destinationAsset: built.destinationAsset,
+        destinationChain: built.destinationChain,
         destinationNetwork: built.destinationNetwork,
         destinationVenue: built.destinationVenue,
         provider: built.provider,
@@ -1194,11 +1336,23 @@ function cctpEvmUsdcNetwork(
   messageTransmitterAddress: string = CCTP_V2_MESSAGE_TRANSMITTER_ADDRESS,
 ): CctpEvmUsdcNetwork {
   return {
+    chain: 'ethereum',
     domain,
     gatewayNetwork,
     messageTransmitterAddress,
     tokenAddress,
     tokenMessengerAddress,
+  };
+}
+
+function cctpSolanaUsdcDestinationNetwork(): CctpSolanaUsdcDestinationNetwork {
+  return {
+    chain: 'solana',
+    domain: CCTP_SOLANA_DOMAIN,
+    gatewayNetwork: 'mainnet-beta',
+    messageTransmitterAddress: CCTP_SOLANA_MESSAGE_TRANSMITTER_V2_PROGRAM,
+    tokenMessengerAddress: CCTP_SOLANA_TOKEN_MESSENGER_MINTER_V2_PROGRAM,
+    usdcMintAddress: SOLANA_MAINNET_BETA_USDC_MINT,
   };
 }
 
@@ -1209,6 +1363,45 @@ function requireCctpEvmUsdcNetwork(rawNetwork: string, role: 'source' | 'destina
     throw new Error(`unsupported CCTP ${role} network: ${rawNetwork}`);
   }
   return config;
+}
+
+function requireCctpUsdcDestinationNetwork(rawNetwork: string): CctpUsdcDestinationNetwork {
+  const network = rawNetwork.trim().toLowerCase();
+  const evmConfig = CCTP_EVM_USDC_NETWORKS[network as keyof typeof CCTP_EVM_USDC_NETWORKS];
+  if (evmConfig) {
+    return evmConfig;
+  }
+  const solanaConfig =
+    CCTP_SOLANA_USDC_DESTINATION_NETWORKS[network as keyof typeof CCTP_SOLANA_USDC_DESTINATION_NETWORKS];
+  if (solanaConfig) {
+    return solanaConfig;
+  }
+  throw new Error(`unsupported CCTP destination network: ${rawNetwork}`);
+}
+
+function buildCctpDestination(
+  rawDestinationAddress: string,
+  destinationNetwork: CctpUsdcDestinationNetwork,
+): {
+  destinationAddress: string;
+  mintRecipient: string;
+  solanaUsdcAta?: string;
+} {
+  if (destinationNetwork.chain === 'ethereum') {
+    const destinationAddress = utils.getAddress(rawDestinationAddress);
+    return {
+      destinationAddress,
+      mintRecipient: addressToBytes32(destinationAddress),
+    };
+  }
+  const owner = new PublicKey(rawDestinationAddress);
+  const usdcMint = new PublicKey(destinationNetwork.usdcMintAddress);
+  const ata = getAssociatedTokenAddressSync(usdcMint, owner);
+  return {
+    destinationAddress: owner.toBase58(),
+    mintRecipient: publicKeyToBytes32(ata),
+    solanaUsdcAta: ata.toBase58(),
+  };
 }
 
 function assertBuiltCctpRegistryValues(
@@ -1235,6 +1428,10 @@ function assertBuiltCctpRegistryValues(
 
 function addressToBytes32(address: string): string {
   return utils.hexZeroPad(utils.getAddress(address), 32);
+}
+
+function publicKeyToBytes32(publicKey: PublicKey): string {
+  return `0x${Buffer.from(publicKey.toBytes()).toString('hex')}`;
 }
 
 async function withRebalanceLock<T>(idempotencyKey: string, fn: () => Promise<T>): Promise<T> {

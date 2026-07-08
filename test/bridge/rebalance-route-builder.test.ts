@@ -1,12 +1,19 @@
 import { existsSync, readFileSync, rmSync } from 'fs';
 import path from 'path';
 
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { PublicKey } from '@solana/web3.js';
 import { BigNumber, utils } from 'ethers';
 import Fastify from 'fastify';
 import yaml from 'js-yaml';
 
 jest.mock('../../src/chains/ethereum/ethereum', () => ({
   Ethereum: {
+    getInstance: jest.fn(),
+  },
+}));
+jest.mock('../../src/chains/solana/solana', () => ({
+  Solana: {
     getInstance: jest.fn(),
   },
 }));
@@ -17,6 +24,7 @@ import {
   buildHyperliquidBridge2Transfer,
 } from '../../src/bridge/rebalance.routes';
 import { Ethereum } from '../../src/chains/ethereum/ethereum';
+import { Solana } from '../../src/chains/solana/solana';
 import { assertMainnetMutationAllowed } from '../../src/services/runtime-guard';
 
 const WALLET = '0x00000000000000000000000000000000000000aa';
@@ -46,6 +54,10 @@ const WORLD_CHAIN_USDC = '0x79a02482a880bce3f13e09da970dc34db4cd24d1';
 const XDC_USDC = '0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1';
 const CCTP_TOKEN_MESSENGER = '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d';
 const CCTP_MESSAGE_TRANSMITTER = '0x81D40F21F12A8F0E3252Bccb954D722d4c464B64';
+const SOLANA_CCTP_MESSAGE_TRANSMITTER = 'CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC';
+const SOLANA_CCTP_TOKEN_MESSENGER = 'CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe';
+const SOLANA_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const SOLANA_DESTINATION_WALLET = '7UXzqF5bBgVjrCsMk5uX6NqT3LVffxXEmPgN13YfBjgY';
 const EDGE_CCTP_TOKEN_MESSENGER = '0x98706A006bc632Df31CAdFCBD43F38887ce2ca5c';
 const EDGE_CCTP_MESSAGE_TRANSMITTER = '0x5b61381Fc9e58E70EfC13a4A97516997019198ee';
 const CCTP_CONFIGURED_NETWORKS = [
@@ -98,6 +110,8 @@ const REBALANCE_STATE_IDS = [
   'cctp-destination-gas-after-approval',
   'cctp-finalize-failed-retryable',
   'cctp-finalize-receipt-unknown',
+  'cctp-solana-destination-gas-missing',
+  'cctp-solana-finalize-unimplemented',
   'rebalance-build-status',
 ];
 
@@ -476,7 +490,34 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     ).rejects.toThrow(new RegExp(`unsupported CCTP source network: ${network}`));
   });
 
-  it.each(['bsc', 'solana', 'starknet', 'stellar'])(
+  it('builds CCTP EVM to Solana calldata with domain 5 and the derived USDC ATA mint recipient', async () => {
+    const result = await buildCctpBaseArbitrumUsdcTransfer({
+      ...cctpRequest(),
+      destinationAddress: SOLANA_DESTINATION_WALLET,
+      destinationNetwork: 'solana',
+      provider: 'cctp_usdc',
+    });
+    const deposit = new utils.Interface([
+      'function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold)',
+    ]).decodeFunctionData('depositForBurn', result.txCalldata);
+    const expectedAta = getAssociatedTokenAddressSync(
+      new PublicKey(SOLANA_USDC_MINT),
+      new PublicKey(SOLANA_DESTINATION_WALLET),
+    );
+    const expectedMintRecipient = `0x${Buffer.from(expectedAta.toBytes()).toString('hex')}`;
+
+    expect(result.destinationAddress).toBe(SOLANA_DESTINATION_WALLET);
+    expect(result.destinationNetwork).toBe('mainnet-beta');
+    expect(result.cctpDestinationDomain).toBe(5);
+    expect(result.cctpDestinationMessageTransmitterAddress).toBe(SOLANA_CCTP_MESSAGE_TRANSMITTER);
+    expect(result.cctpDestinationTokenMessengerAddress).toBe(SOLANA_CCTP_TOKEN_MESSENGER);
+    expect(result.cctpMintRecipient).toBe(expectedMintRecipient);
+    expect(result.cctpSolanaUsdcAta).toBe(expectedAta.toBase58());
+    expect(deposit[1]).toBe(5);
+    expect(deposit[2]).toBe(expectedMintRecipient);
+  });
+
+  it.each(['bsc', 'starknet', 'stellar'])(
     'rejects unsupported CCTP destination network %s before building transactions',
     async (network) => {
       await expect(
@@ -487,6 +528,109 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       ).rejects.toThrow(new RegExp(`unsupported CCTP destination network: ${network}`));
     },
   );
+
+  it('does not approve or burn CCTP USDC to Solana when the destination ATA or SOL gas is unavailable', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest.fn();
+    const getAccountInfo = jest.fn(async () => null);
+    const getBalance = jest.fn(async () => 1_000_000);
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    mockSolana({ connection: { getAccountInfo, getBalance } });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const expectedAta = getAssociatedTokenAddressSync(
+      new PublicKey(SOLANA_USDC_MINT),
+      new PublicKey(SOLANA_DESTINATION_WALLET),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...cctpRequest(),
+        destinationAddress: SOLANA_DESTINATION_WALLET,
+        destinationNetwork: 'solana-mainnet-beta',
+        idempotencyKey: 'cctp-solana-destination-gas-missing',
+        liveActionAuthorization: {
+          ...cctpAuthorization('1.5', SOLANA_DESTINATION_WALLET),
+          destination_network: 'mainnet-beta',
+        },
+        provider: 'cctp_usdc',
+      },
+    });
+    const status = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-solana-destination-gas-missing',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ signature: '', status: 0 });
+    expect(Solana.getInstance).toHaveBeenCalledWith('mainnet-beta');
+    expect(getAccountInfo).toHaveBeenCalledWith(expectedAta);
+    expect(getBalance).toHaveBeenCalledWith(new PublicKey(SOLANA_DESTINATION_WALLET));
+    expect(sendTransaction).not.toHaveBeenCalled();
+    expect(status.json()).toMatchObject({
+      idempotencyKey: 'cctp-solana-destination-gas-missing',
+      providerStatus: 'destination_gas_unavailable',
+      status: 'destination_gas_unavailable',
+    });
+    expect(status.json().providerError).toContain('USDC associated token account');
+  });
+
+  it('does not approve or burn CCTP USDC to Solana before the Solana receiveMessage executor exists', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest.fn();
+    const getAccountInfo = jest.fn(async () => ({}));
+    const getBalance = jest.fn(async () => 1_000_000);
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    mockSolana({ connection: { getAccountInfo, getBalance } });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...cctpRequest(),
+        destinationAddress: SOLANA_DESTINATION_WALLET,
+        destinationNetwork: 'solana-mainnet-beta',
+        idempotencyKey: 'cctp-solana-finalize-unimplemented',
+        liveActionAuthorization: {
+          ...cctpAuthorization('1.5', SOLANA_DESTINATION_WALLET),
+          destination_network: 'mainnet-beta',
+        },
+        provider: 'cctp_usdc',
+      },
+    });
+    const status = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-solana-finalize-unimplemented',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ signature: '', status: 0 });
+    expect(sendTransaction).not.toHaveBeenCalled();
+    expect(status.json()).toMatchObject({
+      idempotencyKey: 'cctp-solana-finalize-unimplemented',
+      providerStatus: 'destination_gas_unavailable',
+      status: 'destination_gas_unavailable',
+    });
+    expect(status.json().providerError).toContain('Solana receiveMessage executor is not implemented');
+  });
 
   it('allows CCTP Base to Arbitrum transfer to a different derived destination address', async () => {
     const result = await buildCctpBaseArbitrumUsdcTransfer({
@@ -1189,6 +1333,19 @@ function mockEthereum(overrides: Record<string, unknown> = {}) {
   };
   (Ethereum.getInstance as jest.Mock).mockResolvedValue(ethereum as unknown as Ethereum);
   return ethereum;
+}
+
+function mockSolana(overrides: Record<string, unknown> = {}) {
+  const solana = {
+    connection: {
+      getAccountInfo: jest.fn(async () => ({})),
+      getBalance: jest.fn(async () => 1_000_000),
+    },
+    network: 'mainnet-beta',
+    ...overrides,
+  };
+  (Solana.getInstance as jest.Mock).mockResolvedValue(solana as unknown as Solana);
+  return solana;
 }
 
 function mockIris(body: Record<string, unknown>) {
