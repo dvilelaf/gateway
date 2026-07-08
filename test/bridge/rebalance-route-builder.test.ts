@@ -1,8 +1,9 @@
+import { createHash } from 'crypto';
 import { existsSync, readFileSync, rmSync } from 'fs';
 import path from 'path';
 
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
-import { PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import { BigNumber, utils } from 'ethers';
 import Fastify from 'fastify';
 import yaml from 'js-yaml';
@@ -111,7 +112,8 @@ const REBALANCE_STATE_IDS = [
   'cctp-finalize-failed-retryable',
   'cctp-finalize-receipt-unknown',
   'cctp-solana-destination-gas-missing',
-  'cctp-solana-finalize-unimplemented',
+  'cctp-solana-finalize',
+  'cctp-solana-finalize-unknown',
   'rebalance-build-status',
 ];
 
@@ -584,18 +586,48 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(status.json().providerError).toContain('USDC associated token account');
   });
 
-  it('does not approve or burn CCTP USDC to Solana before the Solana receiveMessage executor exists', async () => {
+  it('executes CCTP Base to Solana through provider-owned approve, burn, attestation, and receiveMessage', async () => {
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
     process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
-    const sendTransaction = jest.fn();
-    const getAccountInfo = jest.fn(async () => ({}));
+    const destinationWallet = Keypair.generate();
+    const destinationAddress = destinationWallet.publicKey.toBase58();
+    const destinationAta = getAssociatedTokenAddressSync(new PublicKey(SOLANA_USDC_MINT), destinationWallet.publicKey);
+    const feeRecipient = Keypair.generate().publicKey;
+    const tokenMessenger = solanaPda(new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER), 'token_messenger');
+    const tokenMessengerAccount = tokenMessengerAccountData(feeRecipient);
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xapprove-solana' })
+      .mockResolvedValueOnce({ hash: '0xburn-solana' });
+    const getAccountInfo = jest.fn(async (address: PublicKey) => {
+      if (address.equals(tokenMessenger)) {
+        return { data: tokenMessengerAccount };
+      }
+      if (address.equals(destinationAta)) {
+        return { data: Buffer.alloc(1) };
+      }
+      return null;
+    });
     const getBalance = jest.fn(async () => 1_000_000);
+    const getLatestBlockhash = jest.fn(async () => ({
+      blockhash: '11111111111111111111111111111111',
+      lastValidBlockHeight: 123,
+    }));
+    const confirmTransaction = jest.fn(async () => ({ value: { err: null } }));
+    const simulateWithErrorHandling = jest.fn(async () => undefined);
+    const sendRawTransaction = jest.fn(async () => 'solana-finalize-signature');
     mockEthereum({
       getWallet: jest.fn(async () => ({ sendTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
       prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
     });
-    mockSolana({ connection: { getAccountInfo, getBalance } });
+    mockSolana({
+      connection: { confirmTransaction, getAccountInfo, getBalance, getLatestBlockhash },
+      getWallet: jest.fn(async () => destinationWallet),
+      sendRawTransaction,
+      simulateWithErrorHandling,
+    });
+    mockIris(cctpSolanaIrisMessage('0xburn-solana', destinationAta.toBase58()));
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
     await app.ready();
@@ -606,11 +638,11 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
       payload: {
         ...cctpRequest(),
-        destinationAddress: SOLANA_DESTINATION_WALLET,
+        destinationAddress,
         destinationNetwork: 'solana-mainnet-beta',
-        idempotencyKey: 'cctp-solana-finalize-unimplemented',
+        idempotencyKey: 'cctp-solana-finalize',
         liveActionAuthorization: {
-          ...cctpAuthorization('1.5', SOLANA_DESTINATION_WALLET),
+          ...cctpAuthorization('1.5', destinationAddress),
           destination_network: 'mainnet-beta',
         },
         provider: 'cctp_usdc',
@@ -618,18 +650,168 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     });
     const status = await app.inject({
       method: 'GET',
-      url: '/bridge/rebalance/cctp-solana-finalize-unimplemented',
+      url: '/bridge/rebalance/cctp-solana-finalize',
     });
+    const sentTransaction = (simulateWithErrorHandling.mock.calls as any[])[0][0];
+    const receiveMessageInstruction = sentTransaction.instructions[0];
+    const keys = receiveMessageInstruction.keys.map((key: any) => key.pubkey.toBase58());
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ signature: '', status: 0 });
-    expect(sendTransaction).not.toHaveBeenCalled();
+    expect(response.json()).toMatchObject({ signature: 'solana-finalize-signature', status: 1 });
+    expect(sendTransaction).toHaveBeenCalledTimes(2);
+    expect(simulateWithErrorHandling).toHaveBeenCalledTimes(1);
+    expect(sendRawTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      123,
+      expect.objectContaining({ destination_address: destinationAddress }),
+      'cctp_usdc_rebalance',
+    );
+    expect(confirmTransaction).toHaveBeenCalledWith(
+      {
+        blockhash: '11111111111111111111111111111111',
+        lastValidBlockHeight: 123,
+        signature: 'solana-finalize-signature',
+      },
+      'confirmed',
+    );
+    expect(receiveMessageInstruction.programId.toBase58()).toBe(SOLANA_CCTP_MESSAGE_TRANSMITTER);
+    expect(Buffer.from(receiveMessageInstruction.data.subarray(0, 8)).toString('hex')).toBe(
+      anchorDiscriminatorHex('global:receive_message'),
+    );
+    expect(keys).toEqual([
+      destinationAddress,
+      destinationAddress,
+      solanaPda(
+        new PublicKey(SOLANA_CCTP_MESSAGE_TRANSMITTER),
+        'message_transmitter_authority',
+        new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER).toBuffer(),
+      ).toBase58(),
+      solanaPda(new PublicKey(SOLANA_CCTP_MESSAGE_TRANSMITTER), 'message_transmitter').toBase58(),
+      solanaPda(
+        new PublicKey(SOLANA_CCTP_MESSAGE_TRANSMITTER),
+        'used_nonce',
+        Buffer.from(utils.arrayify(utils.hexZeroPad('0x01', 32))),
+      ).toBase58(),
+      SOLANA_CCTP_TOKEN_MESSENGER,
+      '11111111111111111111111111111111',
+      tokenMessenger.toBase58(),
+      solanaPda(new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER), 'remote_token_messenger', '6').toBase58(),
+      solanaPda(new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER), 'token_minter').toBase58(),
+      solanaPda(
+        new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER),
+        'local_token',
+        new PublicKey(SOLANA_USDC_MINT).toBuffer(),
+      ).toBase58(),
+      solanaPda(
+        new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER),
+        'token_pair',
+        '6',
+        Buffer.from(utils.arrayify(addressBytes32(BASE_USDC))),
+      ).toBase58(),
+      getAssociatedTokenAddressSync(new PublicKey(SOLANA_USDC_MINT), feeRecipient).toBase58(),
+      destinationAta.toBase58(),
+      solanaPda(
+        new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER),
+        'custody',
+        new PublicKey(SOLANA_USDC_MINT).toBuffer(),
+      ).toBase58(),
+      'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      solanaPda(new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER), '__event_authority').toBase58(),
+      SOLANA_CCTP_TOKEN_MESSENGER,
+    ]);
     expect(status.json()).toMatchObject({
-      idempotencyKey: 'cctp-solana-finalize-unimplemented',
-      providerStatus: 'destination_gas_unavailable',
-      status: 'destination_gas_unavailable',
+      burnTransactionHash: '0xburn-solana',
+      finalizeTransactionHash: 'solana-finalize-signature',
+      idempotencyKey: 'cctp-solana-finalize',
+      status: 'confirmed',
     });
-    expect(status.json().providerError).toContain('Solana receiveMessage executor is not implemented');
+  });
+
+  it('does not rebroadcast Solana receiveMessage when confirmation fails after signature submission', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const destinationWallet = Keypair.generate();
+    const destinationAddress = destinationWallet.publicKey.toBase58();
+    const destinationAta = getAssociatedTokenAddressSync(new PublicKey(SOLANA_USDC_MINT), destinationWallet.publicKey);
+    const feeRecipient = Keypair.generate().publicKey;
+    const tokenMessenger = solanaPda(new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER), 'token_messenger');
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xapprove-solana-unknown' })
+      .mockResolvedValueOnce({ hash: '0xburn-solana-unknown' });
+    const getAccountInfo = jest.fn(async (address: PublicKey) => {
+      if (address.equals(tokenMessenger)) {
+        return { data: tokenMessengerAccountData(feeRecipient) };
+      }
+      if (address.equals(destinationAta)) {
+        return { data: Buffer.alloc(1) };
+      }
+      return null;
+    });
+    const getLatestBlockhash = jest.fn(async () => ({
+      blockhash: '11111111111111111111111111111111',
+      lastValidBlockHeight: 123,
+    }));
+    const confirmTransaction = jest.fn(async () => {
+      throw new Error('Solana confirmation provider timeout');
+    });
+    const sendRawTransaction = jest.fn(async () => 'solana-finalize-unknown-signature');
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    mockSolana({
+      connection: {
+        confirmTransaction,
+        getAccountInfo,
+        getBalance: jest.fn(async () => 1_000_000),
+        getLatestBlockhash,
+      },
+      getWallet: jest.fn(async () => destinationWallet),
+      sendRawTransaction,
+      simulateWithErrorHandling: jest.fn(async () => undefined),
+    });
+    mockIris(cctpSolanaIrisMessage('0xburn-solana-unknown', destinationAta.toBase58()));
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const payload = {
+      ...cctpRequest(),
+      destinationAddress,
+      destinationNetwork: 'solana-mainnet-beta',
+      idempotencyKey: 'cctp-solana-finalize-unknown',
+      liveActionAuthorization: {
+        ...cctpAuthorization('1.5', destinationAddress),
+        destination_network: 'mainnet-beta',
+      },
+      provider: 'cctp_usdc',
+    };
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const status = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/cctp-solana-finalize-unknown',
+    });
+
+    expect(first.statusCode).toBe(500);
+    expect(retry.json()).toMatchObject({ signature: 'solana-finalize-unknown-signature', status: 0 });
+    expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(status.json()).toMatchObject({
+      finalizeTransactionHash: 'solana-finalize-unknown-signature',
+      status: 'finalize_submitted',
+    });
   });
 
   it('allows CCTP Base to Arbitrum transfer to a different derived destination address', async () => {
@@ -1408,6 +1590,33 @@ function cctpIrisMessage(_burnTransactionHash: string, mintRecipient: string = W
   };
 }
 
+function cctpSolanaIrisMessage(_burnTransactionHash: string, mintRecipient: string) {
+  const message = cctpSolanaMessageBytes(mintRecipient);
+  return {
+    messages: [
+      {
+        attestation: `0x${'11'.repeat(65)}`,
+        cctpVersion: 2,
+        decodedMessage: {
+          sourceDomain: '6',
+          destinationDomain: '5',
+          sender: CCTP_TOKEN_MESSENGER,
+          recipient: SOLANA_CCTP_TOKEN_MESSENGER,
+          destinationCaller: utils.hexZeroPad('0x', 32),
+          decodedMessageBody: {
+            burnToken: BASE_USDC,
+            mintRecipient,
+            amount: '1500000',
+            messageSender: WALLET,
+          },
+        },
+        message,
+        status: 'complete',
+      },
+    ],
+  };
+}
+
 function cctpMessageBytes(mintRecipient: string = WALLET): string {
   return utils.hexConcat([
     uint32(1),
@@ -1430,12 +1639,58 @@ function cctpMessageBytes(mintRecipient: string = WALLET): string {
   ]);
 }
 
+function cctpSolanaMessageBytes(mintRecipient: string): string {
+  return utils.hexConcat([
+    uint32(1),
+    uint32(6),
+    uint32(5),
+    utils.hexZeroPad('0x01', 32),
+    addressBytes32(CCTP_TOKEN_MESSENGER),
+    publicKeyBytes32(new PublicKey(SOLANA_CCTP_TOKEN_MESSENGER)),
+    utils.hexZeroPad('0x', 32),
+    uint32(2000),
+    uint32(2000),
+    uint32(1),
+    addressBytes32(BASE_USDC),
+    publicKeyBytes32(new PublicKey(mintRecipient)),
+    utils.hexZeroPad(utils.hexlify(1500000), 32),
+    addressBytes32(WALLET),
+    utils.hexZeroPad('0x', 32),
+    utils.hexZeroPad('0x', 32),
+    utils.hexZeroPad('0x', 32),
+  ]);
+}
+
 function addressBytes32(address: string): string {
   return utils.hexZeroPad(utils.getAddress(address), 32);
 }
 
+function publicKeyBytes32(publicKey: PublicKey): string {
+  return `0x${Buffer.from(publicKey.toBytes()).toString('hex')}`;
+}
+
 function uint32(value: number): string {
   return utils.hexZeroPad(utils.hexlify(value), 4);
+}
+
+function solanaPda(programId: PublicKey, label: string, ...extraSeeds: (Buffer | string)[]): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from(label, 'utf8'),
+      ...extraSeeds.map((seed) => (typeof seed === 'string' ? Buffer.from(seed, 'utf8') : seed)),
+    ],
+    programId,
+  )[0];
+}
+
+function tokenMessengerAccountData(feeRecipient: PublicKey): Buffer {
+  const data = Buffer.alloc(174);
+  data.set(feeRecipient.toBytes(), 109);
+  return data;
+}
+
+function anchorDiscriminatorHex(name: string): string {
+  return createHash('sha256').update(name).digest().subarray(0, 8).toString('hex');
 }
 
 function cleanupRebalanceState() {

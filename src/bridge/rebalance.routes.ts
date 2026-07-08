@@ -1,9 +1,10 @@
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
 
 import { Static, Type } from '@sinclair/typebox';
-import { getAssociatedTokenAddressSync } from '@solana/spl-token';
-import { PublicKey } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
 import { BigNumber, utils } from 'ethers';
 import { FastifyPluginAsync } from 'fastify';
 
@@ -27,6 +28,10 @@ const CCTP_SOLANA_MESSAGE_TRANSMITTER_V2_PROGRAM = 'CCTPV2Sm4AdWt5296sk4P66VBZ7b
 const CCTP_SOLANA_TOKEN_MESSENGER_MINTER_V2_PROGRAM = 'CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe';
 const SOLANA_MAINNET_BETA_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const CCTP_STANDARD_FINALITY_THRESHOLD = 2000;
+const CCTP_MESSAGE_NONCE_OFFSET = 12;
+const CCTP_MESSAGE_SENDER_OFFSET = 44;
+const CCTP_BURN_MESSAGE_BURN_TOKEN_OFFSET = 152;
+const CCTP_SOLANA_TOKEN_MESSENGER_FEE_RECIPIENT_OFFSET = 109;
 const HYPERLIQUID_BRIDGE2_MIN_USDC = '5';
 const HYPERLIQUID_BRIDGE2_GAS_LIMIT = 120000;
 const CCTP_APPROVE_GAS_LIMIT = 90000;
@@ -760,18 +765,13 @@ async function executeCctpBaseArbitrumUsdcTransfer(
   await saveRebalanceState(state);
 
   if (built.destinationChain === 'solana') {
-    return {
+    return executeCctpSolanaReceiveMessage(
+      built,
+      liveActionAuthorization,
+      state,
       approvalTransactionHash,
       burnTransactionHash,
-      cctpAttestation: state.cctpAttestation,
-      cctpMessage: state.cctpMessage,
-      cctpMessageHash: state.cctpMessageHash,
-      providerError: 'Solana CCTP receiveMessage finalize is not implemented in this Gateway slice',
-      providerStatus: 'solana_finalize_unimplemented',
-      responseStatus: 0,
-      status: 'finalize_pending',
-      transactionHash: burnTransactionHash,
-    };
+    );
   }
 
   const finalizeEthereum = await Ethereum.getInstance(built.destinationNetwork);
@@ -903,16 +903,206 @@ async function checkCctpSolanaDestinationReady(
         providerError: `CCTP destination Solana ${destinationNetwork} ${errors.join('; ')}`,
       };
     }
-    return {
-      available: false,
-      providerError: 'CCTP Solana receiveMessage executor is not implemented in Gateway',
-    };
+    return { available: true };
   } catch (error: any) {
     return {
       available: false,
       providerError: `CCTP destination Solana ${destinationNetwork} readiness unavailable before burn: ${redactProviderError(error)}`,
     };
   }
+}
+
+async function executeCctpSolanaReceiveMessage(
+  built: BuiltProviderOwnedRebalance,
+  liveActionAuthorization: LiveActionAuthorization,
+  state: DurableRebalanceState,
+  approvalTransactionHash: string | undefined,
+  burnTransactionHash: string,
+): Promise<ProviderOwnedRebalanceExecution> {
+  if (!state.cctpMessage || !state.cctpAttestation || !built.destinationNetwork) {
+    throw new Error('CCTP Solana finalize requires message, attestation, and destination network');
+  }
+  const solana = await Solana.getInstance(built.destinationNetwork);
+  const payer = await solana.getWallet(built.destinationAddress);
+  const instruction = await buildCctpSolanaReceiveMessageInstruction(solana, built, state, payer.publicKey);
+  const transaction = new Transaction().add(instruction);
+  transaction.feePayer = payer.publicKey;
+  const { blockhash, lastValidBlockHeight } = await solana.connection.getLatestBlockhash();
+  transaction.recentBlockhash = blockhash;
+  transaction.sign(payer);
+  await solana.simulateWithErrorHandling(transaction);
+  const finalizeTransactionHash = await solana.sendRawTransaction(
+    transaction.serialize(),
+    lastValidBlockHeight,
+    liveActionAuthorization,
+    CCTP_USDC_PROVIDER_INTENT_SOURCE,
+  );
+  await saveRebalanceState({
+    ...state,
+    finalizeTransactionHash,
+    status: 'finalize_submitted',
+    transactionHash: finalizeTransactionHash,
+  });
+  const confirmation = await solana.connection.confirmTransaction(
+    { blockhash, lastValidBlockHeight, signature: finalizeTransactionHash },
+    'confirmed',
+  );
+  const confirmed = confirmation.value.err === null;
+  const status = confirmed ? 'confirmed' : 'finalize_pending';
+  return {
+    approvalTransactionHash,
+    burnTransactionHash,
+    cctpAttestation: state.cctpAttestation,
+    cctpMessage: state.cctpMessage,
+    cctpMessageHash: state.cctpMessageHash,
+    finalizeTransactionHash,
+    providerStatus: state.providerStatus,
+    responseStatus: confirmed ? 1 : -1,
+    status,
+    transactionHash: finalizeTransactionHash,
+  };
+}
+
+async function buildCctpSolanaReceiveMessageInstruction(
+  solana: Solana,
+  built: BuiltProviderOwnedRebalance,
+  state: DurableRebalanceState,
+  payer: PublicKey,
+): Promise<TransactionInstruction> {
+  assertBuiltCctpRegistryValues(built);
+  if (!state.cctpMessage || !state.cctpAttestation || !state.cctpSolanaUsdcAta) {
+    throw new Error('CCTP Solana receiveMessage state missing message, attestation, or recipient ATA');
+  }
+  const message = Buffer.from(utils.arrayify(state.cctpMessage));
+  const attestation = Buffer.from(utils.arrayify(state.cctpAttestation));
+  const sourceDomain = parseCctpRawMessage(state.cctpMessage).sourceDomain;
+  const messageTransmitterProgram = new PublicKey(built.cctpDestinationMessageTransmitterAddress);
+  const tokenMessengerMinterProgram = new PublicKey(built.cctpDestinationTokenMessengerAddress);
+  const usdcMint = new PublicKey(SOLANA_MAINNET_BETA_USDC_MINT);
+  const tokenMessenger = findSolanaProgramAddress(tokenMessengerMinterProgram, 'token_messenger');
+  const feeRecipient = await readCctpSolanaFeeRecipient(solana, tokenMessenger);
+  const localToken = findSolanaProgramAddress(tokenMessengerMinterProgram, 'local_token', usdcMint.toBuffer());
+  const tokenMinter = findSolanaProgramAddress(tokenMessengerMinterProgram, 'token_minter');
+  return new TransactionInstruction({
+    programId: messageTransmitterProgram,
+    keys: [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: payer, isSigner: true, isWritable: false },
+      {
+        pubkey: findSolanaProgramAddress(
+          messageTransmitterProgram,
+          'message_transmitter_authority',
+          tokenMessengerMinterProgram.toBuffer(),
+        ),
+        isSigner: false,
+        isWritable: false,
+      },
+      {
+        pubkey: findSolanaProgramAddress(messageTransmitterProgram, 'message_transmitter'),
+        isSigner: false,
+        isWritable: false,
+      },
+      {
+        pubkey: findSolanaProgramAddress(
+          messageTransmitterProgram,
+          'used_nonce',
+          message.subarray(CCTP_MESSAGE_NONCE_OFFSET, CCTP_MESSAGE_SENDER_OFFSET),
+        ),
+        isSigner: false,
+        isWritable: true,
+      },
+      { pubkey: tokenMessengerMinterProgram, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: tokenMessenger, isSigner: false, isWritable: false },
+      {
+        pubkey: findSolanaProgramAddress(tokenMessengerMinterProgram, 'remote_token_messenger', String(sourceDomain)),
+        isSigner: false,
+        isWritable: false,
+      },
+      { pubkey: tokenMinter, isSigner: false, isWritable: true },
+      { pubkey: localToken, isSigner: false, isWritable: true },
+      {
+        pubkey: findSolanaProgramAddress(
+          tokenMessengerMinterProgram,
+          'token_pair',
+          String(sourceDomain),
+          message.subarray(CCTP_BURN_MESSAGE_BURN_TOKEN_OFFSET, CCTP_BURN_MESSAGE_BURN_TOKEN_OFFSET + 32),
+        ),
+        isSigner: false,
+        isWritable: false,
+      },
+      {
+        pubkey: getAssociatedTokenAddressSync(usdcMint, feeRecipient),
+        isSigner: false,
+        isWritable: true,
+      },
+      { pubkey: new PublicKey(state.cctpSolanaUsdcAta), isSigner: false, isWritable: true },
+      {
+        pubkey: findSolanaProgramAddress(tokenMessengerMinterProgram, 'custody', usdcMint.toBuffer()),
+        isSigner: false,
+        isWritable: true,
+      },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      {
+        pubkey: findSolanaProgramAddress(tokenMessengerMinterProgram, '__event_authority'),
+        isSigner: false,
+        isWritable: false,
+      },
+      { pubkey: tokenMessengerMinterProgram, isSigner: false, isWritable: false },
+    ],
+    data: encodeAnchorReceiveMessageData(message, attestation),
+  });
+}
+
+async function readCctpSolanaFeeRecipient(solana: Solana, tokenMessenger: PublicKey): Promise<PublicKey> {
+  const account = await solana.connection.getAccountInfo(tokenMessenger);
+  if (!account?.data || account.data.length < CCTP_SOLANA_TOKEN_MESSENGER_FEE_RECIPIENT_OFFSET + 32) {
+    throw new Error('CCTP Solana tokenMessenger account missing fee recipient');
+  }
+  return new PublicKey(
+    account.data.subarray(
+      CCTP_SOLANA_TOKEN_MESSENGER_FEE_RECIPIENT_OFFSET,
+      CCTP_SOLANA_TOKEN_MESSENGER_FEE_RECIPIENT_OFFSET + 32,
+    ),
+  );
+}
+
+function encodeAnchorReceiveMessageData(message: Buffer, attestation: Buffer): Buffer {
+  return concatBuffers([
+    anchorDiscriminator('global:receive_message'),
+    encodeBorshBytes(message),
+    encodeBorshBytes(attestation),
+  ]);
+}
+
+function encodeBorshBytes(value: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(value.length, 0);
+  return concatBuffers([length, value]);
+}
+
+function anchorDiscriminator(name: string): Buffer {
+  return createHash('sha256').update(name).digest().subarray(0, 8);
+}
+
+function concatBuffers(chunks: Buffer[]): Buffer {
+  const output = Buffer.alloc(chunks.reduce((total, chunk) => total + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return output;
+}
+
+function findSolanaProgramAddress(programId: PublicKey, label: string, ...extraSeeds: (Buffer | string)[]): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from(label, 'utf8'),
+      ...extraSeeds.map((seed) => (typeof seed === 'string' ? Buffer.from(seed, 'utf8') : seed)),
+    ],
+    programId,
+  )[0];
 }
 
 async function fetchCctpAttestation(
