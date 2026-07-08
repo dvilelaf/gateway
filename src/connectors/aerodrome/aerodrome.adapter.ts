@@ -83,7 +83,7 @@ export async function executeAerodromeSwap(
   );
   return adapter.executeAerodromeGatewaySwapPlan(
     plan,
-    createGatewayWalletExecutor(network, liveActionAuthorization, internalProviderIntentSource),
+    createGatewayWalletExecutor(network, request, liveActionAuthorization, internalProviderIntentSource),
   );
 }
 
@@ -284,9 +284,11 @@ function missingWalletExecutorError(): Error {
 
 function createGatewayWalletExecutor(
   network: string,
+  request?: unknown,
   liveActionAuthorization?: LiveActionAuthorization,
   internalProviderIntentSource?: string,
 ): unknown {
+  const swapRequest = request as { amount?: unknown; slippagePct?: unknown; walletAddress?: unknown } | undefined;
   return {
     executeTransaction: async (transaction: PlannedTransaction) => {
       const ethereum = await Ethereum.getInstance(network);
@@ -302,6 +304,12 @@ function createGatewayWalletExecutor(
         gasEstimateToNumber(transaction.gasEstimate),
         liveActionAuthorization,
         internalProviderIntentSource,
+        {
+          expectedConnectorId: 'aerodrome',
+          expectedNotional: swapRequest?.amount,
+          expectedSlippageBps: expectedSlippageBps(swapRequest?.slippagePct),
+          expectedWalletAddress: swapRequest?.walletAddress,
+        },
       );
       const txResponse = await wallet.sendTransaction({
         to: transaction.to,
@@ -318,6 +326,13 @@ function createGatewayWalletExecutor(
       };
     },
   };
+}
+
+function expectedSlippageBps(value: unknown): number | undefined {
+  if (value === undefined || value === null || String(value).trim() === '') {
+    return undefined;
+  }
+  return slippagePctToBps(Number(value));
 }
 
 function gasEstimateToNumber(value: string): number {
