@@ -303,7 +303,9 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
     async (request) =>
       withRebalanceLock(request.body.idempotencyKey, async () => {
         const built = await buildProviderOwnedRebalance(request.body);
-        const existing = await loadOrCreateRebalanceState(built, request.body);
+        const existing = await loadOrCreateRebalanceState(built, request.body, {
+          allowUnsubmittedRefresh: request.body.provider === SQUID_ROUTER_PROVIDER,
+        });
         const existingHash = bestKnownTransactionHash(existing);
         if (existing.status === 'confirmed' || existing.status === 'failed') {
           return {
@@ -1725,16 +1727,32 @@ async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRe
 async function loadOrCreateRebalanceState(
   built: BuiltProviderOwnedRebalance,
   body: BridgeRebalanceRequest,
+  options: { allowUnsubmittedRefresh?: boolean } = {},
 ): Promise<DurableRebalanceState> {
   const requestFingerprint = rebalanceRequestFingerprint(built);
   const existing = await readRebalanceState(body.idempotencyKey);
   if (existing) {
     if (existing.requestFingerprint !== requestFingerprint) {
+      if (options.allowUnsubmittedRefresh && !rebalanceHasSideEffect(existing)) {
+        const refreshed = newRebalanceState(built, body, requestFingerprint);
+        await saveRebalanceState(refreshed);
+        return refreshed;
+      }
       throw new Error('idempotency key already used for a different rebalance request');
     }
     return existing;
   }
-  const state: DurableRebalanceState = {
+  const state = newRebalanceState(built, body, requestFingerprint);
+  await saveRebalanceState(state);
+  return state;
+}
+
+function newRebalanceState(
+  built: BuiltProviderOwnedRebalance,
+  body: BridgeRebalanceRequest,
+  requestFingerprint: string,
+): DurableRebalanceState {
+  return {
     amount: built.amount,
     cctpMintRecipient: built.cctpMintRecipient,
     cctpSolanaUsdcAta: built.cctpSolanaUsdcAta,
@@ -1759,8 +1777,15 @@ async function loadOrCreateRebalanceState(
     txValueHash: built.txValueHash,
     walletAddress: built.walletAddress,
   };
-  await saveRebalanceState(state);
-  return state;
+}
+
+function rebalanceHasSideEffect(state: DurableRebalanceState): boolean {
+  return Boolean(
+    state.approvalTransactionHash ||
+      state.burnTransactionHash ||
+      state.finalizeTransactionHash ||
+      state.transactionHash,
+  );
 }
 
 async function readRebalanceState(idempotencyKey: string): Promise<DurableRebalanceState | undefined> {

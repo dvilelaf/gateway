@@ -120,6 +120,7 @@ const REBALANCE_STATE_IDS = [
   'squid-rebalance-raw',
   'squid-submitted',
   'squid-idempotency-mismatch',
+  'squid-refresh-before-submit',
   'squid-status-success',
   'squid-status-needs-gas',
   'squid-status-failed',
@@ -627,6 +628,68 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(500);
     expect(second.body).toContain('idempotency key already used');
+  });
+
+  it('allows Squid execute to refresh the quote before any transaction is submitted', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    mockSquidRouteSequence([
+      {
+        route: {
+          id: 'route-build',
+          quoteId: 'quote-build',
+          transactionRequest: {
+            data: '0x1234abcd',
+            target: '0x00000000000000000000000000000000000000cc',
+            value: '1',
+          },
+        },
+      },
+      {
+        route: {
+          id: 'route-execute',
+          quoteId: 'quote-execute',
+          transactionRequest: {
+            data: '0xdeadbeef',
+            target: '0x00000000000000000000000000000000000000dd',
+            value: '2',
+          },
+        },
+      },
+    ]);
+    const sendTransaction = jest.fn(async () => ({ hash: '0xsquid-refreshed' }));
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 450000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const payload = { ...squidRequest(), idempotencyKey: 'squid-refresh-before-submit' };
+    const build = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload,
+    });
+    const execute = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: { ...payload, liveActionAuthorization: squidAuthorization('2.5') },
+    });
+
+    expect(build.statusCode).toBe(200);
+    expect(execute.statusCode).toBe(200);
+    expect(execute.json()).toMatchObject({ signature: '0xsquid-refreshed', status: 1 });
+    expect(sendTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: '0xdeadbeef',
+        to: '0x00000000000000000000000000000000000000dd',
+        value: BigNumber.from(2),
+      }),
+    );
   });
 
   it.each([
