@@ -115,7 +115,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           internalProviderIntentSource,
           {
             expectedConnectorId: 'jupiter',
-            expectedNotional: amount,
+            expectedNotional: liveActionAuthorization?.notional ?? amount,
             expectedWalletAddress: walletAddress,
           },
         );

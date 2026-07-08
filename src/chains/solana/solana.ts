@@ -1232,9 +1232,14 @@ export class Solana {
     priorityFeePerCU?: number,
     liveActionAuthorization?: LiveActionAuthorization,
     internalProviderIntentSource?: string,
+    guardContext: Pick<
+      MainnetMutationGuardInput,
+      'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+    > = {},
   ): Promise<{ signature: string; fee: number }> {
     assertMainnetMutationAllowed({
       chain: 'solana',
+      ...guardContext,
       internalProviderIntentSource,
       liveActionAuthorization,
       network: this.network,

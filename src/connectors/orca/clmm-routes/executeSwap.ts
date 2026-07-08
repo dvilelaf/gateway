@@ -22,6 +22,7 @@ import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import {
   LiveActionAuthorization,
+  MainnetMutationGuardInput,
   marlinGatewayProviderIntentTokenMatches,
   marlinProviderIntentAuthorizationMatches,
 } from '../../../services/runtime-guard';
@@ -42,6 +43,10 @@ export async function executeSwap(
   slippagePct: number = 1,
   liveActionAuthorization?: LiveActionAuthorization,
   internalProviderIntentSource?: string,
+  guardContext: Pick<
+    MainnetMutationGuardInput,
+    'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+  > = {},
 ): Promise<ExecuteSwapResponseType> {
   const solana = await Solana.getInstance(network);
   const orca = await Orca.getInstance(network);
@@ -256,6 +261,7 @@ export async function executeSwap(
     undefined,
     liveActionAuthorization,
     internalProviderIntentSource,
+    guardContext,
   );
 
   // Calculate balance changes based on side
@@ -317,7 +323,6 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
             action: 'gateway_swap',
             connector_id: 'orca',
             network: networkUsed,
-            notional: amount,
             scope: 'provider_intent',
             source: 'marlin',
             wallet_address: walletAddressUsed,
@@ -373,6 +378,11 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           slippagePct,
           liveActionAuthorization,
           internalProviderIntentSource,
+          {
+            expectedConnectorId: 'orca',
+            expectedNotional: liveActionAuthorization?.notional ?? amount,
+            expectedWalletAddress: walletAddressUsed,
+          },
         );
       } catch (e: any) {
         logger.error('Error executing swap:', e.message || e);
