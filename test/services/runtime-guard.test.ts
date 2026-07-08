@@ -141,6 +141,48 @@ describe('runtime guard', () => {
     ).not.toThrow();
   });
 
+  it('compares Marlin provider-intent swap notional against the parsed request amount', () => {
+    delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    const authorization = {
+      action: 'gateway_swap',
+      connector_id: 'jupiter',
+      network: 'mainnet-beta',
+      notional: '0.0019269450000000005',
+      scope: 'provider_intent',
+      slippage_bps: '1',
+      source: 'marlin',
+      wallet_address: 'solana-wallet',
+    };
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        expectedConnectorId: 'jupiter',
+        expectedNotional: Number('0.0019269450000000005'),
+        expectedSlippageBps: '1',
+        expectedWalletAddress: 'solana-wallet',
+        internalProviderIntentSource: 'jupiter_execute_swap',
+        liveActionAuthorization: authorization,
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'solana',
+        expectedConnectorId: 'jupiter',
+        expectedNotional: 0.003,
+        expectedSlippageBps: '1',
+        expectedWalletAddress: 'solana-wallet',
+        internalProviderIntentSource: 'jupiter_execute_swap',
+        liveActionAuthorization: authorization,
+        network: 'mainnet-beta',
+        operation: 'solana_raw_transaction',
+      }),
+    ).toThrow(/notional_matches=false/);
+  });
+
   it('allows Marlin provider-intent Orca swap Solana transaction authorization', () => {
     delete process.env.GATEWAY_LIVE_SOLANA_TRANSACTION_ENABLED;
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';

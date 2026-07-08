@@ -380,7 +380,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           internalProviderIntentSource,
           {
             expectedConnectorId: 'orca',
-            expectedNotional: liveActionAuthorization?.notional ?? amount,
+            expectedNotional: amount,
             expectedWalletAddress: walletAddressUsed,
           },
         );

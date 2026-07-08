@@ -1,5 +1,7 @@
 import { readFileSync } from 'fs';
 
+import { Decimal } from 'decimal.js';
+
 export const LIVE_MUTATIONS_ENV = 'GATEWAY_LIVE_MUTATIONS_ENABLED';
 export const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV = 'MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN';
 export const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_FILE_ENV = 'MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_FILE';
@@ -278,7 +280,22 @@ function authorizationMatches(expected: unknown, provided: unknown): boolean {
   if (expectedText.startsWith('0x') && providedText.startsWith('0x') && expectedText.length === providedText.length) {
     return expectedText.toLowerCase() === providedText.toLowerCase();
   }
+  const expectedDecimal = decimalOrNull(expectedText);
+  const providedDecimal = decimalOrNull(providedText);
+  if (expectedDecimal !== null && providedDecimal !== null) {
+    const tolerance = Decimal.max(expectedDecimal.abs().mul('1e-15'), new Decimal('1e-18'));
+    return expectedDecimal.minus(providedDecimal).abs().lte(tolerance);
+  }
   return providedText === expectedText;
+}
+
+function decimalOrNull(value: string): Decimal | null {
+  try {
+    const decimal = new Decimal(value);
+    return decimal.isFinite() ? decimal : null;
+  } catch {
+    return null;
+  }
 }
 
 function marlinGatewayProviderIntentToken(): string {
