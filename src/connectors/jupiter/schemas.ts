@@ -241,4 +241,5 @@ export const JupiterExecuteSwapRequest = Type.Object({
       default: JupiterConfig.config.maxLamports,
     }),
   ),
+  liveActionAuthorization: Type.Optional(Type.Any()),
 });

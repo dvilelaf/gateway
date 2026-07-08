@@ -1125,7 +1125,7 @@ describe('runtime guard wiring', () => {
     );
     const executeSwapSchema = schemas.slice(schemas.indexOf('export const JupiterExecuteSwapRequest'));
     expect(executeQuoteSchema).not.toContain('liveActionAuthorization');
-    expect(executeSwapSchema).not.toContain('liveActionAuthorization');
+    expect(executeSwapSchema).toContain('liveActionAuthorization');
 
     const executeQuote = readFileSync(path.join(ROOT, 'src/connectors/jupiter/router-routes/executeQuote.ts'), 'utf8');
     const executeQuoteRoute = executeQuote.slice(
