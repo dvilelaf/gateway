@@ -7,7 +7,7 @@ import { ExecuteQuoteRequestType, SwapExecuteResponseType, SwapExecuteResponse }
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import { quoteCache } from '../../../services/quote-cache';
-import { LiveActionAuthorization } from '../../../services/runtime-guard';
+import { LiveActionAuthorization, MainnetMutationGuardInput } from '../../../services/runtime-guard';
 import { Jupiter } from '../jupiter';
 import { JupiterExecuteQuoteRequest } from '../schemas';
 
@@ -19,6 +19,10 @@ export async function executeQuote(
   maxLamports?: number,
   liveActionAuthorization?: LiveActionAuthorization,
   internalProviderIntentSource?: string,
+  guardContext: Pick<
+    MainnetMutationGuardInput,
+    'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+  > = {},
 ): Promise<SwapExecuteResponseType> {
   // Retrieve cached quote
   const quote = quoteCache.get(quoteId);
@@ -79,6 +83,7 @@ export async function executeQuote(
     transaction,
     liveActionAuthorization,
     internalProviderIntentSource,
+    guardContext,
   );
 
   // Handle confirmation status

@@ -5,6 +5,7 @@ import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import {
   LiveActionAuthorization,
+  MainnetMutationGuardInput,
   marlinGatewayProviderIntentTokenMatches,
   marlinProviderIntentAuthorizationMatches,
 } from '../../../services/runtime-guard';
@@ -28,6 +29,10 @@ async function executeSwap(
   maxLamports?: number,
   liveActionAuthorization?: LiveActionAuthorization,
   internalProviderIntentSource?: string,
+  guardContext: Pick<
+    MainnetMutationGuardInput,
+    'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+  > = {},
 ): Promise<SwapExecuteResponseType> {
   // Step 1: Get a fresh quote using the quoteSwap function
   const quoteResult = await quoteSwap(network, baseToken, quoteToken, amount, side, slippagePct);
@@ -41,6 +46,7 @@ async function executeSwap(
     maxLamports ?? JupiterConfig.config.maxLamports,
     liveActionAuthorization,
     internalProviderIntentSource,
+    guardContext,
   );
 
   return executeResult;
@@ -78,10 +84,8 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
             action: 'gateway_swap',
             connector_id: 'jupiter',
             network,
-            notional: amount,
             scope: 'provider_intent',
             source: 'marlin',
-            wallet_address: walletAddress,
           })
             ? bodyWithInternalFields.liveActionAuthorization
             : undefined;
@@ -99,6 +103,11 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           maxLamports,
           liveActionAuthorization,
           internalProviderIntentSource,
+          {
+            expectedConnectorId: 'jupiter',
+            expectedNotional: amount,
+            expectedWalletAddress: walletAddress,
+          },
         );
       } catch (e) {
         if (e.statusCode) throw e;

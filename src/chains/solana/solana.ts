@@ -1470,9 +1470,14 @@ export class Solana {
     transaction: VersionedTransaction | Transaction,
     liveActionAuthorization?: LiveActionAuthorization,
     internalProviderIntentSource?: string,
+    guardContext: Pick<
+      MainnetMutationGuardInput,
+      'expectedConnectorId' | 'expectedNotional' | 'expectedWalletAddress'
+    > = {},
   ): Promise<{ confirmed: boolean; signature: string; txData: any }> {
     assertMainnetMutationAllowed({
       chain: 'solana',
+      ...guardContext,
       internalProviderIntentSource,
       liveActionAuthorization,
       network: this.network,
