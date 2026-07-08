@@ -78,17 +78,27 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
         const tokenAuthorized = marlinGatewayProviderIntentTokenMatches(
           request.headers[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER],
         );
-        const liveActionAuthorization =
-          tokenAuthorized &&
-          marlinProviderIntentAuthorizationMatches(bodyWithInternalFields.liveActionAuthorization, {
+        const authorizationPresent = bodyWithInternalFields.liveActionAuthorization !== undefined;
+        const authorizationShapeMatches = marlinProviderIntentAuthorizationMatches(
+          bodyWithInternalFields.liveActionAuthorization,
+          {
             action: 'gateway_swap',
             connector_id: 'jupiter',
             network,
             scope: 'provider_intent',
             source: 'marlin',
-          })
-            ? bodyWithInternalFields.liveActionAuthorization
-            : undefined;
+          },
+        );
+        const liveActionAuthorization =
+          tokenAuthorized && authorizationShapeMatches ? bodyWithInternalFields.liveActionAuthorization : undefined;
+        if ((tokenAuthorized || authorizationPresent) && liveActionAuthorization === undefined) {
+          throw httpErrors.forbidden(
+            'Marlin Jupiter provider intent authorization rejected: ' +
+              `token_authorized=${tokenAuthorized}; ` +
+              `authorization_present=${authorizationPresent}; ` +
+              `authorization_shape_matches=${authorizationShapeMatches}`,
+          );
+        }
         const internalProviderIntentSource = liveActionAuthorization ? 'jupiter_execute_swap' : undefined;
 
         return await executeSwap(
