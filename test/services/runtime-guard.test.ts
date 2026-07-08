@@ -522,6 +522,71 @@ describe('runtime guard', () => {
     ).not.toThrow();
   });
 
+  it('allows Marlin Squid Router treasury authorization for quote-bound Ethereum transaction', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '2.5',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000aa',
+        internalProviderIntentSource: 'squid_router_rebalance',
+        liveActionAuthorization: {
+          action: 'gateway_rebalance',
+          connector_id: 'treasury',
+          network: 'base',
+          notional: '2.5',
+          scope: 'provider_treasury',
+          source: 'marlin',
+          wallet_address: '0x00000000000000000000000000000000000000aa',
+        },
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).not.toThrow();
+  });
+
+  it('blocks Squid Router treasury authorization with mismatched wallet or connector context', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    const authorization = {
+      action: 'gateway_rebalance',
+      connector_id: 'treasury',
+      network: 'base',
+      notional: '2.5',
+      scope: 'provider_treasury',
+      source: 'marlin',
+      wallet_address: '0x00000000000000000000000000000000000000aa',
+    };
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '2.5',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000bb',
+        internalProviderIntentSource: 'squid_router_rebalance',
+        liveActionAuthorization: authorization,
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).toThrow(/direct mainnet mutation disabled/);
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'squid',
+        expectedNotional: '2.5',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000aa',
+        internalProviderIntentSource: 'squid_router_rebalance',
+        liveActionAuthorization: authorization,
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).toThrow(/direct mainnet mutation disabled/);
+  });
+
   it('blocks Solana CCTP treasury authorization without destination-scoped fields', () => {
     delete process.env.GATEWAY_LIVE_SOLANA_RAW_TRANSACTION_ENABLED;
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';

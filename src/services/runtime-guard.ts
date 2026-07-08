@@ -223,6 +223,11 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
       input.operation === 'ethereum_transaction' &&
       input.internalProviderIntentSource === 'hyperliquid_bridge2_rebalance') ||
     (input.chain === 'ethereum' && input.operation === 'ethereum_transaction' && isCctpTreasury) ||
+    (input.chain === 'ethereum' &&
+      input.operation === 'ethereum_transaction' &&
+      input.internalProviderIntentSource === 'squid_router_rebalance' &&
+      sourceMatches &&
+      requiredGuardContextPresent) ||
     (input.chain === 'solana' &&
       input.operation === 'solana_raw_transaction' &&
       isCctpTreasury &&

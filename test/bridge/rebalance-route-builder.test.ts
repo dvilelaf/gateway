@@ -115,6 +115,16 @@ const REBALANCE_STATE_IDS = [
   'cctp-solana-finalize',
   'cctp-solana-finalize-unknown',
   'rebalance-build-status',
+  'squid-rebalance-1',
+  'squid-rebalance-raw',
+  'squid-submitted',
+  'squid-idempotency-mismatch',
+  'squid-status-success',
+  'squid-status-needs-gas',
+  'squid-status-failed',
+  'squid-solana-destination',
+  'squid-xrpl-destination',
+  'squid-built-no-status',
 ];
 
 describe('Hyperliquid Bridge2 treasury rebalance route', () => {
@@ -377,6 +387,374 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     });
 
     expect(response.statusCode).toBe(400);
+  });
+
+  it('builds a Squid Router rebalance from a server-side quote and public hashes', async () => {
+    mockSquidRoute({
+      route: {
+        id: 'route-123',
+        quoteId: 'quote-456',
+        transactionRequest: {
+          data: '0x1234abcd',
+          target: '0x00000000000000000000000000000000000000cc',
+          value: '0',
+        },
+      },
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload: squidRequest(),
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/v2/route'),
+      expect.objectContaining({
+        body: expect.stringContaining('"fromAddress":"0x00000000000000000000000000000000000000AA"'),
+        headers: expect.objectContaining({ 'x-integrator-id': 'marlin' }),
+        method: 'POST',
+      }),
+    );
+    expect(JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body)).toMatchObject({
+      fromChain: '8453',
+      toChain: '42161',
+    });
+    expect(body).toMatchObject({
+      destinationAddress: DESTINATION_WALLET,
+      destinationAsset: 'USDC',
+      destinationNetwork: 'arbitrum',
+      idempotencyKey: 'squid-rebalance-1',
+      provider: 'squid_router',
+      providerRouteId: 'route-123',
+      quoteId: 'quote-456',
+      sourceAsset: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
+      sourceChain: 'ethereum',
+      sourceNetwork: 'base',
+      txCalldataHash: utils.keccak256('0x1234abcd'),
+      txTarget: '0x00000000000000000000000000000000000000cc',
+      txValueHash: utils.keccak256(utils.defaultAbiCoder.encode(['uint256'], [0])),
+    });
+    expect(body.route).toBeUndefined();
+    expect(body.transactionRequest).toBeUndefined();
+    expect(body.txCalldata).toBeUndefined();
+  });
+
+  it.each([
+    ['solana', 'solana-mainnet-beta', SOLANA_DESTINATION_WALLET, 'squid-solana-destination'],
+    ['xrpl', 'xrpl-mainnet', 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh', 'squid-xrpl-destination'],
+  ])(
+    'builds a Squid Router rebalance to opaque %s destination address without EVM normalization',
+    async (destinationChain, destinationNetwork, destinationAddress, idempotencyKey) => {
+      mockSquidRoute({
+        route: {
+          id: 'route-opaque-destination',
+          quoteId: 'quote-opaque-destination',
+          transactionRequest: {
+            data: '0x1234abcd',
+            target: '0x00000000000000000000000000000000000000cc',
+            value: '0',
+          },
+        },
+      });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.ready();
+
+      const build = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/build',
+        payload: {
+          ...squidRequest(),
+          destinationAddress,
+          destinationChain,
+          destinationNetwork,
+          idempotencyKey,
+        },
+      });
+      expect(build.statusCode).toBe(200);
+      const status = await app.inject({
+        method: 'GET',
+        url: `/bridge/rebalance/${idempotencyKey}`,
+      });
+      const quoteBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+      expect(build.json()).toMatchObject({
+        destinationAddress,
+        destinationChain,
+        destinationNetwork,
+        provider: 'squid_router',
+        sourceChain: 'ethereum',
+      });
+      expect(status.json()).toMatchObject({
+        destinationAddress,
+        destinationChain,
+        destinationNetwork,
+        idempotencyKey,
+        provider: 'squid_router',
+      });
+      expect(quoteBody.toAddress).toBe(destinationAddress);
+      expect(build.body).not.toContain('1234abcd');
+      expect(status.body).not.toContain('1234abcd');
+      expect(build.json().route).toBeUndefined();
+      expect(build.json().transactionRequest).toBeUndefined();
+      expect(status.json().route).toBeUndefined();
+      expect(status.json().transactionRequest).toBeUndefined();
+      expect(quoteBody.fromChain).toBe('8453');
+      expect(quoteBody.toChain).toBe(destinationChain === 'solana' ? 'solana' : 'xrpl');
+    },
+  );
+
+  it('rejects caller-supplied Squid route payload fields', async () => {
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload: {
+        ...squidRequest(),
+        idempotencyKey: 'squid-rebalance-raw',
+        routePayload: { transactionRequest: { data: '0x1234' } },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('executes Squid only once after submitted status for the same idempotency key', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    mockSquidRoute({
+      route: {
+        id: 'route-123',
+        quoteId: 'quote-456',
+        transactionRequest: {
+          data: '0x1234abcd',
+          target: '0x00000000000000000000000000000000000000cc',
+          value: '0',
+        },
+      },
+    });
+    const sendTransaction = jest.fn(async () => ({ hash: '0xsquid-submitted' }));
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn().mockRejectedValueOnce(new Error('receipt provider timeout')),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 450000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const payload = {
+      ...squidRequest(),
+      idempotencyKey: 'squid-submitted',
+      liveActionAuthorization: squidAuthorization('2.5'),
+    };
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+
+    expect(first.statusCode).toBe(500);
+    expect(retry.json()).toMatchObject({ signature: '0xsquid-submitted', status: 0 });
+    expect(sendTransaction).toHaveBeenCalledTimes(1);
+    expect(sendTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: '0x1234abcd',
+        to: '0x00000000000000000000000000000000000000cc',
+        value: BigNumber.from(0),
+      }),
+    );
+  });
+
+  it('rejects Squid idempotency reuse when a later quote changes the bound transaction', async () => {
+    mockSquidRouteSequence([
+      {
+        route: {
+          id: 'route-123',
+          quoteId: 'quote-456',
+          transactionRequest: {
+            data: '0x1234abcd',
+            target: '0x00000000000000000000000000000000000000cc',
+            value: '0',
+          },
+        },
+      },
+      {
+        route: {
+          id: 'route-123',
+          quoteId: 'quote-456',
+          transactionRequest: {
+            data: '0xdeadbeef',
+            target: '0x00000000000000000000000000000000000000cc',
+            value: '0',
+          },
+        },
+      },
+    ]);
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload: { ...squidRequest(), idempotencyKey: 'squid-idempotency-mismatch' },
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload: { ...squidRequest(), idempotencyKey: 'squid-idempotency-mismatch' },
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(500);
+    expect(second.body).toContain('idempotency key already used');
+  });
+
+  it.each([
+    ['success', 'confirmed', 'success', 'squid-status-success'],
+    ['needs_gas', 'action_required', 'needs_gas', 'squid-status-needs-gas'],
+    ['refund: api_key=secret', 'failed', 'failed', 'squid-status-failed'],
+  ])('maps Squid provider status %s to neutral status', async (providerStatus, status, safeProviderStatus, id) => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    mockSquidRoute({
+      route: {
+        id: 'route-123',
+        quoteId: 'quote-456',
+        transactionRequest: {
+          data: '0x1234abcd',
+          target: '0x00000000000000000000000000000000000000cc',
+          value: '0',
+        },
+      },
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const sendTransaction = jest.fn(async () => ({ hash: `0x${id}` }));
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => null),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 450000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...squidRequest(),
+        idempotencyKey: id,
+        liveActionAuthorization: squidAuthorization('2.5'),
+      },
+    });
+    mockSquidStatus({ squidTransactionStatus: providerStatus, error: 'signature=topsecret' });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/bridge/rebalance/${id}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      idempotencyKey: id,
+      providerStatus: safeProviderStatus,
+      status,
+    });
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/v2/status?'),
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'x-integrator-id': 'marlin' }),
+        method: 'GET',
+      }),
+    );
+    const statusUrl = new URL((global.fetch as jest.Mock).mock.calls[0][0]);
+    expect(statusUrl.searchParams.get('transactionId')).toBe(`0x${id}`);
+    expect(statusUrl.searchParams.get('requestId')).toBe('squid-request-123');
+    expect(statusUrl.searchParams.get('fromChainId')).toBe('8453');
+    expect(statusUrl.searchParams.get('toChainId')).toBe('42161');
+    expect(statusUrl.searchParams.get('quoteId')).toBe('quote-456');
+    expect(response.body).not.toContain('topsecret');
+  });
+
+  it('does not call Squid status before a transaction hash is submitted', async () => {
+    mockSquidRoute({
+      route: {
+        id: 'route-123',
+        quoteId: 'quote-456',
+        transactionRequest: {
+          data: '0x1234abcd',
+          target: '0x00000000000000000000000000000000000000cc',
+          value: '0',
+        },
+      },
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload: { ...squidRequest(), idempotencyKey: 'squid-built-no-status' },
+    });
+    (global.fetch as jest.Mock).mockClear();
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/bridge/rebalance/squid-built-no-status',
+    });
+
+    expect(status.json()).toMatchObject({ idempotencyKey: 'squid-built-no-status', status: 'built' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ sourceNetwork: 'solana-mainnet-beta' }, 'unsupported Squid Router EVM network'],
+    [{ destinationChain: 'ethereum', destinationNetwork: 'unknown-chain' }, 'unsupported Squid Router EVM network'],
+    [
+      { destinationChain: 'ethereum', destinationNetwork: 'solana-mainnet-beta' },
+      'unsupported Squid Router EVM network',
+    ],
+    [
+      { destinationChain: 'solana', destinationNetwork: 'unknown-chain' },
+      'unsupported Squid Router destination network',
+    ],
+    [{ destinationChain: 'xrpl', destinationNetwork: 'unknown-chain' }, 'unsupported Squid Router destination network'],
+    [{ sourceAsset: 'USDC' }, 'native EVM asset only'],
+  ])('rejects unsupported Squid request %j before calling Squid', async (override, expected) => {
+    global.fetch = jest.fn() as any;
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload: {
+        ...squidRequest(),
+        ...override,
+        idempotencyKey: `squid-unsupported-${String(Object.keys(override)[0])}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain(expected);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('builds the CCTP Base to Arbitrum USDC transfer internally', async () => {
@@ -1502,6 +1880,35 @@ function cctpAuthorization(notional: string, destinationAddress: string = WALLET
   };
 }
 
+function squidRequest() {
+  return {
+    amount: '2.5',
+    destinationAddress: DESTINATION_WALLET,
+    destinationAsset: 'USDC' as const,
+    destinationChain: 'ethereum' as const,
+    destinationNetwork: 'arbitrum' as const,
+    idempotencyKey: 'squid-rebalance-1',
+    mode: 'mainnet' as const,
+    provider: 'squid_router' as const,
+    sourceAsset: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as const,
+    sourceChain: 'ethereum' as const,
+    sourceNetwork: 'base' as const,
+    walletAddress: WALLET,
+  };
+}
+
+function squidAuthorization(notional: string) {
+  return {
+    action: 'gateway_rebalance',
+    connector_id: 'treasury',
+    network: 'base',
+    notional,
+    scope: 'provider_treasury',
+    source: 'marlin',
+    wallet_address: WALLET,
+  };
+}
+
 function mockEthereum(overrides: Record<string, unknown> = {}) {
   const ethereum = {
     getNativeBalanceByAddress: jest.fn(async () => ({
@@ -1568,6 +1975,46 @@ function mockIrisSequence(bodies: Record<string, unknown>[]) {
       statusText: 'OK',
     };
   }) as any;
+}
+
+function mockSquidRoute(body: Record<string, unknown>) {
+  mockSquidRouteSequence([body]);
+}
+
+function mockSquidRouteSequence(bodies: Record<string, unknown>[]) {
+  let last = bodies[bodies.length - 1] ?? {};
+  global.fetch = jest.fn(async () => {
+    const body = bodies.shift() ?? last;
+    last = body;
+    return {
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'x-request-id'
+            ? 'squid-request-123'
+            : name.toLowerCase() === 'content-type'
+              ? 'application/json'
+              : null,
+      },
+      json: async () => body,
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => JSON.stringify(body),
+    };
+  }) as any;
+}
+
+function mockSquidStatus(body: Record<string, unknown>) {
+  global.fetch = jest.fn(async () => ({
+    headers: {
+      get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+    },
+    json: async () => body,
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    text: async () => JSON.stringify(body),
+  })) as any;
 }
 
 function cctpIrisMessage(_burnTransactionHash: string, mintRecipient: string = WALLET) {
