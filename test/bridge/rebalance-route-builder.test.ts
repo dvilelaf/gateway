@@ -455,6 +455,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(typeof config.chainID).toBe('number');
     expect(config.chainID).toBeGreaterThan(0);
     expect(config.nodeURL).toEqual(expect.stringMatching(/^https?:\/\//));
+    expect(typeof config.geckoId).toBe('string');
     expect(typeof config.nativeCurrencySymbol).toBe('string');
     expect((config.nativeCurrencySymbol as string).length).toBeGreaterThan(0);
     expect(config.swapProvider).toBe('uniswap/router');

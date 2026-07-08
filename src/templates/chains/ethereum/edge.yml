@@ -1,7 +1,7 @@
 chainID: 3343
 nodeURL: https://edge-mainnet.g.alchemy.com/public
 nativeCurrencySymbol: ETH
-geckoId:
+geckoId: ""
 transactionExecutionTimeoutMs: 10000
 swapProvider: uniswap/router
 eip1559: true
