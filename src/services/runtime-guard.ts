@@ -75,6 +75,10 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
     return;
   }
   if (isMarlinRuntimeProfile()) {
+    const swapRejection = marlinProviderIntentSwapRejectionReason(input);
+    if (swapRejection) {
+      throw new Error(`Marlin provider intent swap rejected at mainnet guard: ${swapRejection}`);
+    }
     throw new Error(
       `direct mainnet mutation disabled for ${input.chain}/${input.network}/${input.operation} in Marlin runtime; ` +
         'submit through a scoped Marlin provider intent',
@@ -153,32 +157,58 @@ function isMarlinRuntimeProfile(): boolean {
 }
 
 function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInput): boolean {
+  return marlinProviderIntentSwapRejectionReason(input) === '';
+}
+
+function marlinProviderIntentSwapRejectionReason(input: MainnetMutationGuardInput): string | null {
   const authorization = input.liveActionAuthorization;
   const marlinProviderIntent =
     authorization?.source === 'marlin' &&
     authorization?.scope === 'provider_intent' &&
     authorization?.action === 'gateway_swap';
   if (!marlinProviderIntent) {
-    return false;
+    return null;
   }
-  if (
-    !authorizationMatches(input.network, authorization?.network) ||
-    !authorizationMatches(input.expectedConnectorId, authorization?.connector_id) ||
-    !authorizationMatches(input.expectedWalletAddress, authorization?.wallet_address) ||
-    !authorizationMatches(input.expectedNotional, authorization?.notional) ||
-    !authorizationMatches(input.expectedSlippageBps, authorization?.slippage_bps)
-  ) {
-    return false;
+  const requiredGuardContextPresent =
+    input.expectedConnectorId !== undefined &&
+    input.expectedConnectorId !== null &&
+    String(input.expectedConnectorId).trim() !== '' &&
+    input.expectedNotional !== undefined &&
+    input.expectedNotional !== null &&
+    String(input.expectedNotional).trim() !== '' &&
+    input.expectedWalletAddress !== undefined &&
+    input.expectedWalletAddress !== null &&
+    String(input.expectedWalletAddress).trim() !== '';
+  if (!requiredGuardContextPresent) {
+    return null;
   }
-  return (
+  const networkMatches = authorizationMatches(input.network, authorization?.network);
+  const connectorMatches = authorizationMatches(input.expectedConnectorId, authorization?.connector_id);
+  const walletMatches = authorizationMatches(input.expectedWalletAddress, authorization?.wallet_address);
+  const notionalMatches = authorizationMatches(input.expectedNotional, authorization?.notional);
+  const slippageMatches = authorizationMatches(input.expectedSlippageBps, authorization?.slippage_bps);
+  const operationMatches =
     (input.chain === 'solana' &&
       ['solana_raw_transaction', 'solana_transaction'].includes(input.operation) &&
       ['jupiter_execute_swap', 'orca_execute_swap'].includes(input.internalProviderIntentSource ?? '')) ||
     (input.chain === 'ethereum' &&
       input.network === 'base' &&
       input.operation === 'ethereum_transaction' &&
-      input.internalProviderIntentSource === 'aerodrome_execute_swap')
-  );
+      input.internalProviderIntentSource === 'aerodrome_execute_swap');
+  if (
+    !networkMatches ||
+    !connectorMatches ||
+    !walletMatches ||
+    !notionalMatches ||
+    !slippageMatches ||
+    !operationMatches
+  ) {
+    return (
+      `network_matches=${networkMatches}; connector_matches=${connectorMatches}; wallet_matches=${walletMatches}; ` +
+      `notional_matches=${notionalMatches}; slippage_matches=${slippageMatches}; operation_matches=${operationMatches}`
+    );
+  }
+  return '';
 }
 
 function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput): boolean {
