@@ -23,6 +23,7 @@ import {
   rebalanceRoutes,
   buildCctpBaseArbitrumUsdcTransfer,
   buildHyperliquidBridge2Transfer,
+  buildProviderOwnedRebalance,
   buildSquidRouterRebalance,
 } from '../../src/bridge/rebalance.routes';
 import { Ethereum } from '../../src/chains/ethereum/ethereum';
@@ -32,6 +33,8 @@ import { assertMainnetMutationAllowed } from '../../src/services/runtime-guard';
 const WALLET = '0x00000000000000000000000000000000000000aa';
 const DESTINATION_WALLET = '0x00000000000000000000000000000000000000bb';
 const TOKEN = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
+const ARBITRUM_WETH = '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1';
+const UNISWAP_V3_SWAP_ROUTER_02 = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
 const BRIDGE2 = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
 const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const ETHEREUM_USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
@@ -129,6 +132,9 @@ const REBALANCE_STATE_IDS = [
   'squid-built-no-status',
   'squid-erc20-build',
   'squid-erc20-execute',
+  'same-chain-build-status',
+  'same-chain-execute',
+  'same-chain-wrap-submitted',
 ];
 
 describe('Hyperliquid Bridge2 treasury rebalance route', () => {
@@ -1991,6 +1997,175 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(sendTransaction).toHaveBeenCalledTimes(3);
     expect(sendTransaction.mock.calls[2][0].to).toBe(CCTP_MESSAGE_TRANSMITTER);
   });
+
+  it('builds same-chain provider_treasury_same_chain_swap ETH to USDC with wrap, approval, and Uniswap calldata', async () => {
+    const built = await buildProviderOwnedRebalance(sameChainSwapRequest() as any);
+    const wrap = new utils.Interface(['function deposit() payable']).decodeFunctionData(
+      'deposit',
+      built.wrapTxCalldata as string,
+    );
+    const approval = new utils.Interface(['function approve(address spender, uint256 amount) returns (bool)']);
+    const swap = new utils.Interface([
+      'function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) payable returns (uint256 amountOut)',
+    ]);
+    const decodedApproval = approval.decodeFunctionData('approve', built.approvalTxCalldata as string);
+    const decodedSwap = swap.decodeFunctionData('exactInputSingle', built.txCalldata);
+    const params = decodedSwap[0];
+
+    expect(wrap.length).toBe(0);
+    expect(built.provider).toBe('provider_treasury_same_chain_swap');
+    expect(built.sourceAsset).toBe('ETH');
+    expect(built.wrapTxTarget).toBe(ARBITRUM_WETH);
+    expect(built.wrapTxValue).toBe('1250000000000000000');
+    expect(built.approvalTxTarget).toBe(ARBITRUM_WETH);
+    expect(decodedApproval[0]).toBe(UNISWAP_V3_SWAP_ROUTER_02);
+    expect(decodedApproval[1].toString()).toBe('1250000000000000000');
+    expect(built.txTarget).toBe(UNISWAP_V3_SWAP_ROUTER_02);
+    expect(params.tokenIn).toBe(ARBITRUM_WETH);
+    expect(params.tokenOut).toBe(TOKEN);
+    expect(params.fee).toBe(500);
+    expect(params.recipient).toBe(utils.getAddress(WALLET));
+    expect(params.amountIn.toString()).toBe('1250000000000000000');
+    expect(params.amountOutMinimum.toString()).toBe('125000000');
+    expect(params.sqrtPriceLimitX96.toString()).toBe('0');
+  });
+
+  it.each([
+    [{ sourceNetwork: 'base' }, /same-chain treasury swap supports only ethereum\/arbitrum/],
+    [{ destinationAsset: BASE_USDC }, /destinationAsset must be Arbitrum USDC/],
+    [{ destinationAddress: DESTINATION_WALLET }, /destinationAddress must equal walletAddress/],
+    [{ amount: '0' }, /amount must be positive/],
+  ])('rejects same-chain unsupported request %j', async (override, expected) => {
+    await expect(buildProviderOwnedRebalance({ ...sameChainSwapRequest(), ...override } as any)).rejects.toThrow(
+      expected,
+    );
+  });
+
+  it('allows scoped provider-treasury authorization for provider_treasury_same_chain_swap', () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '1.25',
+        expectedWalletAddress: utils.getAddress(WALLET),
+        internalProviderIntentSource: 'provider_treasury_same_chain_swap',
+        liveActionAuthorization: sameChainAuthorization('1.25'),
+        network: 'arbitrum',
+        operation: 'ethereum_transaction',
+      }),
+    ).not.toThrow();
+  });
+
+  it('executes same-chain wrap, approval, and swap with idempotent hashes and treasury guard context', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xwrap' })
+      .mockResolvedValueOnce({ hash: '0xapproval' })
+      .mockResolvedValueOnce({ hash: '0xswap' });
+    const prepareGasOptions = jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) }));
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions,
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const payload = {
+      ...sameChainSwapRequest(),
+      idempotencyKey: 'same-chain-execute',
+      liveActionAuthorization: sameChainAuthorization('1.25'),
+    };
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const status = await app.inject({ method: 'GET', url: '/bridge/rebalance/same-chain-execute' });
+
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ signature: '0xswap', status: 1 });
+    expect(second.json()).toMatchObject({ signature: '0xswap', status: 1 });
+    expect(sendTransaction).toHaveBeenCalledTimes(3);
+    expect(sendTransaction.mock.calls[0][0]).toMatchObject({
+      data: '0xd0e30db0',
+      to: ARBITRUM_WETH,
+      value: BigNumber.from('1250000000000000000'),
+    });
+    expect(sendTransaction.mock.calls[1][0]).toMatchObject({ to: ARBITRUM_WETH, value: BigNumber.from(0) });
+    expect(sendTransaction.mock.calls[2][0]).toMatchObject({
+      to: UNISWAP_V3_SWAP_ROUTER_02,
+      value: BigNumber.from(0),
+    });
+    expect(prepareGasOptions).toHaveBeenCalledWith(
+      undefined,
+      expect.any(Number),
+      sameChainAuthorization('1.25'),
+      'provider_treasury_same_chain_swap',
+      {
+        expectedConnectorId: 'treasury',
+        expectedNotional: '1.25',
+        expectedWalletAddress: utils.getAddress(WALLET),
+      },
+    );
+    expect(status.json()).toMatchObject({
+      approvalTransactionHash: '0xapproval',
+      idempotencyKey: 'same-chain-execute',
+      provider: 'provider_treasury_same_chain_swap',
+      status: 'confirmed',
+      transactionHash: '0xswap',
+      wrapTransactionHash: '0xwrap',
+    });
+  });
+
+  it('does not rebroadcast same-chain wrap after wrap hash is stored without approval or swap', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest.fn(async () => ({ hash: '0xwrap-submitted' }));
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn().mockRejectedValueOnce(new Error('receipt provider timeout')),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const payload = {
+      ...sameChainSwapRequest(),
+      idempotencyKey: 'same-chain-wrap-submitted',
+      liveActionAuthorization: sameChainAuthorization('1.25'),
+    };
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+
+    expect(first.statusCode).toBe(500);
+    expect(retry.json()).toMatchObject({ signature: '0xwrap-submitted', status: 0 });
+    expect(sendTransaction).toHaveBeenCalledTimes(1);
+  });
 });
 
 function baseRequest() {
@@ -2044,6 +2219,34 @@ function cctpAuthorization(notional: string, destinationAddress: string = WALLET
     destination_address: destinationAddress,
     destination_network: 'arbitrum',
     network: 'base',
+    notional,
+    scope: 'provider_treasury',
+    source: 'marlin',
+    wallet_address: WALLET,
+  };
+}
+
+function sameChainSwapRequest() {
+  return {
+    amount: '1.25',
+    destinationAddress: WALLET,
+    destinationAsset: 'USDC' as const,
+    destinationNetwork: 'arbitrum' as const,
+    idempotencyKey: 'same-chain-build-status',
+    mode: 'mainnet' as const,
+    provider: 'provider_treasury_same_chain_swap' as const,
+    sourceAsset: 'ETH' as const,
+    sourceChain: 'ethereum' as const,
+    sourceNetwork: 'arbitrum' as const,
+    walletAddress: WALLET,
+  };
+}
+
+function sameChainAuthorization(notional: string) {
+  return {
+    action: 'gateway_rebalance',
+    connector_id: 'treasury',
+    network: 'arbitrum',
     notional,
     scope: 'provider_treasury',
     source: 'marlin',

@@ -260,6 +260,12 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
       input.internalProviderIntentSource === 'squid_router_rebalance' &&
       sourceMatches &&
       requiredGuardContextPresent) ||
+    (input.chain === 'ethereum' &&
+      input.network === 'arbitrum' &&
+      input.operation === 'ethereum_transaction' &&
+      input.internalProviderIntentSource === 'provider_treasury_same_chain_swap' &&
+      sourceMatches &&
+      requiredGuardContextPresent) ||
     (input.chain === 'solana' &&
       input.operation === 'solana_raw_transaction' &&
       isCctpTreasury &&

@@ -50,6 +50,13 @@ const SQUID_ROUTER_GAS_LIMIT = 450000;
 const SQUID_ROUTER_APPROVE_GAS_LIMIT = 90000;
 const SQUID_NATIVE_TOKEN_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const SQUID_NATIVE_ASSET_DECIMALS = 18;
+const PROVIDER_TREASURY_SAME_CHAIN_SWAP = 'provider_treasury_same_chain_swap';
+const PROVIDER_TREASURY_SAME_CHAIN_SWAP_GAS_LIMIT = 450000;
+const PROVIDER_TREASURY_WRAP_GAS_LIMIT = 90000;
+const ARBITRUM_WETH_ADDRESS = '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1';
+const UNISWAP_V3_SWAP_ROUTER_02_ARBITRUM = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
+const UNISWAP_WETH_USDC_ARBITRUM_FEE = 500;
+const CONSERVATIVE_ETH_USDC_FLOOR = 100;
 const CCTP_REGISTRY_VERSION = 'cctp-v2-evm-usdc-configured-2026-07-08';
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
@@ -162,7 +169,11 @@ const SquidRouterRebalanceRequestSchema = Type.Object(
 
 const BridgeRebalanceRequestSchema = Type.Object(
   {
-    provider: Type.Union([Type.Literal('hyperliquid_bridge2'), Type.Literal(SQUID_ROUTER_PROVIDER)]),
+    provider: Type.Union([
+      Type.Literal('hyperliquid_bridge2'),
+      Type.Literal(SQUID_ROUTER_PROVIDER),
+      Type.Literal(PROVIDER_TREASURY_SAME_CHAIN_SWAP),
+    ]),
     idempotencyKey: Type.String({ minLength: 1 }),
     mode: Type.Literal('mainnet'),
     sourceChain: Type.Literal('ethereum'),
@@ -197,6 +208,7 @@ const BridgeRebalanceExecutionStatusSchema = Type.Object({
   finalizeTransactionHash: Type.Optional(Type.String()),
   provider: Type.Optional(Type.String()),
   transactionHash: Type.Optional(Type.String()),
+  wrapTransactionHash: Type.Optional(Type.String()),
   sourceChain: Type.Optional(Type.String()),
   sourceNetwork: Type.Optional(Type.String()),
   providerStatus: Type.Optional(Type.String()),
@@ -236,6 +248,10 @@ const rebalanceStore = new Map<string, DurableRebalanceState>();
 const erc20Interface = new utils.Interface(['function transfer(address to, uint256 amount) returns (bool)']);
 const erc20ApprovalInterface = new utils.Interface([
   'function approve(address spender, uint256 amount) returns (bool)',
+]);
+const wethInterface = new utils.Interface(['function deposit() payable']);
+const uniswapV3SwapRouter02Interface = new utils.Interface([
+  'function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) payable returns (uint256 amountOut)',
 ]);
 const cctpTokenMessengerInterface = new utils.Interface([
   'function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold)',
@@ -360,6 +376,7 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
             providerStatus: execution.providerStatus,
             status,
             transactionHash: execution.transactionHash || bestKnownTransactionHash(existing),
+            wrapTransactionHash: execution.wrapTransactionHash ?? existing.wrapTransactionHash,
           });
           return { signature: execution.transactionHash, status: execution.responseStatus };
         } catch (error: any) {
@@ -405,7 +422,7 @@ type BuiltProviderOwnedRebalance = {
   destinationVenue?: string;
   idempotencyKey: string;
   minAmount: string;
-  provider: 'hyperliquid_bridge2' | 'cctp_usdc' | 'squid_router';
+  provider: 'hyperliquid_bridge2' | 'cctp_usdc' | 'squid_router' | typeof PROVIDER_TREASURY_SAME_CHAIN_SWAP;
   sourceAsset: string;
   sourceChain: 'ethereum';
   sourceNetwork: string;
@@ -416,6 +433,11 @@ type BuiltProviderOwnedRebalance = {
   txValue?: string;
   txValueHash?: string;
   walletAddress: string;
+  wrapTxCalldata?: string;
+  wrapTxCalldataHash?: string;
+  wrapTxTarget?: string;
+  wrapTxValue?: string;
+  wrapTxValueHash?: string;
   cctpDestinationDomain?: number;
   cctpDestinationMessageTransmitterAddress?: string;
   cctpDestinationTokenMessengerAddress?: string;
@@ -443,6 +465,7 @@ type ProviderOwnedRebalanceExecution = {
   responseStatus: -1 | 0 | 1;
   status: string;
   transactionHash: string;
+  wrapTransactionHash?: string;
 };
 
 type DurableRebalanceState = BridgeRebalanceStatus & {
@@ -472,6 +495,7 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   txTarget?: string;
   txValueHash?: string;
   walletAddress: string;
+  wrapTransactionHash?: string;
 };
 
 type CircleCctpMessagesResponse = {
@@ -547,10 +571,81 @@ export async function buildProviderOwnedRebalance(body: BridgeRebalanceRequest):
   if (body.provider === SQUID_ROUTER_PROVIDER) {
     return buildSquidRouterRebalance(body as SquidRouterRebalanceRequest);
   }
+  if (body.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
+    return buildProviderTreasurySameChainSwap(body);
+  }
   if (body.provider !== 'hyperliquid_bridge2') {
     throw new Error('CCTP treasury rebalance is disabled; use squid_router');
   }
   return buildHyperliquidBridge2Transfer(body as HyperliquidBridge2RebalanceRequest);
+}
+
+export async function buildProviderTreasurySameChainSwap(
+  body: BridgeRebalanceRequest,
+): Promise<BuiltProviderOwnedRebalance> {
+  if (body.sourceChain !== 'ethereum' || body.sourceNetwork.trim().toLowerCase() !== 'arbitrum') {
+    throw new Error('same-chain treasury swap supports only ethereum/arbitrum');
+  }
+  if (body.destinationNetwork !== undefined && body.destinationNetwork.trim().toLowerCase() !== 'arbitrum') {
+    throw new Error('same-chain treasury swap destinationNetwork must be arbitrum');
+  }
+  const walletAddress = utils.getAddress(body.walletAddress);
+  const destinationAddress = utils.getAddress(body.destinationAddress);
+  if (walletAddress !== destinationAddress) {
+    throw new Error('same-chain treasury swap destinationAddress must equal walletAddress');
+  }
+  const sourceAsset = normalizeSameChainSwapSourceAsset(body.sourceAsset);
+  if (!sameChainDestinationIsArbitrumUsdc(body.destinationAsset)) {
+    throw new Error('same-chain treasury swap destinationAsset must be Arbitrum USDC');
+  }
+  const amountUnits = utils.parseUnits(body.amount, 18);
+  if (amountUnits.lte(0)) {
+    throw new Error('same-chain treasury swap amount must be positive');
+  }
+  const wrapTxCalldata = sourceAsset === 'ETH' ? wethInterface.encodeFunctionData('deposit') : undefined;
+  const wrapTxValue = sourceAsset === 'ETH' ? amountUnits.toString() : undefined;
+  const approvalTxCalldata = erc20ApprovalInterface.encodeFunctionData('approve', [
+    UNISWAP_V3_SWAP_ROUTER_02_ARBITRUM,
+    amountUnits,
+  ]);
+  const txCalldata = uniswapV3SwapRouter02Interface.encodeFunctionData('exactInputSingle', [
+    {
+      amountIn: amountUnits,
+      amountOutMinimum: conservativeWethUsdcMinimumOut(amountUnits),
+      fee: UNISWAP_WETH_USDC_ARBITRUM_FEE,
+      recipient: walletAddress,
+      sqrtPriceLimitX96: BigNumber.from(0),
+      tokenIn: ARBITRUM_WETH_ADDRESS,
+      tokenOut: ARBITRUM_USDC_ADDRESS,
+    },
+  ]);
+  return {
+    amount: body.amount,
+    approvalCalldataHash: utils.keccak256(approvalTxCalldata),
+    approvalTxCalldata,
+    approvalTxTarget: ARBITRUM_WETH_ADDRESS,
+    destinationAddress,
+    destinationAsset: 'USDC',
+    destinationNetwork: 'arbitrum',
+    idempotencyKey: body.idempotencyKey,
+    minAmount: '0.000001',
+    provider: PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+    sourceAsset,
+    sourceChain: 'ethereum',
+    sourceNetwork: 'arbitrum',
+    tokenAddress: ARBITRUM_WETH_ADDRESS,
+    txCalldata,
+    txCalldataHash: utils.keccak256(txCalldata),
+    txTarget: UNISWAP_V3_SWAP_ROUTER_02_ARBITRUM,
+    txValue: '0',
+    txValueHash: transactionValueHash('0'),
+    walletAddress,
+    wrapTxCalldata,
+    wrapTxCalldataHash: wrapTxCalldata ? utils.keccak256(wrapTxCalldata) : undefined,
+    wrapTxTarget: wrapTxCalldata ? ARBITRUM_WETH_ADDRESS : undefined,
+    wrapTxValue,
+    wrapTxValueHash: wrapTxValue ? transactionValueHash(wrapTxValue) : undefined,
+  };
 }
 
 export async function buildSquidRouterRebalance(
@@ -875,6 +970,9 @@ async function executeProviderOwnedRebalance(
       SQUID_ROUTER_PROVIDER_INTENT_SOURCE,
     );
   }
+  if (built.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
+    return executeProviderTreasurySameChainSwap(built, liveActionAuthorization, state);
+  }
   return executeSingleTransactionRebalance(
     built,
     liveActionAuthorization,
@@ -889,6 +987,69 @@ function rebalanceGasGuardContext(built: BuiltProviderOwnedRebalance, walletAddr
     expectedConnectorId: providerTreasuryConnectorId(built.provider),
     expectedNotional: built.amount,
     expectedWalletAddress: walletAddress,
+  };
+}
+
+async function executeProviderTreasurySameChainSwap(
+  built: BuiltProviderOwnedRebalance,
+  liveActionAuthorization: LiveActionAuthorization,
+  state: DurableRebalanceState,
+): Promise<ProviderOwnedRebalanceExecution> {
+  let wrapTransactionHash = state.wrapTransactionHash;
+  if (built.wrapTxCalldata && built.wrapTxTarget && built.wrapTxValue) {
+    if (wrapTransactionHash && state.status === 'wrap_submitted') {
+      return {
+        responseStatus: 0,
+        status: 'wrap_submitted',
+        transactionHash: wrapTransactionHash,
+        wrapTransactionHash,
+      };
+    }
+    if (!wrapTransactionHash) {
+      const ethereum = await Ethereum.getInstance(built.sourceNetwork);
+      const wallet = await ethereum.getWallet(built.walletAddress);
+      const gasOptions = await ethereum.prepareGasOptions(
+        undefined,
+        PROVIDER_TREASURY_WRAP_GAS_LIMIT,
+        liveActionAuthorization,
+        PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+        rebalanceGasGuardContext(built),
+      );
+      const wrapTx = await wallet.sendTransaction({
+        data: built.wrapTxCalldata,
+        to: built.wrapTxTarget,
+        value: BigNumber.from(built.wrapTxValue),
+        ...gasOptions,
+      });
+      wrapTransactionHash = wrapTx.hash;
+      state = {
+        ...state,
+        status: 'wrap_submitted',
+        wrapTransactionHash,
+      };
+      await saveRebalanceState(state);
+      const wrapReceipt = await ethereum.handleTransactionExecution(wrapTx);
+      if (wrapReceipt?.status !== 1) {
+        throw new Error('same-chain treasury ETH wrap not confirmed');
+      }
+      state = {
+        ...state,
+        status: 'wrap_confirmed',
+        wrapTransactionHash,
+      };
+      await saveRebalanceState(state);
+    }
+  }
+  const execution = await executeSingleTransactionRebalance(
+    built,
+    liveActionAuthorization,
+    state,
+    PROVIDER_TREASURY_SAME_CHAIN_SWAP_GAS_LIMIT,
+    PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+  );
+  return {
+    ...execution,
+    wrapTransactionHash,
   };
 }
 
@@ -1790,6 +1951,7 @@ function newRebalanceState(
     txTarget: built.txTarget,
     txValueHash: built.txValueHash,
     walletAddress: built.walletAddress,
+    wrapTransactionHash: undefined,
   };
 }
 
@@ -1798,7 +1960,8 @@ function rebalanceHasSideEffect(state: DurableRebalanceState): boolean {
     state.approvalTransactionHash ||
       state.burnTransactionHash ||
       state.finalizeTransactionHash ||
-      state.transactionHash,
+      state.transactionHash ||
+      state.wrapTransactionHash,
   );
 }
 
@@ -1876,6 +2039,9 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         txTarget: built.txTarget,
         txValueHash: built.txValueHash,
         walletAddress: built.walletAddress,
+        wrapTxCalldataHash: built.wrapTxCalldataHash,
+        wrapTxTarget: built.wrapTxTarget,
+        wrapTxValueHash: built.wrapTxValueHash,
       }),
     ),
   );
@@ -1885,8 +2051,9 @@ function bestKnownTransactionHash(state: DurableRebalanceState): string {
   return (
     state.finalizeTransactionHash ??
     state.burnTransactionHash ??
-    state.approvalTransactionHash ??
     state.transactionHash ??
+    state.approvalTransactionHash ??
+    state.wrapTransactionHash ??
     ''
   );
 }
@@ -1949,6 +2116,29 @@ function optionalText(value: unknown): string | undefined {
   }
   const text = String(value).trim();
   return text ? text : undefined;
+}
+
+function normalizeSameChainSwapSourceAsset(value: string): 'ETH' | typeof ARBITRUM_WETH_ADDRESS {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'eth') {
+    return 'ETH';
+  }
+  if (normalized === 'weth' || normalized === ARBITRUM_WETH_ADDRESS.toLowerCase()) {
+    return ARBITRUM_WETH_ADDRESS;
+  }
+  throw new Error('same-chain treasury swap sourceAsset must be ETH or Arbitrum WETH');
+}
+
+function sameChainDestinationIsArbitrumUsdc(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'usdc' || normalized === ARBITRUM_USDC_ADDRESS.toLowerCase();
+}
+
+function conservativeWethUsdcMinimumOut(amountUnits: BigNumber): BigNumber {
+  return amountUnits
+    .mul(CONSERVATIVE_ETH_USDC_FLOOR)
+    .mul(BigNumber.from(10).pow(USDC_DECIMALS))
+    .div(BigNumber.from(10).pow(18));
 }
 
 function mapSquidStatus(value: string): { providerStatus: string; status: string } {
@@ -2029,7 +2219,11 @@ function removeUndefinedFields<T extends Record<string, any>>(value: T): T {
 }
 
 function providerTreasuryConnectorId(provider: string): string {
-  if (isCctpProvider(provider) || provider === SQUID_ROUTER_PROVIDER) {
+  if (
+    isCctpProvider(provider) ||
+    provider === SQUID_ROUTER_PROVIDER ||
+    provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP
+  ) {
     return 'treasury';
   }
   return 'hyperliquid';
@@ -2042,6 +2236,9 @@ function providerTreasuryIntentSource(provider: string): string {
   if (provider === SQUID_ROUTER_PROVIDER) {
     return SQUID_ROUTER_PROVIDER_INTENT_SOURCE;
   }
+  if (provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
+    return PROVIDER_TREASURY_SAME_CHAIN_SWAP;
+  }
   return 'hyperliquid_bridge2_rebalance';
 }
 
@@ -2050,6 +2247,17 @@ function isCctpProvider(provider: string): boolean {
 }
 
 function recoverableRebalanceErrorStatus(state: DurableRebalanceState): string {
+  if (state.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
+    if (state.transactionHash) {
+      return 'submitted';
+    }
+    if (state.approvalTransactionHash) {
+      return 'approval_submitted';
+    }
+    if (state.wrapTransactionHash) {
+      return 'wrap_submitted';
+    }
+  }
   if (isCctpProvider(state.provider)) {
     if (state.finalizeTransactionHash) {
       return 'finalize_submitted';
