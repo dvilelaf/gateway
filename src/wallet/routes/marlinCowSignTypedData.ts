@@ -95,6 +95,8 @@ export const marlinCowSignTypedDataRoute: FastifyPluginAsync = async (fastify) =
           network,
           address: validatedAddress,
           signingType: signingTypeNames[0],
+          domain,
+          types: types as Record<string, TypedDataField[]>,
           value,
         })
       ) {
@@ -119,6 +121,8 @@ function cowSigningAuthorizationMatches(input: {
   network: string;
   address: string;
   signingType: string;
+  domain: Record<string, unknown>;
+  types: Record<string, TypedDataField[]>;
   value: Record<string, unknown>;
 }): boolean {
   const authorization = input.authorization;
@@ -132,12 +136,13 @@ function cowSigningAuthorizationMatches(input: {
         .trim()
         .toLowerCase() !== input.address.toLowerCase() ||
       String(authorization?.signing_type ?? '').trim() !== input.signingType ||
-      String(authorization?.payload_hash ?? '').trim() !== cowSigningPayloadHash(input.value)) === false
+      String(authorization?.payload_hash ?? '').trim() !==
+        cowSigningPayloadHash({ domain: input.domain, types: input.types, value: input.value })) === false
   );
 }
 
-function cowSigningPayloadHash(value: Record<string, unknown>): string {
-  return createHash('sha256').update(stableJson(value)).digest('hex');
+function cowSigningPayloadHash(payload: Record<string, unknown>): string {
+  return createHash('sha256').update(stableJson(payload)).digest('hex');
 }
 
 function stableJson(value: unknown): string {

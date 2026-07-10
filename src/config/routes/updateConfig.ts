@@ -2,6 +2,7 @@ import { FastifyPluginAsync } from 'fastify';
 
 import { ConfigManagerV2 } from '../../services/config-manager-v2';
 import { logger } from '../../services/logger';
+import { isMarlinRuntimeProfile } from '../../services/marlin-runtime';
 import {
   ConfigUpdateRequest,
   ConfigUpdateResponse,
@@ -56,6 +57,16 @@ export const updateConfigRoute: FastifyPluginAsync = async (fastify) => {
       const { namespace, path, value } = request.body;
 
       try {
+        const normalizedPath = path.replace(/[^a-z0-9]/gi, '').toLowerCase();
+        if (
+          isMarlinRuntimeProfile() &&
+          ['defaultwallet', 'derivationpath', 'mnemonic', 'privatekey', 'secretkey', 'walletfile'].some((key) =>
+            normalizedPath.includes(key),
+          )
+        ) {
+          throw fastify.httpErrors.forbidden('Wallet authority configuration comes only from MARLIN_MNEMONIC');
+        }
+
         // Validate namespace exists
         const namespaceConfig = ConfigManagerV2.getInstance().getNamespace(namespace);
         if (!namespaceConfig) {

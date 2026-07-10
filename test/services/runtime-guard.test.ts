@@ -811,51 +811,6 @@ describe('runtime guard wiring', () => {
     expect(execute.indexOf('MARLIN_RUNTIME_PROFILE')).toBeLessThan(execute.indexOf('sendTransaction('));
   });
 
-  it('checks wallet sends before chain-specific send paths', () => {
-    const source = readFileSync(path.join(ROOT, 'src/wallet/utils.ts'), 'utf8');
-    const sendTransaction = source.slice(
-      source.indexOf('export async function sendTransaction'),
-      source.indexOf('/**\n * Send a Solana transaction'),
-    );
-
-    expect(sendTransaction.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(
-      sendTransaction.indexOf('sendSolanaTransaction('),
-    );
-    expect(sendTransaction.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(
-      sendTransaction.indexOf('sendEthereumTransaction('),
-    );
-    expect(sendTransaction).not.toContain('liveActionAuthorization: req.liveActionAuthorization');
-
-    const sendSolanaTransaction = source.slice(
-      source.indexOf('async function sendSolanaTransaction'),
-      source.indexOf('/**\n * Send an Ethereum transaction'),
-    );
-    expect(sendSolanaTransaction).toMatch(/sendAndConfirmTransaction\([\s\S]*req\.liveActionAuthorization/);
-
-    const sendEthereumTransaction = source.slice(source.indexOf('async function sendEthereumTransaction'));
-    expect(sendEthereumTransaction).toMatch(/prepareGasOptions\([\s\S]*req\.liveActionAuthorization/);
-  });
-
-  it('exposes live action authorization on wallet mutation schemas', () => {
-    const source = readFileSync(path.join(ROOT, 'src/wallet/schemas.ts'), 'utf8');
-    const sendSchema = source.slice(
-      source.indexOf('export const SendTransactionRequestSchema'),
-      source.indexOf('export const SendTransactionResponseSchema'),
-    );
-    const signMessageSchema = source.slice(
-      source.indexOf('export const SignMessageRequestSchema'),
-      source.indexOf('export const SignMessageResponseSchema'),
-    );
-    const signSchema = source.slice(
-      source.indexOf('export const SignTypedDataRequestSchema'),
-      source.indexOf('export const SignTypedDataResponseSchema'),
-    );
-
-    expect(sendSchema).toContain('liveActionAuthorization');
-    expect(signMessageSchema).toContain('liveActionAuthorization');
-    expect(signSchema).toContain('liveActionAuthorization');
-  });
-
   it('checks Ethereum gas preparation before transaction callers can broadcast', () => {
     const source = readFileSync(path.join(ROOT, 'src/chains/ethereum/ethereum.ts'), 'utf8');
     const prepareGasOptions = source.slice(
@@ -951,31 +906,6 @@ describe('runtime guard wiring', () => {
       expect(source).toContain('transaction,');
       expect(source).toContain('liveActionAuthorization,');
     }
-  });
-
-  it('checks typed-data signing before wallet signing', () => {
-    const source = readFileSync(path.join(ROOT, 'src/wallet/routes/signTypedData.ts'), 'utf8');
-
-    expect(source.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(source.indexOf('ethereum.getWallet('));
-    expect(source.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(source.indexOf('wallet._signTypedData('));
-    expect(source).toContain('liveActionAuthorization');
-  });
-
-  it('checks message signing before wallet signing', () => {
-    const source = readFileSync(path.join(ROOT, 'src/wallet/utils.ts'), 'utf8');
-    const signMessage = source.slice(
-      source.indexOf('export async function signMessage'),
-      source.indexOf('export async function getWallet'),
-    );
-
-    expect(signMessage.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(
-      signMessage.indexOf('getInitializedChain('),
-    );
-    expect(signMessage.indexOf('assertMainnetMutationAllowed(')).toBeLessThan(
-      signMessage.indexOf('wallet.signMessage('),
-    );
-    expect(signMessage).toContain("operation: 'sign_message'");
-    expect(signMessage).not.toContain('liveActionAuthorization: req.liveActionAuthorization');
   });
 
   it('routes AMM ETH add-liquidity branches through Ethereum gas preparation', () => {

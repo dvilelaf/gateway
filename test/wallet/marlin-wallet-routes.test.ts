@@ -64,6 +64,14 @@ describe('Marlin wallet route profile', () => {
     }
   });
 
+  it('rejects wallet authority config paths in Marlin runtime', () => {
+    const source = readFileSync(path.join(ROOT, 'src/config/routes/updateConfig.ts'), 'utf8');
+
+    expect(source).toContain('isMarlinRuntimeProfile()');
+    expect(source).toContain("'defaultwallet'");
+    expect(source.indexOf('isMarlinRuntimeProfile()')).toBeLessThan(source.indexOf('updateConfig(fastify'));
+  });
+
   it('requires Marlin profile and policy metadata for scoped default route', () => {
     const source = readFileSync(path.join(ROOT, 'src/wallet/routes/setMarlinDefault.ts'), 'utf8');
 
