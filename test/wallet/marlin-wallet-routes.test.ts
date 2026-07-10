@@ -1,4 +1,5 @@
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 
 import Fastify from 'fastify';
@@ -237,5 +238,91 @@ describe('Marlin wallet route profile', () => {
     });
     expect(response.statusCode).toBe(403);
     await app.close();
+  });
+
+  it('materializes the derived wallet and binds the complete CoW payload', async () => {
+    const originalCwd = process.cwd();
+    const tempRoot = mkdtempSync(path.join(tmpdir(), 'marlin-wallet-'));
+    const originalPassphrase = process.env.GATEWAY_PASSPHRASE;
+    process.chdir(tempRoot);
+    process.env[MARLIN_RUNTIME_PROFILE_ENV] = 'marlin';
+    process.env[MARLIN_MNEMONIC_ENV] = TEST_MNEMONIC;
+    process.env[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV] = 'gateway-token';
+    process.env.GATEWAY_PASSPHRASE = 'test-wallet-key';
+
+    const app = Fastify();
+    try {
+      await app.register(walletRoutes, { prefix: '/wallet' });
+      await app.ready();
+      const address = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
+      const walletRef = 'base:mainnet:evm_gateway';
+      const reconciled = await app.inject({
+        method: 'POST',
+        url: '/wallet/marlin-default',
+        payload: { chain: 'base', network: 'mainnet', address, walletRef },
+      });
+      expect(reconciled.statusCode).toBe(200);
+      expect(readFileSync(path.join(tempRoot, 'conf/wallets/ethereum/marlin-default.json'), 'utf8')).toContain(
+        walletRef,
+      );
+
+      const publicList = await app.inject({ method: 'GET', url: '/wallet/?showHardware=false' });
+      expect(publicList.statusCode).toBe(200);
+      expect(publicList.payload).toContain(address);
+
+      const payload = {
+        chain: 'ethereum',
+        network: 'base',
+        address,
+        walletRef,
+        domain: {
+          chainId: 8453,
+          verifyingContract: '0x9008d19f58aabd9ed0d60971565aa8510560ab41',
+        },
+        types: { Order: [{ name: 'sellToken', type: 'address' }] },
+        value: { sellToken: '0x4200000000000000000000000000000000000006' },
+        liveActionAuthorization: {
+          action: 'cowswap_sign_typed_data',
+          connector_id: 'cowswap',
+          network: 'base',
+          payload_hash: '0fd18604d5c222af5d6a536878245a4e5de19a168dd8c2cd4e1c1418d28ab591',
+          scope: 'provider_intent',
+          signing_type: 'Order',
+          source: 'marlin',
+          wallet_address: address,
+        },
+      };
+      const headers = { 'x-marlin-gateway-provider-intent-token': 'gateway-token' };
+      const signed = await app.inject({
+        method: 'POST',
+        url: '/wallet/marlin-cow/sign-typed-data',
+        headers,
+        payload,
+      });
+      expect(signed.statusCode).toBe(200);
+
+      for (const mutation of [
+        { domain: { ...payload.domain, name: 'tampered' } },
+        { types: { Order: [{ name: 'buyToken', type: 'address' }] } },
+        { value: { sellToken: '0x0000000000000000000000000000000000000001' } },
+      ]) {
+        const rejected = await app.inject({
+          method: 'POST',
+          url: '/wallet/marlin-cow/sign-typed-data',
+          headers,
+          payload: { ...payload, ...mutation },
+        });
+        expect(rejected.statusCode).toBe(403);
+      }
+    } finally {
+      await app.close();
+      process.chdir(originalCwd);
+      rmSync(tempRoot, { recursive: true, force: true });
+      if (originalPassphrase === undefined) {
+        delete process.env.GATEWAY_PASSPHRASE;
+      } else {
+        process.env.GATEWAY_PASSPHRASE = originalPassphrase;
+      }
+    }
   });
 });

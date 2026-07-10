@@ -108,10 +108,41 @@ describe('Config Routes V2 Tests', () => {
   });
 
   afterEach(async () => {
+    delete process.env.MARLIN_RUNTIME_PROFILE;
     await fastify.close();
   });
 
   describe('POST /update', () => {
+    it('blocks wallet authority updates in Marlin runtime while allowing benign config', async () => {
+      process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+      mockConfigManager.getNamespace.mockReturnValue({ configuration: { nodeURL: 'https://example.test' } });
+
+      const blocked = await fastify.inject({
+        method: 'POST',
+        url: '/update',
+        payload: {
+          namespace: 'ethereum-mainnet',
+          path: 'defaultWallet',
+          value: '0x0000000000000000000000000000000000000123',
+        },
+      });
+      expect(blocked.statusCode).toBe(403);
+      expect(updateConfig).not.toHaveBeenCalled();
+
+      const allowed = await fastify.inject({
+        method: 'POST',
+        url: '/update',
+        payload: {
+          namespace: 'ethereum-mainnet',
+          path: 'nodeURL',
+          value: 'https://example.test',
+        },
+      });
+      expect(allowed.statusCode).toBe(200);
+      expect(updateConfig).toHaveBeenCalledWith(expect.anything(), 'ethereum-mainnet.nodeURL', 'https://example.test');
+      delete process.env.MARLIN_RUNTIME_PROFILE;
+    });
+
     it('should update nodeURL for ethereum mainnet', async () => {
       mockConfigManager.getNamespace.mockReturnValue({
         configuration: {
