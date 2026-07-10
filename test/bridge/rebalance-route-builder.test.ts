@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
@@ -135,14 +136,19 @@ const REBALANCE_STATE_IDS = [
   'same-chain-build-status',
   'same-chain-execute',
   'same-chain-wrap-submitted',
+  'rebalance-pending-before-submit',
+  'rebalance-ambiguous-restart',
+  'rebalance-restart',
 ];
 
 describe('Hyperliquid Bridge2 treasury rebalance route', () => {
   const originalProfile = process.env.MARLIN_RUNTIME_PROFILE;
   const originalToken = process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN;
+  const originalRebalanceStateRoot = process.env.MARLIN_REBALANCE_STATE_ROOT;
   const originalFetch = global.fetch;
 
   beforeEach(() => {
+    process.env.MARLIN_REBALANCE_STATE_ROOT = path.resolve(process.cwd(), 'conf/marlin/rebalances');
     cleanupRebalanceState();
     global.fetch = originalFetch;
   });
@@ -160,6 +166,11 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       delete process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN;
     } else {
       process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = originalToken;
+    }
+    if (originalRebalanceStateRoot === undefined) {
+      delete process.env.MARLIN_REBALANCE_STATE_ROOT;
+    } else {
+      process.env.MARLIN_REBALANCE_STATE_ROOT = originalRebalanceStateRoot;
     }
   });
 
@@ -242,6 +253,184 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
 
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(200);
+    expect(sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists a pending record before submitting a provider transaction', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const idempotencyKey = 'rebalance-pending-before-submit';
+    const statePath = path.join(process.env.MARLIN_REBALANCE_STATE_ROOT!, `${idempotencyKey}.json`);
+    let statusDuringSubmit: string | undefined;
+    const sendTransaction = jest.fn(async () => {
+      statusDuringSubmit = JSON.parse(readFileSync(statePath, 'utf8')).status;
+      return { hash: '0xpending-first' };
+    });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...baseRequest(),
+        idempotencyKey,
+        liveActionAuthorization: treasuryAuthorization('6'),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(statusDuringSubmit).toBe('submission_pending');
+  });
+
+  it('uses configured state roots independently for the same idempotency key', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const firstRoot = mkdtempSync(path.join(os.tmpdir(), 'gateway-rebalance-a-'));
+    const secondRoot = mkdtempSync(path.join(os.tmpdir(), 'gateway-rebalance-b-'));
+    const sendTransaction = jest
+      .fn()
+      .mockResolvedValueOnce({ hash: '0xroot-a' })
+      .mockResolvedValueOnce({ hash: '0xroot-b' });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const payload = {
+      ...baseRequest(),
+      idempotencyKey: 'same-key-in-independent-roots',
+      liveActionAuthorization: treasuryAuthorization('6'),
+    };
+
+    try {
+      process.env.MARLIN_REBALANCE_STATE_ROOT = firstRoot;
+      const firstApp = Fastify();
+      await firstApp.register(rebalanceRoutes, { prefix: '/bridge' });
+      await firstApp.ready();
+      const first = await firstApp.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+        payload,
+      });
+      await firstApp.close();
+
+      process.env.MARLIN_REBALANCE_STATE_ROOT = secondRoot;
+      const secondApp = Fastify();
+      await secondApp.register(rebalanceRoutes, { prefix: '/bridge' });
+      await secondApp.ready();
+      const second = await secondApp.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+        payload,
+      });
+      await secondApp.close();
+
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      expect(sendTransaction).toHaveBeenCalledTimes(2);
+      expect(existsSync(path.join(firstRoot, 'same-key-in-independent-roots.json'))).toBe(true);
+      expect(existsSync(path.join(secondRoot, 'same-key-in-independent-roots.json'))).toBe(true);
+    } finally {
+      rmSync(firstRoot, { force: true, recursive: true });
+      rmSync(secondRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('does not re-execute a terminal record after the application is recreated', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const sendTransaction = jest.fn(async () => ({ hash: '0xrestart' }));
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const payload = {
+      ...baseRequest(),
+      idempotencyKey: 'rebalance-restart',
+      liveActionAuthorization: treasuryAuthorization('6'),
+    };
+    const firstApp = Fastify();
+    await firstApp.register(rebalanceRoutes, { prefix: '/bridge' });
+    await firstApp.ready();
+    await firstApp.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    await firstApp.close();
+
+    const recreatedApp = Fastify();
+    await recreatedApp.register(rebalanceRoutes, { prefix: '/bridge' });
+    await recreatedApp.ready();
+    const retried = await recreatedApp.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    await recreatedApp.close();
+
+    expect(retried.json()).toMatchObject({ signature: '0xrestart', status: 1 });
+    expect(sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-execute an ambiguous submission after the application is recreated', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const idempotencyKey = 'rebalance-ambiguous-restart';
+    const sendTransaction = jest.fn(async () => {
+      throw new Error('provider timed out after submission');
+    });
+    mockEthereum({
+      getWallet: jest.fn(async () => ({ sendTransaction })),
+      handleTransactionExecution: jest.fn(),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, maxFeePerGas: BigNumber.from(10) })),
+    });
+    const payload = {
+      ...baseRequest(),
+      idempotencyKey,
+      liveActionAuthorization: treasuryAuthorization('6'),
+    };
+    const firstApp = Fastify();
+    await firstApp.register(rebalanceRoutes, { prefix: '/bridge' });
+    await firstApp.ready();
+    const first = await firstApp.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    await firstApp.close();
+
+    const recreatedApp = Fastify();
+    await recreatedApp.register(rebalanceRoutes, { prefix: '/bridge' });
+    await recreatedApp.ready();
+    const retried = await recreatedApp.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload,
+    });
+    await recreatedApp.close();
+    const persisted = JSON.parse(
+      readFileSync(path.join(process.env.MARLIN_REBALANCE_STATE_ROOT!, `${idempotencyKey}.json`), 'utf8'),
+    );
+
+    expect(first.statusCode).toBe(500);
+    expect(retried.json()).toMatchObject({ signature: '', status: 0 });
+    expect(persisted).toMatchObject({ idempotencyKey, status: 'submission_ambiguous' });
     expect(sendTransaction).toHaveBeenCalledTimes(1);
   });
 

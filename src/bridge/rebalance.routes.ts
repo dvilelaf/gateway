@@ -244,7 +244,6 @@ type HyperliquidBridge2RebalanceRequest = Static<typeof HyperliquidBridge2Rebala
 type CctpBaseArbitrumRebalanceRequest = Static<typeof CctpBaseArbitrumRebalanceRequestSchema>;
 type SquidRouterRebalanceRequest = Static<typeof SquidRouterRebalanceRequestSchema>;
 
-const rebalanceStore = new Map<string, DurableRebalanceState>();
 const erc20Interface = new utils.Interface(['function transfer(address to, uint256 amount) returns (bool)']);
 const erc20ApprovalInterface = new utils.Interface([
   'function approve(address spender, uint256 amount) returns (bool)',
@@ -323,10 +322,14 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
           allowUnsubmittedRefresh: request.body.provider === SQUID_ROUTER_PROVIDER,
         });
         const existingHash = bestKnownTransactionHash(existing);
-        if (existing.status === 'confirmed' || existing.status === 'failed') {
+        if (
+          existing.status === 'confirmed' ||
+          existing.status === 'failed' ||
+          isRebalanceSubmissionInDoubt(existing.status)
+        ) {
           return {
             signature: existingHash,
-            status: existing.status === 'confirmed' ? 1 : -1,
+            status: existing.status === 'confirmed' ? 1 : existing.status === 'failed' ? -1 : 0,
           };
         }
         const tokenAuthorized = marlinGatewayProviderIntentTokenMatches(
@@ -1015,6 +1018,7 @@ async function executeProviderTreasurySameChainSwap(
         PROVIDER_TREASURY_SAME_CHAIN_SWAP,
         rebalanceGasGuardContext(built),
       );
+      state = await markRebalanceSubmissionPending(state, 'wrap');
       const wrapTx = await wallet.sendTransaction({
         data: built.wrapTxCalldata,
         to: built.wrapTxTarget,
@@ -1087,6 +1091,7 @@ async function executeSingleTransactionRebalance(
         providerIntentSource,
         rebalanceGasGuardContext(built),
       );
+      state = await markRebalanceSubmissionPending(state, 'approval');
       const approvalTx = await wallet.sendTransaction({
         data: built.approvalTxCalldata,
         to: built.approvalTxTarget,
@@ -1121,6 +1126,7 @@ async function executeSingleTransactionRebalance(
     providerIntentSource,
     rebalanceGasGuardContext(built),
   );
+  state = await markRebalanceSubmissionPending(state, 'submission');
   const txResponse = await wallet.sendTransaction({
     data: built.txCalldata,
     to: built.txTarget,
@@ -1181,7 +1187,6 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     };
   }
   if (!approvalTransactionHash) {
-    await saveRebalanceState({ ...state, status: 'built' });
     const approvalGasOptions = await ethereum.prepareGasOptions(
       undefined,
       CCTP_APPROVE_GAS_LIMIT,
@@ -1189,6 +1194,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
       CCTP_USDC_PROVIDER_INTENT_SOURCE,
       rebalanceGasGuardContext(built),
     );
+    state = await markRebalanceSubmissionPending(state, 'approval');
     const approvalTx = await wallet.sendTransaction({
       data: built.approvalTxCalldata,
       to: built.approvalTxTarget,
@@ -1241,6 +1247,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
       CCTP_USDC_PROVIDER_INTENT_SOURCE,
       rebalanceGasGuardContext(built),
     );
+    state = await markRebalanceSubmissionPending(state, 'burn');
     const burnTx = await wallet.sendTransaction({
       data: built.txCalldata,
       to: built.txTarget,
@@ -1347,6 +1354,7 @@ async function executeCctpBaseArbitrumUsdcTransfer(
     CCTP_USDC_PROVIDER_INTENT_SOURCE,
     rebalanceGasGuardContext(built, built.destinationAddress),
   );
+  state = await markRebalanceSubmissionPending(state, 'finalize');
   const finalizeTx = await finalizeWallet.sendTransaction({
     data: finalizeCalldata,
     to: built.cctpDestinationMessageTransmitterAddress,
@@ -1483,6 +1491,7 @@ async function executeCctpSolanaReceiveMessage(
   transaction.recentBlockhash = blockhash;
   transaction.sign(payer);
   await solana.simulateWithErrorHandling(transaction);
+  state = await markRebalanceSubmissionPending(state, 'finalize');
   const finalizeTransactionHash = await solana.sendRawTransaction(
     transaction.serialize(),
     lastValidBlockHeight,
@@ -1957,7 +1966,8 @@ function newRebalanceState(
 
 function rebalanceHasSideEffect(state: DurableRebalanceState): boolean {
   return Boolean(
-    state.approvalTransactionHash ||
+    isRebalanceSubmissionInDoubt(state.status) ||
+      state.approvalTransactionHash ||
       state.burnTransactionHash ||
       state.finalizeTransactionHash ||
       state.transactionHash ||
@@ -1966,17 +1976,11 @@ function rebalanceHasSideEffect(state: DurableRebalanceState): boolean {
 }
 
 async function readRebalanceState(idempotencyKey: string): Promise<DurableRebalanceState | undefined> {
-  const memoryState = rebalanceStore.get(idempotencyKey);
-  if (memoryState) {
-    return memoryState;
-  }
   const filePath = rebalanceStatePath(idempotencyKey);
   if (!existsSync(filePath)) {
     return undefined;
   }
-  const state = JSON.parse(readFileSync(filePath, 'utf8')) as DurableRebalanceState;
-  rebalanceStore.set(idempotencyKey, state);
-  return state;
+  return JSON.parse(readFileSync(filePath, 'utf8')) as DurableRebalanceState;
 }
 
 async function saveRebalanceState(state: DurableRebalanceState): Promise<void> {
@@ -1987,11 +1991,11 @@ async function saveRebalanceState(state: DurableRebalanceState): Promise<void> {
   const persisted = removeUndefinedFields(state);
   writeFileSync(tmpPath, `${JSON.stringify(persisted, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmpPath, filePath);
-  rebalanceStore.set(state.idempotencyKey, persisted);
 }
 
 function rebalanceStateDir(): string {
-  return path.resolve(process.cwd(), 'conf/marlin/rebalances');
+  const configuredRoot = process.env.MARLIN_REBALANCE_STATE_ROOT?.trim();
+  return configuredRoot ? path.resolve(configuredRoot) : '/home/gateway/data/marlin/rebalances';
 }
 
 function rebalanceStatePath(idempotencyKey: string): string {
@@ -2004,6 +2008,26 @@ function safeRebalanceId(idempotencyKey: string): string {
     .replace(/[^A-Za-z0-9._-]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return safe || utils.keccak256(utils.toUtf8Bytes(idempotencyKey)).slice(2);
+}
+
+async function markRebalanceSubmissionPending(
+  state: DurableRebalanceState,
+  step: 'approval' | 'burn' | 'finalize' | 'submission' | 'wrap',
+): Promise<DurableRebalanceState> {
+  const pending = {
+    ...state,
+    status: step === 'submission' ? 'submission_pending' : `${step}_submission_pending`,
+  };
+  await saveRebalanceState(pending);
+  return pending;
+}
+
+function isRebalanceSubmissionInDoubt(status: string): boolean {
+  return (
+    status === 'submission_pending' ||
+    status === 'submission_ambiguous' ||
+    /_submission_(?:pending|ambiguous)$/.test(status)
+  );
 }
 
 function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string {
@@ -2247,6 +2271,9 @@ function isCctpProvider(provider: string): boolean {
 }
 
 function recoverableRebalanceErrorStatus(state: DurableRebalanceState): string {
+  if (isRebalanceSubmissionInDoubt(state.status)) {
+    return state.status.replace(/_pending$/, '_ambiguous');
+  }
   if (state.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
     if (state.transactionHash) {
       return 'submitted';
