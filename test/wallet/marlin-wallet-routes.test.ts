@@ -3,8 +3,9 @@ import path from 'path';
 
 import Fastify from 'fastify';
 
+import { MARLIN_RUNTIME_PROFILE_ENV, isMarlinRuntimeProfile } from '../../src/services/marlin-runtime';
 import { deriveMarlinDefaultWalletMaterial } from '../../src/wallet/routes/setMarlinDefault';
-import walletRoutes, { MARLIN_RUNTIME_PROFILE_ENV, isMarlinRuntimeProfile } from '../../src/wallet/wallet.routes';
+import walletRoutes from '../../src/wallet/wallet.routes';
 
 const ROOT = path.resolve(__dirname, '../..');
 const MARLIN_MNEMONIC_ENV = 'MARLIN_MNEMONIC';
@@ -43,17 +44,12 @@ describe('Marlin wallet route profile', () => {
     expect(MARLIN_RUNTIME_PROFILE_ENV).toBe('MARLIN_RUNTIME_PROFILE');
   });
 
-  it('registers only public listing and scoped default before returning in Marlin profile', () => {
+  it('registers only public listing, scoped default, and Marlin CoW typed-data signing', () => {
     const source = readFileSync(path.join(ROOT, 'src/wallet/wallet.routes.ts'), 'utf8');
-    const marlinBranch = source.slice(
-      source.indexOf('await fastify.register(getWalletsRoute);'),
-      source.indexOf('// Register operator wallet-admin routes outside Marlin runtime only.'),
-    );
 
-    expect(marlinBranch).toContain('await fastify.register(getWalletsRoute);');
-    expect(marlinBranch).toContain('await fastify.register(setMarlinDefaultRoute);');
-    expect(marlinBranch).toContain('if (isMarlinRuntimeProfile())');
-    expect(marlinBranch).toContain('return;');
+    expect(source).toContain('getWalletsRoute');
+    expect(source).toContain('setMarlinDefaultRoute');
+    expect(source).toContain('marlinCowSignTypedDataRoute');
     for (const route of [
       'addWalletRoute',
       'createWalletRoute',
@@ -64,7 +60,7 @@ describe('Marlin wallet route profile', () => {
       'sendTransactionRoute',
       'signTypedDataRoute',
     ]) {
-      expect(marlinBranch).not.toContain(route);
+      expect(source).not.toContain(route);
     }
   });
 
@@ -108,8 +104,7 @@ describe('Marlin wallet route profile', () => {
     expect(source).toContain('walletRef: marlinDefault?.walletRef');
   });
 
-  it('does not register wallet admin routes in Marlin profile', async () => {
-    process.env[MARLIN_RUNTIME_PROFILE_ENV] = 'marlin';
+  it('does not register wallet admin routes', async () => {
     const app = Fastify();
     await app.register(walletRoutes, { prefix: '/wallet' });
     await app.ready();
@@ -128,6 +123,7 @@ describe('Marlin wallet route profile', () => {
       expect(response.statusCode).toBe(404);
     }
 
+    process.env[MARLIN_RUNTIME_PROFILE_ENV] = 'marlin';
     process.env[MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_ENV] = 'gateway-token';
     const scopedCowSigner = await app.inject({
       method: 'POST',
