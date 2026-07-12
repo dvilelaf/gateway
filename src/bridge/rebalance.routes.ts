@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
 
 import { Static, Type } from '@sinclair/typebox';
@@ -564,6 +564,7 @@ type ProviderOwnedRebalanceExecution = {
 };
 
 type DurableRebalanceState = BridgeRebalanceStatus & {
+  approvalSignedTransaction?: string;
   amount: string;
   burnTransactionHash?: string;
   cctpAttestation?: string;
@@ -594,6 +595,7 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   builtRebalance?: BuiltProviderOwnedRebalance;
   targetRequestFingerprint?: string;
   maxCostBps?: string;
+  signedTransaction?: string;
 };
 
 type TargetFundingDestination = {
@@ -897,14 +899,11 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
   assertPersistedTargetFundingIntegrity(state);
   const built = state.builtRebalance;
   const existingHash = bestKnownTransactionHash(state);
-  if (state.status === 'confirmed' || state.status === 'failed' || isRebalanceSubmissionInDoubt(state.status)) {
+  if (state.status === 'confirmed' || state.status === 'failed') {
     return {
       signature: existingHash,
       status: state.status === 'confirmed' ? 1 : state.status === 'failed' ? -1 : 0,
     };
-  }
-  if (state.transactionHash || (state.approvalTransactionHash && state.status === 'approval_submitted')) {
-    return { signature: existingHash, status: 0 };
   }
   if (!marlinGatewayProviderIntentTokenMatches(providerIntentToken)) {
     throw new Error('provider treasury authorization required');
@@ -948,8 +947,9 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
   });
   try {
     const execution = await executeProviderOwnedRebalance(built, liveActionAuthorization, state);
+    const latest = (await readRebalanceState(idempotencyKey)) ?? state;
     state = {
-      ...state,
+      ...latest,
       approvalTransactionHash: execution.approvalTransactionHash,
       providerError: execution.providerError,
       providerStatus: execution.providerStatus,
@@ -1592,26 +1592,27 @@ async function executeSingleTransactionRebalance(
   gasLimit: number,
   providerIntentSource: string,
 ): Promise<ProviderOwnedRebalanceExecution> {
-  if (state.transactionHash) {
-    return {
-      responseStatus: state.status === 'confirmed' ? 1 : state.status === 'failed' ? -1 : 0,
-      status: state.status,
-      transactionHash: state.transactionHash,
-    };
-  }
   const ethereum = await Ethereum.getInstance(built.sourceNetwork);
   const wallet = await ethereum.getWallet(built.walletAddress);
   let approvalTransactionHash = state.approvalTransactionHash;
   if (built.approvalTxCalldata && built.approvalTxTarget) {
-    if (approvalTransactionHash && state.status === 'approval_submitted') {
-      return {
-        approvalTransactionHash,
-        responseStatus: 0,
-        status: 'approval_submitted',
-        transactionHash: approvalTransactionHash,
-      };
-    }
-    if (!approvalTransactionHash) {
+    if (approvalTransactionHash) {
+      const receipt = await ethereum.provider.getTransactionReceipt(approvalTransactionHash);
+      if (receipt?.status === 0) {
+        return { approvalTransactionHash, responseStatus: -1, status: 'failed', transactionHash: '' };
+      }
+      if (!receipt && state.approvalSignedTransaction) {
+        const approvalTx = await ethereum.provider.sendTransaction(state.approvalSignedTransaction);
+        const recoveredReceipt = await ethereum.handleTransactionExecution(approvalTx);
+        if (recoveredReceipt?.status !== 1) {
+          return { approvalTransactionHash, responseStatus: 0, status: 'approval_submitted', transactionHash: '' };
+        }
+      } else if (!receipt) {
+        return { approvalTransactionHash, responseStatus: 0, status: 'approval_submitted', transactionHash: '' };
+      }
+      state = { ...state, status: 'approval_confirmed' };
+      await saveRebalanceState(state);
+    } else {
       const approvalGasOptions = await ethereum.prepareGasOptions(
         undefined,
         SQUID_ROUTER_APPROVE_GAS_LIMIT,
@@ -1619,21 +1620,14 @@ async function executeSingleTransactionRebalance(
         providerIntentSource,
         rebalanceGasGuardContext(built),
       );
-      state = await markRebalanceSubmissionPending(state, 'approval');
-      const approvalTx = await wallet.sendTransaction({
+      state = await prepareRecoverableEvmTransaction(ethereum, wallet, state, 'approval', {
         data: built.approvalTxCalldata,
         to: built.approvalTxTarget,
         value: BigNumber.from(0),
         ...approvalGasOptions,
       });
-      approvalTransactionHash = approvalTx.hash;
-      state = {
-        ...state,
-        approvalTransactionHash,
-        status: 'approval_submitted',
-        transactionHash: approvalTransactionHash,
-      };
-      await saveRebalanceState(state);
+      approvalTransactionHash = state.approvalTransactionHash;
+      const approvalTx = await ethereum.provider.sendTransaction(state.approvalSignedTransaction as string);
       const approvalReceipt = await ethereum.handleTransactionExecution(approvalTx);
       if (approvalReceipt?.status !== 1) {
         throw new Error('Squid ERC20 approval not confirmed');
@@ -1642,10 +1636,36 @@ async function executeSingleTransactionRebalance(
         ...state,
         approvalTransactionHash,
         status: 'approval_confirmed',
-        transactionHash: approvalTransactionHash,
       };
       await saveRebalanceState(state);
     }
+  }
+  if (state.transactionHash) {
+    const receipt = await ethereum.provider.getTransactionReceipt(state.transactionHash);
+    if (receipt) {
+      return {
+        approvalTransactionHash,
+        responseStatus: receipt.status === 1 ? 1 : -1,
+        status: receipt.status === 1 ? 'confirmed' : 'failed',
+        transactionHash: state.transactionHash,
+      };
+    }
+    if (!state.signedTransaction) {
+      return {
+        approvalTransactionHash,
+        responseStatus: 0,
+        status: 'submitted',
+        transactionHash: state.transactionHash,
+      };
+    }
+    const recoveredTx = await ethereum.provider.sendTransaction(state.signedTransaction);
+    const recoveredReceipt = await ethereum.handleTransactionExecution(recoveredTx);
+    return {
+      approvalTransactionHash,
+      responseStatus: recoveredReceipt?.status === 1 ? 1 : recoveredReceipt?.status === 0 ? -1 : 0,
+      status: recoveredReceipt?.status === 1 ? 'confirmed' : recoveredReceipt?.status === 0 ? 'failed' : 'submitted',
+      transactionHash: state.transactionHash,
+    };
   }
   const gasOptions = await ethereum.prepareGasOptions(
     undefined,
@@ -1654,18 +1674,13 @@ async function executeSingleTransactionRebalance(
     providerIntentSource,
     rebalanceGasGuardContext(built),
   );
-  state = await markRebalanceSubmissionPending(state, 'submission');
-  const txResponse = await wallet.sendTransaction({
+  state = await prepareRecoverableEvmTransaction(ethereum, wallet, state, 'submission', {
     data: built.txCalldata,
     to: built.txTarget,
     value: BigNumber.from(built.txValue ?? 0),
     ...gasOptions,
   });
-  await saveRebalanceState({
-    ...state,
-    status: 'submitted',
-    transactionHash: txResponse.hash,
-  });
+  const txResponse = await ethereum.provider.sendTransaction(state.signedTransaction as string);
   const receipt = await ethereum.handleTransactionExecution(txResponse);
   return {
     approvalTransactionHash,
@@ -1673,6 +1688,27 @@ async function executeSingleTransactionRebalance(
     status: receipt?.status === 1 ? 'confirmed' : receipt?.status === 0 ? 'failed' : 'submitted',
     transactionHash: txResponse.hash,
   };
+}
+
+async function prepareRecoverableEvmTransaction(
+  ethereum: Ethereum,
+  wallet: Awaited<ReturnType<Ethereum['getWallet']>>,
+  state: DurableRebalanceState,
+  step: 'approval' | 'submission',
+  transaction: Record<string, unknown>,
+): Promise<DurableRebalanceState> {
+  const nonce = await ethereum.provider.getTransactionCount(state.walletAddress, 'pending');
+  const serialized = await wallet.signTransaction({ ...transaction, chainId: ethereum.chainId, nonce });
+  const transactionHash = utils.keccak256(serialized);
+  const pending: DurableRebalanceState = {
+    ...state,
+    ...(step === 'approval'
+      ? { approvalSignedTransaction: serialized, approvalTransactionHash: transactionHash }
+      : { signedTransaction: serialized, transactionHash }),
+    status: step === 'approval' ? 'approval_submission_pending' : 'submission_pending',
+  };
+  await saveRebalanceState(pending);
+  return pending;
 }
 
 async function executeCctpBaseArbitrumUsdcTransfer(
@@ -2401,8 +2437,25 @@ function assertCctpDestinationAuthorization(
 }
 
 async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRebalanceState | undefined> {
-  const state = await readRebalanceState(idempotencyKey);
-  if (!state || state.provider !== SQUID_ROUTER_PROVIDER || state.status === 'confirmed' || state.status === 'failed') {
+  let state = await readRebalanceState(idempotencyKey);
+  if (!state || state.status === 'confirmed' || state.status === 'failed') {
+    return state;
+  }
+  if (state.transactionHash && ['hyperliquid_bridge2', SQUID_ROUTER_PROVIDER].includes(state.provider)) {
+    try {
+      const ethereum = await Ethereum.getInstance(state.sourceNetwork);
+      const receipt = await ethereum.provider.getTransactionReceipt(state.transactionHash);
+      if (receipt) {
+        state = { ...state, status: receipt.status === 1 ? 'confirmed' : 'failed' };
+        await saveRebalanceState(state);
+        return state;
+      }
+    } catch (error) {
+      state = { ...state, providerError: redactProviderError(error) };
+      await saveRebalanceState(state);
+    }
+  }
+  if (state.provider !== SQUID_ROUTER_PROVIDER) {
     return state;
   }
   if (
@@ -2518,7 +2571,19 @@ async function saveRebalanceState(state: DurableRebalanceState): Promise<void> {
   const tmpPath = `${filePath}.tmp`;
   const persisted = removeUndefinedFields(state);
   writeFileSync(tmpPath, `${JSON.stringify(persisted, null, 2)}\n`, { mode: 0o600 });
+  const tmpFd = openSync(tmpPath, 'r');
+  try {
+    fsyncSync(tmpFd);
+  } finally {
+    closeSync(tmpFd);
+  }
   renameSync(tmpPath, filePath);
+  const dirFd = openSync(dir, 'r');
+  try {
+    fsyncSync(dirFd);
+  } finally {
+    closeSync(dirFd);
+  }
 }
 
 function rebalanceStateDir(): string {

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { BigNumber, utils } from 'ethers';
+import { BigNumber, Wallet, utils } from 'ethers';
 import Fastify from 'fastify';
 
 jest.mock('../../src/chains/ethereum/ethereum', () => ({
@@ -406,16 +406,26 @@ describe('provider-owned target funding routes', () => {
   });
 
   it('executes the persisted selection by id across app restart and does not rebuild or rebroadcast', async () => {
-    const sendTransaction = jest
-      .fn()
-      .mockResolvedValueOnce({ hash: '0xapproval' })
-      .mockResolvedValueOnce({ hash: '0xbridge' });
+    const signer = new Wallet(`0x${'33'.repeat(32)}`);
+    const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
     mockEthereumContexts(
       { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
       {
-        getWallet: jest.fn(async () => ({ sendTransaction })),
+        chainId: 42161,
+        getWallet: jest.fn(async () => signer),
         handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-        prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+        prepareGasOptions: jest.fn(async () => ({
+          gasLimit: 90000,
+          maxFeePerGas: BigNumber.from(10),
+          maxPriorityFeePerGas: BigNumber.from(1),
+          type: 2,
+        })),
+        provider: {
+          getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+          getTransactionCount: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2),
+          getTransactionReceipt: jest.fn(async () => ({ status: 1 })),
+          sendTransaction,
+        },
       },
     );
     const fetchMock = mockSquidRoute();
@@ -447,19 +457,132 @@ describe('provider-owned target funding routes', () => {
     const status = await secondApp.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
 
     expect(build.statusCode).toBe(200);
-    expect(firstExecute.json()).toMatchObject({ signature: '0xbridge', status: 1 });
-    expect(retry.json()).toMatchObject({ signature: '0xbridge', status: 1 });
+    expect(firstExecute.json()).toMatchObject({ status: 1 });
+    expect(retry.json()).toMatchObject({ signature: firstExecute.json().signature, status: 1 });
     expect(status.json()).toMatchObject({
       idempotencyKey: 'target-funding-1',
       provider: 'squid_router',
       sourceNetwork: 'arbitrum',
       status: 'confirmed',
-      transactionHash: '0xbridge',
+      transactionHash: firstExecute.json().signature,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(sendTransaction).toHaveBeenCalledTimes(2);
     expect(ensureMarlinWalletExists).toHaveBeenCalledTimes(2);
   });
+
+  it('resumes a persisted Squid approval and submits the provider transaction without re-signing', async () => {
+    const signer = new Wallet(`0x${'11'.repeat(32)}`);
+    const signTransaction = jest.spyOn(signer, 'signTransaction');
+    const sendTransaction = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('interrupted before broadcast result'))
+      .mockImplementation(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+    const getTransactionReceipt = jest.fn().mockResolvedValue(null);
+    const ethereum = mockEthereumContexts(
+      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      {
+        chainId: 42161,
+        getWallet: jest.fn(async () => signer),
+        handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+        prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, gasPrice: BigNumber.from(10) })),
+        provider: {
+          getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+          getTransactionCount: jest.fn(async () => 17),
+          getTransactionReceipt,
+          sendTransaction,
+        },
+      },
+    );
+    mockSquidRoute();
+    const firstApp = Fastify();
+    await firstApp.register(rebalanceRoutes, { prefix: '/bridge' });
+    await firstApp.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload: targetRequest() });
+    const interrupted = await firstApp.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+    await firstApp.close();
+
+    const pending = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+    expect(interrupted.statusCode).toBe(500);
+    expect(pending.status).toBe('approval_submission_ambiguous');
+    expect(pending.approvalSignedTransaction).toMatch(/^0x/);
+    expect(pending.approvalTransactionHash).toBe(utils.keccak256(pending.approvalSignedTransaction));
+    expect(pending.transactionHash).toBeUndefined();
+
+    const secondApp = Fastify();
+    await secondApp.register(rebalanceRoutes, { prefix: '/bridge' });
+    const resumed = await secondApp.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+
+    expect(resumed.statusCode).toBe(200);
+    expect(signTransaction).toHaveBeenCalledTimes(2);
+    expect(sendTransaction.mock.calls[1][0]).toBe(pending.approvalSignedTransaction);
+    expect(ethereum.arbitrum.provider.getTransactionCount).toHaveBeenCalledTimes(2);
+    const finalState = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+    expect(finalState.approvalTransactionHash).toBe(pending.approvalTransactionHash);
+    expect(finalState.transactionHash).toBe(utils.keccak256(finalState.signedTransaction));
+    expect(finalState.transactionHash).not.toBe(finalState.approvalTransactionHash);
+  });
+
+  it.each([
+    { receiptStatus: 1, expectedStatus: 'confirmed' },
+    { receiptStatus: 0, expectedStatus: 'failed' },
+  ])(
+    'refreshes a known Bridge2 transaction receipt to $expectedStatus after restart without signing again',
+    async ({ receiptStatus, expectedStatus }) => {
+      const signer = new Wallet(`0x${'22'.repeat(32)}`);
+      const signTransaction = jest.spyOn(signer, 'signTransaction');
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+      const getTransactionReceipt = jest.fn().mockResolvedValue({ status: receiptStatus });
+      mockEthereumContexts(
+        { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+        {
+          chainId: 42161,
+          getWallet: jest.fn(async () => signer),
+          handleTransactionExecution: jest.fn(async () => undefined),
+          prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, gasPrice: BigNumber.from(10) })),
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransactionCount: jest.fn(async () => 23),
+            getTransactionReceipt,
+            sendTransaction,
+          },
+        },
+      );
+      const firstApp = Fastify();
+      await firstApp.register(rebalanceRoutes, { prefix: '/bridge' });
+      await firstApp.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      const submitted = await firstApp.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/target-funding-1/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      await firstApp.close();
+
+      const secondApp = Fastify();
+      await secondApp.register(rebalanceRoutes, { prefix: '/bridge' });
+      const refreshed = await secondApp.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+
+      expect(submitted.json().status).toBe(0);
+      expect(refreshed.json()).toMatchObject({ status: expectedStatus, transactionHash: submitted.json().signature });
+      expect(signTransaction).toHaveBeenCalledTimes(1);
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('rejects caller-supplied provider, source, and wallet authority fields', async () => {
     mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
