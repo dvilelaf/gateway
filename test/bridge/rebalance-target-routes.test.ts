@@ -480,6 +480,40 @@ describe('provider-owned target funding routes', () => {
     await app.close();
   });
 
+  it('rejects persisted Bridge2 selection with tampered destination amount', async () => {
+    const ethereum = mockEthereumContexts(
+      { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+      { getWallet: jest.fn() },
+    );
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const buildResponse = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAddress: ARBITRUM_WALLET,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+      }),
+    });
+    expect(buildResponse.statusCode).toBe(200);
+    const statePath = path.join(stateRoot, 'target-funding-1.json');
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    persisted.builtRebalance.destinationAmount = '5.9';
+    writeFileSync(statePath, JSON.stringify(persisted));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('persisted target funding selection fingerprint mismatch');
+    expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it('blocks Bridge2 execute when fresh gas exceeds the persisted bound', async () => {
     const ethereum = mockEthereumContexts(
       { arbitrum: { gas: '1000000000000000000', usdc: '6000000' } },

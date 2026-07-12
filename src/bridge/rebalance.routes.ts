@@ -2859,6 +2859,7 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         cctpSourceDomain: built.cctpSourceDomain,
         cctpSourceTokenMessengerAddress: built.cctpSourceTokenMessengerAddress,
         destinationAddress: built.destinationAddress,
+        destinationAmount: built.destinationAmount,
         destinationAsset: built.destinationAsset,
         destinationChain: built.destinationChain,
         destinationNetwork: built.destinationNetwork,
