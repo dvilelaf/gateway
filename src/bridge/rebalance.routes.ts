@@ -223,7 +223,8 @@ const TargetFundingRequestSchema = Type.Object(
     destinationNetwork: Type.String({ minLength: 1 }),
     destinationAsset: Type.String({ minLength: 1 }),
     destinationAddress: Type.String({ minLength: 1 }),
-    amount: Type.String({ minLength: 1 }),
+    targetNotionalEur: Type.String({ minLength: 1 }),
+    destinationAmount: Type.Optional(Type.String({ minLength: 1 })),
     maxCostBps: Type.Optional(Type.Union([Type.Number({ minimum: 0, maximum: 10000 }), Type.String({ minLength: 1 })])),
     provider: Type.Optional(Type.Never()),
     gasLimit: Type.Optional(Type.Never()),
@@ -768,16 +769,15 @@ async function selectAndBuildTargetFunding(
   destinationAddress: string,
   maxCostBps: string | undefined,
 ): Promise<BuiltProviderOwnedRebalance> {
-  const destinationAmountUnits = utils.parseUnits(body.amount, destination.destinationAssetDecimals);
-  if (destinationAmountUnits.lte(0)) {
-    throw new Error('target funding amount must be positive');
+  const sourceBudgetUnits = utils.parseUnits(body.targetNotionalEur, USDC_DECIMALS);
+  if (sourceBudgetUnits.lte(0)) {
+    throw new Error('target funding notional must be positive');
   }
-  const requestedSourceAmountUnits = utils.parseUnits(body.amount, USDC_DECIMALS);
-  const sourceAmountUnits =
-    destination.provider === SQUID_ROUTER_PROVIDER && destination.destinationAsset === 'USDC'
-      ? targetFundingSourceAmountUnits(requestedSourceAmountUnits, maxCostBps)
-      : requestedSourceAmountUnits;
-  const sourceAmount = utils.formatUnits(sourceAmountUnits, USDC_DECIMALS);
+  const hasDestinationAmount = body.destinationAmount !== undefined;
+  const destinationAmountUnits = hasDestinationAmount
+    ? utils.parseUnits(body.destinationAmount, destination.destinationAssetDecimals)
+    : undefined;
+  const sourceAmount = utils.formatUnits(sourceBudgetUnits, USDC_DECIMALS);
 
   const sourceContexts =
     destination.provider === 'hyperliquid_bridge2'
@@ -796,8 +796,12 @@ async function selectAndBuildTargetFunding(
         ? HYPERLIQUID_BRIDGE2_GAS_LIMIT
         : SQUID_ROUTER_APPROVE_GAS_LIMIT + SQUID_ROUTER_GAS_LIMIT;
     let squidBuild: BuiltProviderOwnedRebalance | undefined;
-    let candidateSourceAmountUnits = sourceAmountUnits;
-    if (destination.provider === SQUID_ROUTER_PROVIDER && destination.destinationAsset !== 'USDC') {
+    let candidateSourceAmountUnits = sourceBudgetUnits;
+    if (
+      destination.provider === SQUID_ROUTER_PROVIDER &&
+      destination.destinationAsset !== 'USDC' &&
+      hasDestinationAmount
+    ) {
       try {
         await provisionTargetFundingSourceWallet(source);
         squidBuild = await buildInverseQuotedSquidTargetFunding(
@@ -809,6 +813,10 @@ async function selectAndBuildTargetFunding(
           maxCostBps,
         );
         candidateSourceAmountUnits = utils.parseUnits(squidBuild.amount, USDC_DECIMALS);
+        if (candidateSourceAmountUnits.gt(sourceBudgetUnits)) {
+          providerError = new Error('target funding source budget exceeded for inverse-quoted route');
+          continue;
+        }
       } catch (error) {
         providerError = error;
         continue;
@@ -827,8 +835,9 @@ async function selectAndBuildTargetFunding(
       await provisionTargetFundingSourceWallet(source);
     }
     if (destination.provider === 'hyperliquid_bridge2') {
+      const bridgeAmount = utils.formatUnits(sourceBudgetUnits, USDC_DECIMALS);
       const built = await buildHyperliquidBridge2Transfer({
-        amount: body.amount,
+        amount: bridgeAmount,
         destinationAddress,
         destinationAsset: 'USDC',
         destinationVenue: 'hyperliquid',
@@ -865,14 +874,19 @@ async function selectAndBuildTargetFunding(
           walletAddress: source.walletAddress,
         }));
       if (
-        !built.providerDestinationAmount ||
-        BigNumber.from(built.providerDestinationAmount).lt(destinationAmountUnits)
+        hasDestinationAmount &&
+        (!built.providerDestinationAmount || BigNumber.from(built.providerDestinationAmount).lt(destinationAmountUnits))
       ) {
         throw new Error('Squid route exceeds maxCostBps or does not satisfy destination funding amount');
       }
+      if (!hasDestinationAmount && built.providerDestinationAmount === undefined) {
+        throw new Error('Squid route did not return a destination amount');
+      }
       return {
         ...built,
-        amount: body.amount,
+        amount: hasDestinationAmount
+          ? body.destinationAmount!
+          : utils.formatUnits(built.providerDestinationAmount!, destination.destinationAssetDecimals),
         destinationAsset: destination.destinationAsset,
         destinationChain: destination.destinationChain,
         destinationNetwork: destination.destinationNetwork,
@@ -1175,7 +1189,8 @@ function targetFundingRequestFingerprint(
   return utils.keccak256(
     utils.toUtf8Bytes(
       JSON.stringify({
-        amount: body.amount,
+        targetNotionalEur: body.targetNotionalEur,
+        destinationAmount: body.destinationAmount,
         destinationAddress,
         destinationAsset: destination.destinationAsset,
         destinationChain: destination.destinationChain,

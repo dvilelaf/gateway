@@ -202,7 +202,7 @@ describe('provider-owned target funding routes', () => {
       const squidPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(squidPayload).toMatchObject({
         fromAddress: utils.getAddress(ARBITRUM_WALLET),
-        fromAmount: '6060000',
+        fromAmount: '6000000',
         fromChain: '42161',
         fromToken: ARBITRUM_USDC,
         toAddress: destinationAddress,
@@ -221,7 +221,7 @@ describe('provider-owned target funding routes', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/bridge/rebalance/targets',
-      payload: targetRequest({ amount: '0.01', destinationAsset: 'WETH' }),
+      payload: targetRequest({ targetNotionalEur: '31', destinationAmount: '0.01', destinationAsset: 'WETH' }),
     });
 
     expect(response.statusCode).toBe(200);
@@ -754,11 +754,116 @@ describe('provider-owned target funding routes', () => {
 
     expect(response.statusCode).toBe(400);
   });
+
+  it('rejects the old `amount` field as unknown', async () => {
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: { ...targetRequest(), amount: '100', targetNotionalEur: undefined },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('rejects second selection with same idempotency key but different targetNotionalEur', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    const fetchMock = mockSquidRoute('9000000');
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({ targetNotionalEur: '6' }),
+    });
+    expect(first.statusCode).toBe(200);
+    const second = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({ targetNotionalEur: '9' }),
+    });
+    expect(second.statusCode).toBe(500);
+    expect(second.body).toContain('idempotency key already used for a different rebalance request');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects second selection with same idempotency key but different destinationAmount', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '100000000' } });
+    let fetchCount = 0;
+    const fetchMock = jest.fn(async (_url: unknown, options: Record<string, any>) => {
+      fetchCount += 1;
+      const fromAmount = BigNumber.from(JSON.parse(options.body).fromAmount);
+      return squidRouteResponse(fromAmount.mul(BigNumber.from(10).pow(12)).div(3000).toString());
+    });
+    global.fetch = fetchMock as any;
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({ targetNotionalEur: '31', destinationAmount: '0.01', destinationAsset: 'WETH' }),
+    });
+    expect(first.statusCode).toBe(200);
+    const callsAfterFirst = fetchCount;
+    const second = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({ targetNotionalEur: '31', destinationAmount: '0.02', destinationAsset: 'WETH' }),
+    });
+    expect(second.statusCode).toBe(500);
+    expect(second.body).toContain('idempotency key already used for a different rebalance request');
+    expect(fetchCount).toBe(callsAfterFirst);
+  });
+
+  it('forward-quotes a 100 EUR WETH target without destinationAmount using at most 100 USDC source budget', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '100000000' } });
+    const fetchMock = jest.fn(async (_url: unknown, options: Record<string, any>) => {
+      const body = JSON.parse(options.body);
+      const fromAmount = BigNumber.from(body.fromAmount);
+      return {
+        headers: { get: () => 'squid-request-1' },
+        json: async () => ({
+          route: {
+            estimate: { toAmount: fromAmount.mul(10).toString() },
+            id: 'squid-route-1',
+            quoteId: 'squid-quote-1',
+            requestId: 'squid-request-1',
+            transactionRequest: { data: '0x1234', target: '0x00000000000000000000000000000000000000F0', value: '0' },
+          },
+        }),
+        ok: true,
+        status: 200,
+      };
+    });
+    global.fetch = fetchMock as any;
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        targetNotionalEur: '100',
+        destinationAsset: 'WETH',
+        destinationAmount: undefined,
+        maxCostBps: undefined,
+      }),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      destinationAsset: 'WETH',
+      provider: 'squid_router',
+      sourceNetwork: 'arbitrum',
+    });
+    const squidPayload = JSON.parse(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][1].body);
+    expect(squidPayload.fromAmount).toBe('100000000');
+    expect(squidPayload.fromToken).toBe(ARBITRUM_USDC);
+    expect(squidPayload.toToken).toBe(BASE_WETH);
+  });
 });
 
 function targetRequest(overrides: Record<string, unknown> = {}) {
   return {
-    amount: '6',
+    targetNotionalEur: '6',
     destinationAddress: BASE_WALLET,
     destinationAsset: 'USDC',
     destinationChain: 'ethereum',
