@@ -27,6 +27,8 @@ const CCTP_SOLANA_DOMAIN = 5;
 const CCTP_SOLANA_MESSAGE_TRANSMITTER_V2_PROGRAM = 'CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC';
 const CCTP_SOLANA_TOKEN_MESSENGER_MINTER_V2_PROGRAM = 'CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe';
 const SOLANA_MAINNET_BETA_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const BASE_USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const BASE_WETH_ADDRESS = '0x4200000000000000000000000000000000000006';
 const CCTP_STANDARD_FINALITY_THRESHOLD = 2000;
 const CCTP_MESSAGE_NONCE_OFFSET = 12;
 const CCTP_MESSAGE_SENDER_OFFSET = 44;
@@ -76,7 +78,7 @@ const RAW_TRANSACTION_PAYLOAD_FIELDS = [
 const SQUID_EVM_USDC_ASSETS = {
   arbitrum: ARBITRUM_USDC_ADDRESS,
   avalanche: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
-  base: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+  base: BASE_USDC_ADDRESS,
   mainnet: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
   optimism: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
   polygon: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
@@ -597,7 +599,9 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
 type TargetFundingDestination = {
   canonicalChain: 'ethereum' | 'solana';
   canonicalNetwork: 'arbitrum' | 'base' | 'mainnet-beta';
+  destinationAsset: 'USDC' | 'WETH';
   destinationAssetAddress: string;
+  destinationAssetDecimals: number;
   destinationChain: 'ethereum' | 'hyperliquid' | 'solana';
   destinationNetwork: string;
   provider: 'hyperliquid_bridge2' | 'squid_router';
@@ -760,14 +764,15 @@ async function selectAndBuildTargetFunding(
   destinationAddress: string,
   maxCostBps: string | undefined,
 ): Promise<BuiltProviderOwnedRebalance> {
-  const destinationAmountUnits = utils.parseUnits(body.amount, USDC_DECIMALS);
+  const destinationAmountUnits = utils.parseUnits(body.amount, destination.destinationAssetDecimals);
   if (destinationAmountUnits.lte(0)) {
     throw new Error('target funding amount must be positive');
   }
+  const requestedSourceAmountUnits = utils.parseUnits(body.amount, USDC_DECIMALS);
   const sourceAmountUnits =
     destination.provider === SQUID_ROUTER_PROVIDER
-      ? targetFundingSourceAmountUnits(destinationAmountUnits, maxCostBps)
-      : destinationAmountUnits;
+      ? targetFundingSourceAmountUnits(requestedSourceAmountUnits, maxCostBps)
+      : requestedSourceAmountUnits;
   const sourceAmount = utils.formatUnits(sourceAmountUnits, USDC_DECIMALS);
 
   const sourceContexts =
@@ -795,6 +800,7 @@ async function selectAndBuildTargetFunding(
       continue;
     }
     fundedSourceFound = true;
+    await provisionTargetFundingSourceWallet(source);
     if (destination.provider === 'hyperliquid_bridge2') {
       const built = await buildHyperliquidBridge2Transfer({
         amount: body.amount,
@@ -840,7 +846,7 @@ async function selectAndBuildTargetFunding(
       return {
         ...built,
         amount: body.amount,
-        destinationAsset: 'USDC',
+        destinationAsset: destination.destinationAsset,
         destinationChain: destination.destinationChain,
         destinationNetwork: destination.destinationNetwork,
         sourceAmount,
@@ -920,6 +926,7 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
   if (sourceStatus === 'insufficient') {
     throw new TargetFundingBlockedError();
   }
+  await provisionTargetFundingSourceWallet(source);
   const liveActionAuthorization: LiveActionAuthorization = {
     action: 'gateway_rebalance',
     connector_id: providerTreasuryConnectorId(built.provider),
@@ -965,43 +972,62 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
 function resolveTargetFundingDestination(body: TargetFundingRequest): TargetFundingDestination {
   const chain = body.destinationChain.trim().toLowerCase();
   const network = body.destinationNetwork.trim().toLowerCase();
-  if (body.destinationAsset.trim().toLowerCase() !== 'usdc') {
-    throw new Error('target funding currently supports destinationAsset USDC only');
-  }
-  if (chain === 'hyperliquid' && network === 'mainnet') {
+  const asset = body.destinationAsset.trim().toUpperCase();
+  if (chain === 'hyperliquid' && network === 'mainnet' && asset === 'USDC') {
     return {
       canonicalChain: 'ethereum',
       canonicalNetwork: 'arbitrum',
+      destinationAsset: 'USDC',
       destinationAssetAddress: ARBITRUM_USDC_ADDRESS,
+      destinationAssetDecimals: USDC_DECIMALS,
       destinationChain: 'hyperliquid',
       destinationNetwork: 'mainnet',
       provider: 'hyperliquid_bridge2',
     };
   }
   if (
-    (chain === 'ethereum' && ['base', 'base-mainnet'].includes(network)) ||
-    (chain === 'base' && ['mainnet', 'base', 'base-mainnet'].includes(network))
+    ((chain === 'ethereum' && ['base', 'base-mainnet'].includes(network)) ||
+      (chain === 'base' && ['mainnet', 'base', 'base-mainnet'].includes(network))) &&
+    (asset === 'USDC' || asset === 'WETH')
   ) {
     return {
       canonicalChain: 'ethereum',
       canonicalNetwork: 'base',
-      destinationAssetAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      destinationAsset: asset,
+      destinationAssetAddress: asset === 'USDC' ? BASE_USDC_ADDRESS : BASE_WETH_ADDRESS,
+      destinationAssetDecimals: asset === 'USDC' ? USDC_DECIMALS : 18,
       destinationChain: 'ethereum',
       destinationNetwork: 'base',
       provider: SQUID_ROUTER_PROVIDER,
     };
   }
-  if (chain === 'solana' && ['mainnet-beta', 'solana-mainnet-beta', 'solana'].includes(network)) {
+  if (chain === 'solana' && ['mainnet-beta', 'solana-mainnet-beta', 'solana'].includes(network) && asset === 'USDC') {
     return {
       canonicalChain: 'solana',
       canonicalNetwork: 'mainnet-beta',
+      destinationAsset: 'USDC',
       destinationAssetAddress: SOLANA_MAINNET_BETA_USDC_MINT,
+      destinationAssetDecimals: USDC_DECIMALS,
       destinationChain: 'solana',
       destinationNetwork: 'mainnet-beta',
       provider: SQUID_ROUTER_PROVIDER,
     };
   }
-  throw new Error('unsupported target funding destination');
+  throw new Error('unsupported target funding destination asset');
+}
+
+async function provisionTargetFundingSourceWallet(source: TargetFundingSource): Promise<void> {
+  const { ensureMarlinWalletExists, marlinWalletPolicyFor } = await import('../wallet/routes/setMarlinDefault');
+  const policy = marlinWalletPolicyFor('ethereum', source.network);
+  if (!policy) {
+    throw new Error(`canonical wallet policy unavailable for ethereum/${source.network}`);
+  }
+  await ensureMarlinWalletExists({
+    address: utils.getAddress(source.walletAddress),
+    chain: 'ethereum',
+    network: source.network,
+    walletRef: policy.walletRef,
+  });
 }
 
 async function canonicalTargetFundingWalletAddress(chain: 'ethereum' | 'solana', network: string): Promise<string> {
@@ -1058,7 +1084,7 @@ function targetFundingRequestFingerprint(
       JSON.stringify({
         amount: body.amount,
         destinationAddress,
-        destinationAsset: 'USDC',
+        destinationAsset: destination.destinationAsset,
         destinationChain: destination.destinationChain,
         destinationNetwork: destination.destinationNetwork,
         maxCostBps,

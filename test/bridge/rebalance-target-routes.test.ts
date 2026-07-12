@@ -21,6 +21,10 @@ jest.mock('../../src/wallet/routes/setMarlinDefault', () => ({
     privateKey: 'not-used',
     storageChain: policy.walletRef.startsWith('solana:') ? 'solana' : 'ethereum',
   })),
+  ensureMarlinWalletExists: jest.fn(async ({ address }: { address: string }) => ({
+    storageChain: 'ethereum',
+    validatedAddress: address,
+  })),
   marlinWalletPolicyFor: jest.fn((chain: string, network: string) => ({
     derivationPath: 'not-used',
     family: chain === 'solana' ? 'solana' : 'evm',
@@ -34,6 +38,7 @@ jest.mock('../../src/wallet/routes/setMarlinDefault', () => ({
 
 import { rebalanceRoutes } from '../../src/bridge/rebalance.routes';
 import { Ethereum } from '../../src/chains/ethereum/ethereum';
+import { ensureMarlinWalletExists } from '../../src/wallet/routes/setMarlinDefault';
 
 const ARBITRUM_WALLET = '0x00000000000000000000000000000000000000A1';
 const BASE_WALLET = '0x00000000000000000000000000000000000000B1';
@@ -44,6 +49,7 @@ const AVALANCHE_WALLET = '0x00000000000000000000000000000000000000F1';
 const SOLANA_WALLET = 'HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk';
 const ARBITRUM_USDC = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
 const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const BASE_WETH = '0x4200000000000000000000000000000000000006';
 const SOLANA_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const BRIDGE2 = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
 
@@ -176,6 +182,86 @@ describe('provider-owned target funding routes', () => {
       });
     },
   );
+
+  it('uses canonical Base WETH for the configured Base WETH spend target', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '12000000' } });
+    const fetchMock = mockSquidRoute('6000000000000000000');
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({ destinationAsset: 'WETH' }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      destinationAsset: 'WETH',
+      destinationChain: 'ethereum',
+      destinationNetwork: 'base',
+      provider: 'squid_router',
+      sourceNetwork: 'arbitrum',
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      fromAmount: '6060000',
+      fromToken: ARBITRUM_USDC,
+      toChain: '8453',
+      toToken: BASE_WETH,
+    });
+  });
+
+  it('provisions the selected mnemonic source wallet before provider quote and persistence', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as any;
+    (ensureMarlinWalletExists as jest.Mock).mockRejectedValueOnce(new Error('wallet provisioning failed'));
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest(),
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('wallet provisioning failed');
+    expect(ensureMarlinWalletExists).toHaveBeenCalledWith({
+      address: utils.getAddress(ARBITRUM_WALLET),
+      chain: 'ethereum',
+      network: 'arbitrum',
+      walletRef: 'arbitrum:mainnet:evm_gateway',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(() => readFileSync(path.join(stateRoot, 'target-funding-1.json'))).toThrow();
+  });
+
+  it('rejects an unsupported spend asset before wallet, balance, quote, or persistence side effects', async () => {
+    const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as any;
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAsset: 'WETH',
+        destinationChain: 'solana',
+        destinationNetwork: 'mainnet-beta',
+      }),
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('unsupported target funding destination asset');
+    expect(ensureMarlinWalletExists).not.toHaveBeenCalled();
+    expect(Ethereum.getInstance).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+    expect(() => readFileSync(path.join(stateRoot, 'target-funding-1.json'))).toThrow();
+  });
 
   it('falls through to a later funded canonical EVM treasury context', async () => {
     mockEthereumContexts({
@@ -372,6 +458,7 @@ describe('provider-owned target funding routes', () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(sendTransaction).toHaveBeenCalledTimes(2);
+    expect(ensureMarlinWalletExists).toHaveBeenCalledTimes(2);
   });
 
   it('rejects caller-supplied provider, source, and wallet authority fields', async () => {
@@ -425,12 +512,12 @@ function mockEthereumContexts(
   return contexts;
 }
 
-function mockSquidRoute() {
+function mockSquidRoute(toAmount = '6000000') {
   const fetchMock = jest.fn(async (_url: unknown, _options: Record<string, any>) => ({
     headers: { get: () => 'squid-request-1' },
     json: async () => ({
       route: {
-        estimate: { toAmount: '6000000' },
+        estimate: { toAmount },
         id: 'squid-route-1',
         quoteId: 'squid-quote-1',
         requestId: 'squid-request-1',
