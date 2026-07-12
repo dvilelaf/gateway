@@ -120,6 +120,12 @@ describe('provider-owned target funding routes', () => {
       txTarget: ARBITRUM_USDC,
       walletAddress: utils.getAddress(ARBITRUM_WALLET),
     });
+    const body = response.json();
+    expect(body.quotedNativeGasAmount).toMatch(/^\d+\.?\d*$/);
+    expect(body.quotedNativeGasAsset).toBe('ETH');
+    expect(body.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    const expectedGasWei = BigNumber.from('1000000000').mul(120000).mul(12).div(10);
+    expect(utils.parseEther(body.quotedNativeGasAmount).eq(expectedGasWei)).toBe(true);
     expect(ethereum.arbitrum.getNativeBalanceByAddress).toHaveBeenCalledWith(utils.getAddress(ARBITRUM_WALLET));
     expect(ethereum.arbitrum.getERC20BalanceByAddress).toHaveBeenCalled();
     const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
@@ -134,6 +140,12 @@ describe('provider-owned target funding routes', () => {
         walletAddress: utils.getAddress(ARBITRUM_WALLET),
       },
     });
+    expect(persisted.quotedNativeGasAmount).toMatch(/^\d+\.?\d*$/);
+    expect(persisted.quotedNativeGasAsset).toBe('ETH');
+    expect(persisted.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(persisted.builtRebalance.quotedNativeGasAmount).toMatch(/^\d+\.?\d*$/);
+    expect(persisted.builtRebalance.quotedNativeGasAsset).toBe('ETH');
+    expect(persisted.builtRebalance.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     const transfer = new utils.Interface(['function transfer(address to, uint256 amount) returns (bool)']);
     const decodedTransfer = transfer.decodeFunctionData('transfer', persisted.builtRebalance.txCalldata);
     expect(decodedTransfer[0]).toBe(utils.getAddress(BRIDGE2));
@@ -424,6 +436,117 @@ describe('provider-owned target funding routes', () => {
     expect(response.json().message).toBe('insufficient_source_or_gas');
     expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
     expect(sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects persisted Bridge2 selection with tampered native gas bound via fingerprint mismatch', async () => {
+    const ethereum = mockEthereumContexts(
+      { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+      { getWallet: jest.fn() },
+    );
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const buildResponse = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAddress: ARBITRUM_WALLET,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+      }),
+    });
+    expect(buildResponse.statusCode).toBe(200);
+    const statePath = path.join(stateRoot, 'target-funding-1.json');
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    // Remove native gas bound from builtRebalance; this changes the fingerprint
+    delete persisted.builtRebalance.quotedNativeGasAmount;
+    delete persisted.builtRebalance.quotedNativeGasAsset;
+    writeFileSync(statePath, JSON.stringify(persisted));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('persisted target funding selection fingerprint mismatch');
+    expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('blocks Bridge2 execute when fresh gas exceeds the persisted bound', async () => {
+    const ethereum = mockEthereumContexts(
+      { arbitrum: { gas: '1000000000000000000', usdc: '6000000' } },
+      { getWallet: jest.fn() },
+    );
+    ethereum.arbitrum.provider.getGasPrice.mockResolvedValue(BigNumber.from('1000000000'));
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const buildResponse = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAddress: ARBITRUM_WALLET,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+      }),
+    });
+    expect(buildResponse.statusCode).toBe(200);
+    // The wallet can afford the fresh estimate, but it exceeds the immutable quote bound.
+    ethereum.arbitrum.provider.getGasPrice.mockResolvedValue(BigNumber.from('10000000000'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().message).toBe('insufficient_source_or_gas');
+    expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('allows Bridge2 execute when fresh gas is within the persisted bound', async () => {
+    const signer = new Wallet(`0x${'77'.repeat(32)}`);
+    const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+    const ethereum = mockEthereumContexts(
+      { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+      {
+        chainId: 42161,
+        getWallet: jest.fn(async () => signer),
+        handleTransactionExecution: jest.fn(async () => undefined),
+        prepareGasOptions: jest.fn(async () => ({ gasLimit: 120000, gasPrice: BigNumber.from(10) })),
+        provider: {
+          getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+          getTransactionCount: jest.fn(async () => 42),
+          getTransactionReceipt: jest.fn(async () => null),
+          sendTransaction,
+        },
+      },
+    );
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const buildResponse = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAddress: ARBITRUM_WALLET,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+      }),
+    });
+    expect(buildResponse.statusCode).toBe(200);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().status).toBe(0);
+    await app.close();
   });
 
   it('rejects a modified persisted provider selection before any side effect', async () => {

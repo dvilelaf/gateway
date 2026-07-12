@@ -298,6 +298,8 @@ const BridgeRebalanceBuildResponseSchema = Type.Object({
   quotedProviderCostUsd: Type.Optional(Type.String()),
   quotedGasCostUsd: Type.Optional(Type.String()),
   destinationAmount: Type.Optional(Type.String()),
+  quotedNativeGasAmount: Type.Optional(Type.String()),
+  quotedNativeGasAsset: Type.Optional(Type.String()),
 });
 
 type BridgeRebalanceRequest = Static<typeof BridgeRebalanceRequestSchema>;
@@ -558,6 +560,8 @@ type BuiltProviderOwnedRebalance = {
   squidStatusRequestId?: string;
   providerDestinationAmount?: string;
   destinationAmount?: string;
+  quotedNativeGasAmount?: string;
+  quotedNativeGasAsset?: string;
 };
 
 type ProviderOwnedRebalanceExecution = {
@@ -611,6 +615,8 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   targetRequestFingerprint?: string;
   maxCostBps?: string;
   signedTransaction?: string;
+  quotedNativeGasAmount?: string;
+  quotedNativeGasAsset?: string;
 };
 
 type TargetFundingDestination = {
@@ -745,6 +751,8 @@ function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance) {
     quotedProviderCostUsd: built.quotedProviderCostUsd,
     quotedGasCostUsd: built.quotedGasCostUsd,
     destinationAmount: built.destinationAmount,
+    quotedNativeGasAmount: built.quotedNativeGasAmount,
+    quotedNativeGasAsset: built.quotedNativeGasAsset,
   };
 }
 
@@ -848,11 +856,11 @@ async function selectAndBuildTargetFunding(
       }
     }
     const sourceStatus = await targetFundingSourceStatus(source, candidateSourceAmountUnits, gasLimit);
-    if (sourceStatus === 'unavailable') {
+    if (sourceStatus.status === 'unavailable') {
       sourceBalanceUnavailable = true;
       continue;
     }
-    if (sourceStatus === 'insufficient') {
+    if (sourceStatus.status === 'insufficient') {
       continue;
     }
     fundedSourceFound = true;
@@ -878,6 +886,9 @@ async function selectAndBuildTargetFunding(
         ...built,
         destinationChain: destination.destinationChain,
         destinationNetwork: destination.destinationNetwork,
+        quotedNativeGasAmount: utils.formatEther(sourceStatus.requiredGas!),
+        quotedNativeGasAsset: 'ETH',
+        quotedAt: sourceStatus.quotedAt!,
       };
     }
     try {
@@ -1007,11 +1018,17 @@ async function buildInverseQuotedSquidTargetFunding(
   return selected;
 }
 
+type TargetFundingSourceStatusResult = {
+  status: 'funded' | 'insufficient' | 'unavailable';
+  requiredGas?: BigNumber;
+  quotedAt?: string;
+};
+
 async function targetFundingSourceStatus(
   source: TargetFundingSource,
   amountUnits: BigNumber,
   gasLimit: number,
-): Promise<'funded' | 'insufficient' | 'unavailable'> {
+): Promise<TargetFundingSourceStatusResult> {
   try {
     const ethereum = await Ethereum.getInstance(source.network);
     const token = ethereum.getContract(source.tokenAddress, ethereum.provider);
@@ -1024,11 +1041,12 @@ async function targetFundingSourceStatus(
       .mul(gasLimit)
       .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
       .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
+    const quotedAt = new Date().toISOString();
     return BigNumber.from(tokenBalance.value).gte(amountUnits) && BigNumber.from(nativeBalance.value).gte(requiredGas)
-      ? 'funded'
-      : 'insufficient';
+      ? { status: 'funded', requiredGas, quotedAt }
+      : { status: 'insufficient', requiredGas, quotedAt };
   } catch {
-    return 'unavailable';
+    return { status: 'unavailable' };
   }
 }
 
@@ -1065,11 +1083,31 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
       utils.parseUnits(sourceAmount, USDC_DECIMALS),
       gasLimit,
     );
-    if (sourceStatus === 'unavailable') {
+    if (sourceStatus.status === 'unavailable') {
       throw new Error('target funding source balance unavailable');
     }
-    if (sourceStatus === 'insufficient') {
+    if (sourceStatus.status === 'insufficient') {
       throw new TargetFundingBlockedError();
+    }
+    if (built.provider === 'hyperliquid_bridge2') {
+      const quotedNativeGasAmount = built.quotedNativeGasAmount;
+      const quotedNativeGasAsset = built.quotedNativeGasAsset;
+      const quotedAt = built.quotedAt;
+      if (!quotedNativeGasAmount || !quotedNativeGasAsset || !quotedAt) {
+        throw new Error('target funding Bridge2 native gas estimate missing');
+      }
+      if (quotedNativeGasAsset !== 'ETH') {
+        throw new Error('target funding Bridge2 native gas asset must be ETH');
+      }
+      const quotedTimestamp = new Date(quotedAt).getTime();
+      if (!Number.isFinite(quotedTimestamp) || quotedTimestamp > Date.now()) {
+        throw new Error('target funding Bridge2 quote timestamp invalid');
+      }
+      const freshGasWei = sourceStatus.requiredGas!;
+      const persistedGasWei = utils.parseEther(quotedNativeGasAmount);
+      if (freshGasWei.gt(persistedGasWei)) {
+        throw new TargetFundingBlockedError();
+      }
     }
   }
   await provisionTargetFundingSourceWallet(source);
@@ -2704,6 +2742,8 @@ function newRebalanceState(
     quotedAt: built.quotedAt,
     quotedProviderCostUsd: built.quotedProviderCostUsd,
     quotedGasCostUsd: built.quotedGasCostUsd,
+    quotedNativeGasAmount: built.quotedNativeGasAmount,
+    quotedNativeGasAsset: built.quotedNativeGasAsset,
     requestFingerprint,
     squidDestinationChainId: built.squidDestinationChainId,
     squidSourceChainId: built.squidSourceChainId,
@@ -2823,6 +2863,8 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         quotedAt: built.quotedAt,
         quotedProviderCostUsd: built.quotedProviderCostUsd,
         quotedGasCostUsd: built.quotedGasCostUsd,
+        quotedNativeGasAmount: built.quotedNativeGasAmount,
+        quotedNativeGasAsset: built.quotedNativeGasAsset,
         provider: built.provider,
         squidDestinationChainId: built.squidDestinationChainId,
         squidSourceChainId: built.squidSourceChainId,
