@@ -56,6 +56,8 @@ const PROVIDER_TREASURY_SAME_CHAIN_SWAP = 'provider_treasury_same_chain_swap';
 const TARGET_FUNDING_BLOCKER = 'insufficient_source_or_gas';
 const TARGET_FUNDING_GAS_BUFFER_NUMERATOR = 12;
 const TARGET_FUNDING_GAS_BUFFER_DENOMINATOR = 10;
+const SQUID_INVERSE_QUOTE_MAX_EXPANSIONS = 32;
+const SQUID_INVERSE_QUOTE_MAX_BISECTIONS = 24;
 const PROVIDER_TREASURY_SAME_CHAIN_SWAP_GAS_LIMIT = 450000;
 const PROVIDER_TREASURY_WRAP_GAS_LIMIT = 90000;
 const ARBITRUM_WETH_ADDRESS = '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1';
@@ -772,7 +774,7 @@ async function selectAndBuildTargetFunding(
   }
   const requestedSourceAmountUnits = utils.parseUnits(body.amount, USDC_DECIMALS);
   const sourceAmountUnits =
-    destination.provider === SQUID_ROUTER_PROVIDER
+    destination.provider === SQUID_ROUTER_PROVIDER && destination.destinationAsset === 'USDC'
       ? targetFundingSourceAmountUnits(requestedSourceAmountUnits, maxCostBps)
       : requestedSourceAmountUnits;
   const sourceAmount = utils.formatUnits(sourceAmountUnits, USDC_DECIMALS);
@@ -793,7 +795,26 @@ async function selectAndBuildTargetFunding(
       destination.provider === 'hyperliquid_bridge2'
         ? HYPERLIQUID_BRIDGE2_GAS_LIMIT
         : SQUID_ROUTER_APPROVE_GAS_LIMIT + SQUID_ROUTER_GAS_LIMIT;
-    const sourceStatus = await targetFundingSourceStatus(source, sourceAmountUnits, gasLimit);
+    let squidBuild: BuiltProviderOwnedRebalance | undefined;
+    let candidateSourceAmountUnits = sourceAmountUnits;
+    if (destination.provider === SQUID_ROUTER_PROVIDER && destination.destinationAsset !== 'USDC') {
+      try {
+        await provisionTargetFundingSourceWallet(source);
+        squidBuild = await buildInverseQuotedSquidTargetFunding(
+          body,
+          destination,
+          destinationAddress,
+          source,
+          destinationAmountUnits,
+          maxCostBps,
+        );
+        candidateSourceAmountUnits = utils.parseUnits(squidBuild.amount, USDC_DECIMALS);
+      } catch (error) {
+        providerError = error;
+        continue;
+      }
+    }
+    const sourceStatus = await targetFundingSourceStatus(source, candidateSourceAmountUnits, gasLimit);
     if (sourceStatus === 'unavailable') {
       sourceBalanceUnavailable = true;
       continue;
@@ -802,7 +823,9 @@ async function selectAndBuildTargetFunding(
       continue;
     }
     fundedSourceFound = true;
-    await provisionTargetFundingSourceWallet(source);
+    if (!squidBuild) {
+      await provisionTargetFundingSourceWallet(source);
+    }
     if (destination.provider === 'hyperliquid_bridge2') {
       const built = await buildHyperliquidBridge2Transfer({
         amount: body.amount,
@@ -824,21 +847,23 @@ async function selectAndBuildTargetFunding(
       };
     }
     try {
-      const built = await buildSquidRouterRebalance({
-        amount: sourceAmount,
-        destinationAddress,
-        destinationAsset: destination.destinationAssetAddress,
-        destinationChain: destination.canonicalChain,
-        destinationNetwork: destination.canonicalNetwork,
-        idempotencyKey: body.idempotencyKey,
-        mode: 'mainnet',
-        provider: SQUID_ROUTER_PROVIDER,
-        sourceAsset: source.tokenAddress,
-        sourceAssetDecimals: USDC_DECIMALS,
-        sourceChain: 'ethereum',
-        sourceNetwork: source.network,
-        walletAddress: source.walletAddress,
-      });
+      const built =
+        squidBuild ??
+        (await buildSquidRouterRebalance({
+          amount: sourceAmount,
+          destinationAddress,
+          destinationAsset: destination.destinationAssetAddress,
+          destinationChain: destination.canonicalChain,
+          destinationNetwork: destination.canonicalNetwork,
+          idempotencyKey: body.idempotencyKey,
+          mode: 'mainnet',
+          provider: SQUID_ROUTER_PROVIDER,
+          sourceAsset: source.tokenAddress,
+          sourceAssetDecimals: USDC_DECIMALS,
+          sourceChain: 'ethereum',
+          sourceNetwork: source.network,
+          walletAddress: source.walletAddress,
+        }));
       if (
         !built.providerDestinationAmount ||
         BigNumber.from(built.providerDestinationAmount).lt(destinationAmountUnits)
@@ -851,7 +876,7 @@ async function selectAndBuildTargetFunding(
         destinationAsset: destination.destinationAsset,
         destinationChain: destination.destinationChain,
         destinationNetwork: destination.destinationNetwork,
-        sourceAmount,
+        sourceAmount: built.amount,
       };
     } catch (error) {
       providerError = error;
@@ -864,6 +889,72 @@ async function selectAndBuildTargetFunding(
     throw new TargetFundingBlockedError();
   }
   throw providerError instanceof Error ? providerError : new Error('provider target funding route unavailable');
+}
+
+async function buildInverseQuotedSquidTargetFunding(
+  body: TargetFundingRequest,
+  destination: TargetFundingDestination,
+  destinationAddress: string,
+  source: TargetFundingSource,
+  destinationAmountUnits: BigNumber,
+  maxCostBps: string | undefined,
+): Promise<BuiltProviderOwnedRebalance> {
+  const quote = (amountUnits: BigNumber) =>
+    buildSquidRouterRebalance({
+      amount: utils.formatUnits(amountUnits, USDC_DECIMALS),
+      destinationAddress,
+      destinationAsset: destination.destinationAssetAddress,
+      destinationChain: destination.canonicalChain,
+      destinationNetwork: destination.canonicalNetwork,
+      idempotencyKey: body.idempotencyKey,
+      mode: 'mainnet',
+      provider: SQUID_ROUTER_PROVIDER,
+      sourceAsset: source.tokenAddress,
+      sourceAssetDecimals: USDC_DECIMALS,
+      sourceChain: 'ethereum',
+      sourceNetwork: source.network,
+      walletAddress: source.walletAddress,
+    });
+  const satisfiesTarget = (built: BuiltProviderOwnedRebalance) =>
+    built.providerDestinationAmount !== undefined &&
+    BigNumber.from(built.providerDestinationAmount).gte(destinationAmountUnits);
+
+  let low = BigNumber.from(0);
+  let high = utils.parseUnits('1', USDC_DECIMALS);
+  let sufficient: BuiltProviderOwnedRebalance | undefined;
+  for (let attempt = 0; attempt < SQUID_INVERSE_QUOTE_MAX_EXPANSIONS; attempt += 1) {
+    const built = await quote(high);
+    if (satisfiesTarget(built)) {
+      sufficient = built;
+      break;
+    }
+    low = high;
+    high = high.mul(2);
+  }
+  if (!sufficient) {
+    throw new Error('Squid route could not bound destination funding amount');
+  }
+
+  for (let attempt = 0; attempt < SQUID_INVERSE_QUOTE_MAX_BISECTIONS && high.sub(low).gt(1); attempt += 1) {
+    const midpoint = low.add(high).div(2);
+    const built = await quote(midpoint);
+    if (satisfiesTarget(built)) {
+      high = midpoint;
+      sufficient = built;
+    } else {
+      low = midpoint;
+    }
+  }
+
+  const selectedSourceAmount = targetFundingSourceAmountUnits(high, maxCostBps);
+  if (selectedSourceAmount.eq(high) && sufficient.amount === utils.formatUnits(high, USDC_DECIMALS)) {
+    return sufficient;
+  }
+  const selected = await quote(selectedSourceAmount);
+  if (!satisfiesTarget(selected)) {
+    throw new Error('Squid route exceeds maxCostBps or does not satisfy destination funding amount');
+  }
+  return selected;
 }
 
 async function targetFundingSourceStatus(
@@ -918,12 +1009,18 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
       ? SQUID_ROUTER_APPROVE_GAS_LIMIT + SQUID_ROUTER_GAS_LIMIT
       : HYPERLIQUID_BRIDGE2_GAS_LIMIT;
   const sourceAmount = built.sourceAmount ?? built.amount;
-  const sourceStatus = await targetFundingSourceStatus(source, utils.parseUnits(sourceAmount, USDC_DECIMALS), gasLimit);
-  if (sourceStatus === 'unavailable') {
-    throw new Error('target funding source balance unavailable');
-  }
-  if (sourceStatus === 'insufficient') {
-    throw new TargetFundingBlockedError();
+  if (!state.signedTransaction && !state.transactionHash) {
+    const sourceStatus = await targetFundingSourceStatus(
+      source,
+      utils.parseUnits(sourceAmount, USDC_DECIMALS),
+      gasLimit,
+    );
+    if (sourceStatus === 'unavailable') {
+      throw new Error('target funding source balance unavailable');
+    }
+    if (sourceStatus === 'insufficient') {
+      throw new TargetFundingBlockedError();
+    }
   }
   await provisionTargetFundingSourceWallet(source);
   const liveActionAuthorization: LiveActionAuthorization = {
@@ -1643,10 +1740,11 @@ async function executeSingleTransactionRebalance(
   if (state.transactionHash) {
     const receipt = await ethereum.provider.getTransactionReceipt(state.transactionHash);
     if (receipt) {
+      const outcome = sourceReceiptOutcome(built.provider, receipt.status);
       return {
         approvalTransactionHash,
-        responseStatus: receipt.status === 1 ? 1 : -1,
-        status: receipt.status === 1 ? 'confirmed' : 'failed',
+        responseStatus: outcome.responseStatus,
+        status: outcome.status,
         transactionHash: state.transactionHash,
       };
     }
@@ -1660,10 +1758,11 @@ async function executeSingleTransactionRebalance(
     }
     const recoveredTx = await ethereum.provider.sendTransaction(state.signedTransaction);
     const recoveredReceipt = await ethereum.handleTransactionExecution(recoveredTx);
+    const outcome = sourceReceiptOutcome(built.provider, recoveredReceipt?.status);
     return {
       approvalTransactionHash,
-      responseStatus: recoveredReceipt?.status === 1 ? 1 : recoveredReceipt?.status === 0 ? -1 : 0,
-      status: recoveredReceipt?.status === 1 ? 'confirmed' : recoveredReceipt?.status === 0 ? 'failed' : 'submitted',
+      responseStatus: outcome.responseStatus,
+      status: outcome.status,
       transactionHash: state.transactionHash,
     };
   }
@@ -1682,12 +1781,26 @@ async function executeSingleTransactionRebalance(
   });
   const txResponse = await ethereum.provider.sendTransaction(state.signedTransaction as string);
   const receipt = await ethereum.handleTransactionExecution(txResponse);
+  const outcome = sourceReceiptOutcome(built.provider, receipt?.status);
   return {
     approvalTransactionHash,
-    responseStatus: receipt?.status === 1 ? 1 : receipt?.status === 0 ? -1 : 0,
-    status: receipt?.status === 1 ? 'confirmed' : receipt?.status === 0 ? 'failed' : 'submitted',
+    responseStatus: outcome.responseStatus,
+    status: outcome.status,
     transactionHash: txResponse.hash,
   };
+}
+
+function sourceReceiptOutcome(
+  provider: BuiltProviderOwnedRebalance['provider'],
+  receiptStatus: number | undefined,
+): { responseStatus: -1 | 0 | 1; status: string } {
+  if (receiptStatus === 0) {
+    return { responseStatus: -1, status: 'failed' };
+  }
+  if (receiptStatus === 1 && provider !== SQUID_ROUTER_PROVIDER) {
+    return { responseStatus: 1, status: 'confirmed' };
+  }
+  return { responseStatus: 0, status: 'submitted' };
 }
 
 async function prepareRecoverableEvmTransaction(
@@ -2445,8 +2558,13 @@ async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRe
     try {
       const ethereum = await Ethereum.getInstance(state.sourceNetwork);
       const receipt = await ethereum.provider.getTransactionReceipt(state.transactionHash);
-      if (receipt) {
-        state = { ...state, status: receipt.status === 1 ? 'confirmed' : 'failed' };
+      if (receipt?.status === 0) {
+        state = { ...state, status: 'failed' };
+        await saveRebalanceState(state);
+        return state;
+      }
+      if (receipt?.status === 1 && state.provider !== SQUID_ROUTER_PROVIDER) {
+        state = { ...state, status: 'confirmed' };
         await saveRebalanceState(state);
         return state;
       }

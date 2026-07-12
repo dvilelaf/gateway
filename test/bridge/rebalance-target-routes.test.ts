@@ -183,16 +183,16 @@ describe('provider-owned target funding routes', () => {
     },
   );
 
-  it('uses canonical Base WETH for the configured Base WETH spend target', async () => {
-    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '12000000' } });
-    const fetchMock = mockSquidRoute('6000000000000000000');
+  it('inverse-quotes realistic USDC input for a 0.01 Base WETH target', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '100000000' } });
+    const fetchMock = mockSquidWethRoute();
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
 
     const response = await app.inject({
       method: 'POST',
       url: '/bridge/rebalance/targets',
-      payload: targetRequest({ destinationAsset: 'WETH' }),
+      payload: targetRequest({ amount: '0.01', destinationAsset: 'WETH' }),
     });
 
     expect(response.statusCode).toBe(200);
@@ -203,8 +203,12 @@ describe('provider-owned target funding routes', () => {
       provider: 'squid_router',
       sourceNetwork: 'arbitrum',
     });
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
-      fromAmount: '6060000',
+    const quotedInputs = fetchMock.mock.calls.map(([, options]) => BigNumber.from(JSON.parse(options.body).fromAmount));
+    const selectedInput = quotedInputs[quotedInputs.length - 1];
+    expect(selectedInput.gte('30000000')).toBe(true);
+    expect(selectedInput.lte('30300000')).toBe(true);
+    expect(selectedInput.eq('10000')).toBe(false);
+    expect(JSON.parse(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][1].body)).toMatchObject({
       fromToken: ARBITRUM_USDC,
       toChain: '8453',
       toToken: BASE_WETH,
@@ -428,7 +432,7 @@ describe('provider-owned target funding routes', () => {
         },
       },
     );
-    const fetchMock = mockSquidRoute();
+    const fetchMock = mockSquidRouteAndStatus('SUCCESS');
     const firstApp = Fastify();
     await firstApp.register(rebalanceRoutes, { prefix: '/bridge' });
     const build = await firstApp.inject({
@@ -457,8 +461,8 @@ describe('provider-owned target funding routes', () => {
     const status = await secondApp.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
 
     expect(build.statusCode).toBe(200);
-    expect(firstExecute.json()).toMatchObject({ status: 1 });
-    expect(retry.json()).toMatchObject({ signature: firstExecute.json().signature, status: 1 });
+    expect(firstExecute.json()).toMatchObject({ status: 0 });
+    expect(retry.json()).toMatchObject({ signature: firstExecute.json().signature, status: 0 });
     expect(status.json()).toMatchObject({
       idempotencyKey: 'target-funding-1',
       provider: 'squid_router',
@@ -466,9 +470,9 @@ describe('provider-owned target funding routes', () => {
       status: 'confirmed',
       transactionHash: firstExecute.json().signature,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(sendTransaction).toHaveBeenCalledTimes(2);
-    expect(ensureMarlinWalletExists).toHaveBeenCalledTimes(2);
+    expect(ensureMarlinWalletExists).toHaveBeenCalledTimes(3);
   });
 
   it('resumes a persisted Squid approval and submits the provider transaction without re-signing', async () => {
@@ -528,6 +532,130 @@ describe('provider-owned target funding routes', () => {
     expect(finalState.approvalTransactionHash).toBe(pending.approvalTransactionHash);
     expect(finalState.transactionHash).toBe(utils.keccak256(finalState.signedTransaction));
     expect(finalState.transactionHash).not.toBe(finalState.approvalTransactionHash);
+  });
+
+  it.each([
+    ['ONGOING', 'submitted'],
+    ['FAILURE', 'failed'],
+    ['SUCCESS', 'confirmed'],
+  ])(
+    'keeps a successful Squid source receipt nonterminal until destination status %s',
+    async (squidStatus, expected) => {
+      const signer = new Wallet(`0x${'44'.repeat(32)}`);
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+      mockEthereumContexts(
+        { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+        {
+          chainId: 42161,
+          getWallet: jest.fn(async () => signer),
+          handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+          prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, gasPrice: BigNumber.from(10) })),
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransactionCount: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2),
+            getTransactionReceipt: jest.fn(async () => ({ status: 1 })),
+            sendTransaction,
+          },
+        },
+      );
+      mockSquidRouteAndStatus(squidStatus);
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload: targetRequest() });
+
+      const executed = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/target-funding-1/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      const refreshed = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+
+      expect(executed.json().status).toBe(0);
+      expect(refreshed.json().status).toBe(expected);
+    },
+  );
+
+  it('marks a reverted Squid source receipt failed without polling destination status', async () => {
+    const signer = new Wallet(`0x${'55'.repeat(32)}`);
+    const fetchMock = mockSquidRouteAndStatus('SUCCESS');
+    mockEthereumContexts(
+      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      {
+        chainId: 42161,
+        getWallet: jest.fn(async () => signer),
+        handleTransactionExecution: jest.fn().mockResolvedValueOnce({ status: 1 }).mockResolvedValueOnce({ status: 0 }),
+        prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, gasPrice: BigNumber.from(10) })),
+        provider: {
+          getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+          getTransactionCount: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2),
+          getTransactionReceipt: jest.fn(async () => ({ status: 0 })),
+          sendTransaction: jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) })),
+        },
+      },
+    );
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload: targetRequest() });
+    const executed = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+    const refreshed = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+
+    expect(executed.json().status).toBe(-1);
+    expect(refreshed.json().status).toBe('failed');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers persisted Squid source bytes after the source balance was debited', async () => {
+    const signer = new Wallet(`0x${'66'.repeat(32)}`);
+    const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+    const ethereum = mockEthereumContexts(
+      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      {
+        chainId: 42161,
+        getWallet: jest.fn(async () => signer),
+        handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+        prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, gasPrice: BigNumber.from(10) })),
+        provider: {
+          getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+          getTransactionCount: jest.fn(async () => 9),
+          getTransactionReceipt: jest.fn(async () => null),
+          sendTransaction,
+        },
+      },
+    );
+    mockSquidRoute();
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload: targetRequest() });
+    const statePath = path.join(stateRoot, 'target-funding-1.json');
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    const signedTransaction = await signer.signTransaction({
+      chainId: 42161,
+      data: persisted.builtRebalance.txCalldata,
+      gasLimit: 90000,
+      gasPrice: 10,
+      nonce: 9,
+      to: persisted.builtRebalance.txTarget,
+      value: 0,
+    });
+    persisted.signedTransaction = signedTransaction;
+    persisted.transactionHash = utils.keccak256(signedTransaction);
+    persisted.status = 'submission_ambiguous';
+    writeFileSync(statePath, JSON.stringify(persisted));
+    ethereum.arbitrum.getERC20BalanceByAddress.mockResolvedValue({ decimals: 6, value: BigNumber.from(0) });
+
+    const recovered = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.json()).toMatchObject({ signature: persisted.transactionHash, status: 0 });
+    expect(sendTransaction).toHaveBeenCalledWith(signedTransaction);
   });
 
   it.each([
@@ -656,4 +784,44 @@ function mockSquidRoute(toAmount = '6000000') {
   }));
   global.fetch = fetchMock as any;
   return fetchMock;
+}
+
+function mockSquidWethRoute() {
+  const fetchMock = jest.fn(async (_url: unknown, options: Record<string, any>) => {
+    const fromAmount = BigNumber.from(JSON.parse(options.body).fromAmount);
+    return squidRouteResponse(fromAmount.mul(BigNumber.from(10).pow(12)).div(3000).toString());
+  });
+  global.fetch = fetchMock as any;
+  return fetchMock;
+}
+
+function mockSquidRouteAndStatus(status: string) {
+  const fetchMock = jest.fn(async (_url: unknown, options: Record<string, any>) =>
+    options.method === 'GET'
+      ? { json: async () => ({ squidTransactionStatus: status }), ok: true, status: 200 }
+      : squidRouteResponse('6000000'),
+  );
+  global.fetch = fetchMock as any;
+  return fetchMock;
+}
+
+function squidRouteResponse(toAmount: string) {
+  return {
+    headers: { get: () => 'squid-request-1' },
+    json: async () => ({
+      route: {
+        estimate: { toAmount },
+        id: 'squid-route-1',
+        quoteId: 'squid-quote-1',
+        requestId: 'squid-request-1',
+        transactionRequest: {
+          data: '0x1234',
+          target: '0x00000000000000000000000000000000000000F0',
+          value: '0',
+        },
+      },
+    }),
+    ok: true,
+    status: 200,
+  };
 }
