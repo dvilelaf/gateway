@@ -15,26 +15,34 @@ jest.mock('../../src/chains/solana/solana', () => ({
     getInstance: jest.fn(),
   },
 }));
-jest.mock('../../src/wallet/routes/setMarlinDefault', () => ({
-  deriveMarlinDefaultWalletMaterial: jest.fn((_mnemonic: string, policy: { walletRef: string }) => ({
-    address: CANONICAL_WALLETS[policy.walletRef],
-    privateKey: 'not-used',
-    storageChain: policy.walletRef.startsWith('solana:') ? 'solana' : 'ethereum',
-  })),
-  ensureMarlinWalletExists: jest.fn(async ({ address }: { address: string }) => ({
-    storageChain: 'ethereum',
-    validatedAddress: address,
-  })),
-  marlinWalletPolicyFor: jest.fn((chain: string, network: string) => ({
-    derivationPath: 'not-used',
-    family: chain === 'solana' ? 'solana' : 'evm',
-    storageChain: chain === 'solana' ? 'solana' : 'ethereum',
-    walletRef:
-      chain === 'solana'
-        ? 'solana:mainnet-beta:solana_gateway'
-        : `${network === 'mainnet' ? 'mainnet' : network}:mainnet:evm_gateway`,
-  })),
-}));
+jest.mock('../../src/wallet/routes/setMarlinDefault', () => {
+  return {
+    deriveMarlinDefaultWalletMaterial: jest.fn((mnemonic: string, policy: { walletRef: string }) => {
+      if (mnemonic.startsWith('"') || mnemonic.startsWith("'")) {
+        throw new Error('invalid mnemonic');
+      }
+      return {
+        address: CANONICAL_WALLETS[policy.walletRef],
+        privateKey: 'not-used',
+        storageChain: policy.walletRef.startsWith('solana:') ? 'solana' : 'ethereum',
+      };
+    }),
+    normalizedMnemonicFromEnv: jest.fn(() => 'normalized test mnemonic'),
+    ensureMarlinWalletExists: jest.fn(async ({ address }: { address: string }) => ({
+      storageChain: 'ethereum',
+      validatedAddress: address,
+    })),
+    marlinWalletPolicyFor: jest.fn((chain: string, network: string) => ({
+      derivationPath: 'not-used',
+      family: chain === 'solana' ? 'solana' : 'evm',
+      storageChain: chain === 'solana' ? 'solana' : 'ethereum',
+      walletRef:
+        chain === 'solana'
+          ? 'solana:mainnet-beta:solana_gateway'
+          : `${network === 'mainnet' ? 'mainnet' : network}:mainnet:evm_gateway`,
+    })),
+  };
+});
 
 import { rebalanceRoutes } from '../../src/bridge/rebalance.routes';
 import { Ethereum } from '../../src/chains/ethereum/ethereum';
@@ -129,6 +137,27 @@ describe('provider-owned target funding routes', () => {
     const transfer = new utils.Interface(['function transfer(address to, uint256 amount) returns (bool)']);
     const decodedTransfer = transfer.decodeFunctionData('transfer', persisted.builtRebalance.txCalldata);
     expect(decodedTransfer[0]).toBe(utils.getAddress(BRIDGE2));
+  });
+
+  it('builds target funding when MARLIN_MNEMONIC is wrapped in matching quotes', async () => {
+    process.env.MARLIN_MNEMONIC =
+      '"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"';
+    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAddress: ARBITRUM_WALLET,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+      }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    await app.close();
   });
 
   it.each([

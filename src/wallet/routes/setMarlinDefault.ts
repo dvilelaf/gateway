@@ -171,7 +171,7 @@ function expectedMarlinWalletRefs(chain: string, network: string): Set<string> {
   return policy === undefined ? new Set() : new Set([policy.walletRef]);
 }
 
-function normalizedMnemonicFromEnv(): string {
+export function normalizedMnemonicFromEnv(): string {
   let mnemonic = (process.env.MARLIN_MNEMONIC ?? '').trim();
   if (!mnemonic) {
     throw new Error('MARLIN_MNEMONIC is required for Marlin wallet reconcile');

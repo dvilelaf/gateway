@@ -1128,18 +1128,14 @@ async function provisionTargetFundingSourceWallet(source: TargetFundingSource): 
 }
 
 async function canonicalTargetFundingWalletAddress(chain: 'ethereum' | 'solana', network: string): Promise<string> {
-  const mnemonic = (process.env.MARLIN_MNEMONIC ?? '').trim();
-  if (!mnemonic) {
-    throw new Error('MARLIN_MNEMONIC is required for target funding');
-  }
-  const { deriveMarlinDefaultWalletMaterial, marlinWalletPolicyFor } = await import(
+  const { deriveMarlinDefaultWalletMaterial, marlinWalletPolicyFor, normalizedMnemonicFromEnv } = await import(
     '../wallet/routes/setMarlinDefault'
   );
   const policy = marlinWalletPolicyFor(chain, network);
   if (!policy) {
     throw new Error(`canonical wallet policy unavailable for ${chain}/${network}`);
   }
-  return deriveMarlinDefaultWalletMaterial(mnemonic, policy).address;
+  return deriveMarlinDefaultWalletMaterial(normalizedMnemonicFromEnv(), policy).address;
 }
 
 function targetFundingAddressesEqual(left: string, right: string, chain: 'ethereum' | 'solana'): boolean {

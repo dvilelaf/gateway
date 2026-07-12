@@ -5,7 +5,11 @@ import path from 'path';
 import Fastify from 'fastify';
 
 import { MARLIN_RUNTIME_PROFILE_ENV, isMarlinRuntimeProfile } from '../../src/services/marlin-runtime';
-import { deriveMarlinDefaultWalletMaterial } from '../../src/wallet/routes/setMarlinDefault';
+import {
+  deriveMarlinDefaultWalletMaterial,
+  marlinWalletPolicyFor,
+  normalizedMnemonicFromEnv,
+} from '../../src/wallet/routes/setMarlinDefault';
 import walletRoutes from '../../src/wallet/wallet.routes';
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -103,6 +107,33 @@ describe('Marlin wallet route profile', () => {
     expect(solana.address).toBe('HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk');
     expect(solana.storageChain).toBe('solana');
     expect(solana.privateKey.length).toBeGreaterThan(80);
+  });
+
+  it('normalizes quoted mnemonic env values before Base and Solana derivation', () => {
+    const basePolicy = marlinWalletPolicyFor('base', 'mainnet')!;
+    const solanaPolicy = marlinWalletPolicyFor('solana', 'mainnet-beta')!;
+    const addressesFor = (envValue: string) => {
+      process.env[MARLIN_MNEMONIC_ENV] = envValue;
+      const mnemonic = normalizedMnemonicFromEnv();
+      return [
+        deriveMarlinDefaultWalletMaterial(mnemonic, basePolicy).address,
+        deriveMarlinDefaultWalletMaterial(mnemonic, solanaPolicy).address,
+      ];
+    };
+
+    const unquoted = addressesFor(TEST_MNEMONIC);
+    expect(addressesFor(`"${TEST_MNEMONIC}"`)).toEqual(unquoted);
+    expect(addressesFor(`'${TEST_MNEMONIC}'`)).toEqual(unquoted);
+  });
+
+  it('still rejects empty and invalid mnemonic env values', () => {
+    process.env[MARLIN_MNEMONIC_ENV] = '  ';
+    expect(() => normalizedMnemonicFromEnv()).toThrow('MARLIN_MNEMONIC is required');
+
+    process.env[MARLIN_MNEMONIC_ENV] = '"not a valid mnemonic"';
+    expect(() =>
+      deriveMarlinDefaultWalletMaterial(normalizedMnemonicFromEnv(), marlinWalletPolicyFor('base', 'mainnet')!),
+    ).toThrow();
   });
 
   it('exposes scoped Marlin default metadata in public wallet listing', () => {
