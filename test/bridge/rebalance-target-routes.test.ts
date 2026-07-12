@@ -111,10 +111,12 @@ describe('provider-owned target funding routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       destinationAddress: utils.getAddress(ARBITRUM_WALLET),
+      destinationAmount: '6.0',
       destinationAsset: 'USDC',
       destinationVenue: 'hyperliquid',
       idempotencyKey: 'target-funding-1',
       provider: 'hyperliquid_bridge2',
+      sourceAmount: '6.0',
       sourceAsset: 'USDC',
       sourceNetwork: 'arbitrum',
       txTarget: ARBITRUM_USDC,
@@ -130,12 +132,16 @@ describe('provider-owned target funding routes', () => {
     expect(ethereum.arbitrum.getERC20BalanceByAddress).toHaveBeenCalled();
     const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
     expect(persisted).toMatchObject({
+      destinationAmount: '6.0',
       provider: 'hyperliquid_bridge2',
+      sourceAmount: '6.0',
       sourceNetwork: 'arbitrum',
       status: 'built',
       walletAddress: utils.getAddress(ARBITRUM_WALLET),
       builtRebalance: {
+        destinationAmount: '6.0',
         provider: 'hyperliquid_bridge2',
+        sourceAmount: '6.0',
         sourceNetwork: 'arbitrum',
         walletAddress: utils.getAddress(ARBITRUM_WALLET),
       },

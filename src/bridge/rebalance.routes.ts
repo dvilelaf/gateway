@@ -588,6 +588,7 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   cctpMessageHash?: string;
   cctpMintRecipient?: string;
   cctpSolanaUsdcAta?: string;
+  destinationAmount?: string;
   destinationChain?: string;
   destinationAddress: string;
   destinationAsset: string;
@@ -603,6 +604,7 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   squidDestinationChainId?: string;
   squidSourceChainId?: string;
   requestFingerprint: string;
+  sourceAmount?: string;
   squidStatusRequestId?: string;
   sourceChain: string;
   sourceNetwork: string;
@@ -1598,11 +1600,13 @@ export async function buildHyperliquidBridge2Transfer(
   return {
     amount: body.amount,
     destinationAddress: utils.getAddress(body.destinationAddress),
+    destinationAmount: body.amount,
     destinationAsset: 'USDC',
     destinationVenue: 'hyperliquid',
     idempotencyKey: body.idempotencyKey,
     minAmount: HYPERLIQUID_BRIDGE2_MIN_USDC,
     provider: 'hyperliquid_bridge2',
+    sourceAmount: body.amount,
     sourceAsset: 'USDC',
     sourceChain: 'ethereum',
     sourceNetwork: 'arbitrum',
@@ -2730,6 +2734,7 @@ function newRebalanceState(
     amount: built.amount,
     cctpMintRecipient: built.cctpMintRecipient,
     cctpSolanaUsdcAta: built.cctpSolanaUsdcAta,
+    destinationAmount: built.destinationAmount,
     destinationChain: built.destinationChain,
     destinationAddress: built.destinationAddress,
     destinationAsset: built.destinationAsset,
@@ -2745,6 +2750,7 @@ function newRebalanceState(
     quotedNativeGasAmount: built.quotedNativeGasAmount,
     quotedNativeGasAsset: built.quotedNativeGasAsset,
     requestFingerprint,
+    sourceAmount: built.sourceAmount,
     squidDestinationChainId: built.squidDestinationChainId,
     squidSourceChainId: built.squidSourceChainId,
     squidStatusRequestId: built.squidStatusRequestId,
