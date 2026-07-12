@@ -199,6 +199,12 @@ describe('provider-owned target funding routes', () => {
         sourceNetwork: 'arbitrum',
         walletAddress: utils.getAddress(ARBITRUM_WALLET),
       });
+      const body = response.json();
+      expect(body.sourceAmount).toBe('6.0');
+      expect(body.destinationAmount).toBe('6.0');
+      expect(body.quotedProviderCostUsd).toBe('3.5');
+      expect(body.quotedGasCostUsd).toBe('2.1');
+      expect(body.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
       const squidPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(squidPayload).toMatchObject({
         fromAddress: utils.getAddress(ARBITRUM_WALLET),
@@ -232,6 +238,14 @@ describe('provider-owned target funding routes', () => {
       provider: 'squid_router',
       sourceNetwork: 'arbitrum',
     });
+    const body = response.json();
+    expect(body.quotedProviderCostUsd).toBe('3.5');
+    expect(body.quotedGasCostUsd).toBe('2.1');
+    expect(body.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(body.destinationAmount).toMatch(/^\d+\.?\d*$/);
+    expect(utils.parseUnits(body.destinationAmount, 18).gte(utils.parseUnits('0.01', 18))).toBe(true);
+    const wethDecimals = body.destinationAmount.includes('.') ? body.destinationAmount.split('.')[1].length : 0;
+    expect(wethDecimals).toBeLessThanOrEqual(18);
     const quotedInputs = fetchMock.mock.calls.map(([, options]) => BigNumber.from(JSON.parse(options.body).fromAmount));
     const selectedInput = quotedInputs[quotedInputs.length - 1];
     expect(selectedInput.gte('30000000')).toBe(true);
@@ -321,6 +335,14 @@ describe('provider-owned target funding routes', () => {
       sourceNetwork: 'base',
       walletAddress: utils.getAddress(BASE_WALLET),
     });
+    const body = response.json();
+    expect(body.quotedProviderCostUsd).toBe('3.5');
+    expect(body.quotedGasCostUsd).toBe('2.1');
+    expect(body.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+    expect(persisted.quotedProviderCostUsd).toBe('3.5');
+    expect(persisted.quotedGasCostUsd).toBe('2.1');
+    expect(persisted.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
       fromAddress: utils.getAddress(BASE_WALLET),
       fromChain: '8453',
@@ -474,6 +496,23 @@ describe('provider-owned target funding routes', () => {
       }),
     });
     await firstApp.close();
+    const buildBody = build.json();
+    const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+
+    expect(buildBody).toMatchObject({
+      sourceAmount: '6.0',
+      destinationAmount: '6.0',
+      quotedProviderCostUsd: '3.5',
+      quotedGasCostUsd: '2.1',
+    });
+    expect(buildBody.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(persisted.builtRebalance).toMatchObject({
+      sourceAmount: buildBody.sourceAmount,
+      destinationAmount: buildBody.destinationAmount,
+      quotedProviderCostUsd: buildBody.quotedProviderCostUsd,
+      quotedGasCostUsd: buildBody.quotedGasCostUsd,
+      quotedAt: buildBody.quotedAt,
+    });
 
     const secondApp = Fastify();
     await secondApp.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -815,6 +854,117 @@ describe('provider-owned target funding routes', () => {
     expect(fetchCount).toBe(callsAfterFirst);
   });
 
+  it.each([
+    {
+      name: 'missing feeCosts array',
+      feeCosts: undefined as unknown,
+      gasCosts: [{ amountUsd: '2.10' }],
+      expectedStatus: 500,
+      expectedBody: 'Squid route missing feeCosts',
+    },
+    {
+      name: 'missing gasCosts array',
+      feeCosts: [{ amountUsd: '3.50' }],
+      gasCosts: undefined as unknown,
+      expectedStatus: 500,
+      expectedBody: 'Squid route missing gasCosts',
+    },
+    {
+      name: 'cost entry with missing amountUsd',
+      feeCosts: [{ amountUsd: '3.50' }],
+      gasCosts: [{}],
+      expectedStatus: 500,
+      expectedBody: 'Squid cost entry missing amountUsd',
+    },
+    {
+      name: 'cost amountUsd with negative value',
+      feeCosts: [{ amountUsd: '3.50' }],
+      gasCosts: [{ amountUsd: '-2.10' }],
+      expectedStatus: 500,
+      expectedBody: 'Squid cost amountUsd is negative',
+    },
+    {
+      name: 'cost amountUsd with exponent notation',
+      feeCosts: [{ amountUsd: '3.50' }],
+      gasCosts: [{ amountUsd: '2.1e0' }],
+      expectedStatus: 500,
+      expectedBody: 'Squid cost amountUsd uses exponent notation',
+    },
+    {
+      name: 'cost amountUsd with Infinity input',
+      feeCosts: [{ amountUsd: 'Infinity' }],
+      gasCosts: [{ amountUsd: '2.10' }],
+      expectedStatus: 500,
+      expectedBody: 'Squid cost amountUsd is not a valid decimal string',
+    },
+    {
+      name: 'cost amountUsd with excessive precision (>12 decimals)',
+      feeCosts: [{ amountUsd: '3.5012345678912' }],
+      gasCosts: [{ amountUsd: '2.10' }],
+      expectedStatus: 500,
+      expectedBody: 'exceeds maximum precision of 12 decimals',
+    },
+    {
+      name: 'cost amountUsd with exactly 12 decimal places',
+      feeCosts: [{ amountUsd: '3.501234567891' }],
+      gasCosts: [{ amountUsd: '2.100000000000' }],
+      expectedStatus: 200,
+    },
+    {
+      name: 'authoritative empty cost arrays',
+      feeCosts: [],
+      gasCosts: [],
+      expectedStatus: 200,
+      expectedProviderCost: '0',
+      expectedGasCost: '0',
+    },
+    {
+      name: 'sums multi-entry feeCosts exactly',
+      feeCosts: [{ amountUsd: '1.25' }, { amountUsd: '2.75' }],
+      gasCosts: [{ amountUsd: '0.50' }],
+      expectedStatus: 200,
+      expectedProviderCost: '4',
+      expectedGasCost: '0.5',
+    },
+  ])(
+    'validates Squid cost inputs: $name',
+    async ({ feeCosts, gasCosts, expectedStatus, expectedBody, expectedProviderCost, expectedGasCost }) => {
+      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+      const fetchMock = jest.fn(async () => ({
+        headers: { get: () => 'squid-request-1' },
+        json: async () => ({
+          route: {
+            estimate: {
+              toAmount: '6000000',
+              ...(feeCosts !== undefined ? { feeCosts } : {}),
+              ...(gasCosts !== undefined ? { gasCosts } : {}),
+            },
+            id: 'squid-route-1',
+            quoteId: 'squid-quote-1',
+            requestId: 'squid-request-1',
+            transactionRequest: { data: '0x1234', target: '0x00000000000000000000000000000000000000F0', value: '0' },
+          },
+        }),
+        ok: true,
+        status: 200,
+      }));
+      global.fetch = fetchMock as any;
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const response = await app.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload: targetRequest() });
+      expect(response.statusCode).toBe(expectedStatus);
+      if (expectedBody) {
+        expect(response.body).toContain(expectedBody);
+      }
+      if (expectedProviderCost !== undefined) {
+        const body = response.json();
+        expect(body.quotedProviderCostUsd).toBe(expectedProviderCost);
+        expect(body.quotedGasCostUsd).toBe(expectedGasCost);
+      }
+      await app.close();
+    },
+  );
+
   it('forward-quotes a 100 EUR WETH target without destinationAmount using at most 100 USDC source budget', async () => {
     mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '100000000' } });
     const fetchMock = jest.fn(async (_url: unknown, options: Record<string, any>) => {
@@ -824,7 +974,11 @@ describe('provider-owned target funding routes', () => {
         headers: { get: () => 'squid-request-1' },
         json: async () => ({
           route: {
-            estimate: { toAmount: fromAmount.mul(10).toString() },
+            estimate: {
+              toAmount: fromAmount.mul(10).toString(),
+              feeCosts: [{ amountUsd: '3.50' }],
+              gasCosts: [{ amountUsd: '2.10' }],
+            },
             id: 'squid-route-1',
             quoteId: 'squid-quote-1',
             requestId: 'squid-request-1',
@@ -854,6 +1008,10 @@ describe('provider-owned target funding routes', () => {
       provider: 'squid_router',
       sourceNetwork: 'arbitrum',
     });
+    const body = response.json();
+    expect(body.quotedProviderCostUsd).toBe('3.5');
+    expect(body.quotedGasCostUsd).toBe('2.1');
+    expect(body.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     const squidPayload = JSON.parse(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][1].body);
     expect(squidPayload.fromAmount).toBe('100000000');
     expect(squidPayload.fromToken).toBe(ARBITRUM_USDC);
@@ -902,7 +1060,11 @@ function mockSquidRoute(toAmount = '6000000') {
     headers: { get: () => 'squid-request-1' },
     json: async () => ({
       route: {
-        estimate: { toAmount },
+        estimate: {
+          toAmount,
+          feeCosts: [{ amountUsd: '3.50' }],
+          gasCosts: [{ amountUsd: '2.10' }],
+        },
         id: 'squid-route-1',
         quoteId: 'squid-quote-1',
         requestId: 'squid-request-1',
@@ -944,7 +1106,11 @@ function squidRouteResponse(toAmount: string) {
     headers: { get: () => 'squid-request-1' },
     json: async () => ({
       route: {
-        estimate: { toAmount },
+        estimate: {
+          toAmount,
+          feeCosts: [{ amountUsd: '3.50' }],
+          gasCosts: [{ amountUsd: '2.10' }],
+        },
         id: 'squid-route-1',
         quoteId: 'squid-quote-1',
         requestId: 'squid-request-1',

@@ -293,6 +293,11 @@ const BridgeRebalanceBuildResponseSchema = Type.Object({
   minAmount: Type.String(),
   providerRouteId: Type.Optional(Type.String()),
   quoteId: Type.Optional(Type.String()),
+  sourceAmount: Type.Optional(Type.String()),
+  quotedAt: Type.Optional(Type.String()),
+  quotedProviderCostUsd: Type.Optional(Type.String()),
+  quotedGasCostUsd: Type.Optional(Type.String()),
+  destinationAmount: Type.Optional(Type.String()),
 });
 
 type BridgeRebalanceRequest = Static<typeof BridgeRebalanceRequestSchema>;
@@ -545,10 +550,14 @@ type BuiltProviderOwnedRebalance = {
   destinationChain?: string;
   providerRouteId?: string;
   quoteId?: string;
+  quotedAt?: string;
+  quotedProviderCostUsd?: string;
+  quotedGasCostUsd?: string;
   squidDestinationChainId?: string;
   squidSourceChainId?: string;
   squidStatusRequestId?: string;
   providerDestinationAmount?: string;
+  destinationAmount?: string;
 };
 
 type ProviderOwnedRebalanceExecution = {
@@ -584,6 +593,9 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   provider: BuiltProviderOwnedRebalance['provider'];
   providerRouteId?: string;
   quoteId?: string;
+  quotedAt?: string;
+  quotedProviderCostUsd?: string;
+  quotedGasCostUsd?: string;
   squidDestinationChainId?: string;
   squidSourceChainId?: string;
   requestFingerprint: string;
@@ -668,9 +680,15 @@ type CctpSolanaUsdcDestinationNetwork = {
 
 type CctpUsdcDestinationNetwork = CctpEvmUsdcNetwork | CctpSolanaUsdcDestinationNetwork;
 
+type SquidCostEntry = {
+  amountUsd?: unknown;
+};
+
 type SquidRouteQuoteResponse = {
   estimate?: {
     toAmount?: unknown;
+    feeCosts?: SquidCostEntry[];
+    gasCosts?: SquidCostEntry[];
   };
   id?: unknown;
   quoteId?: unknown;
@@ -679,6 +697,8 @@ type SquidRouteQuoteResponse = {
   route?: {
     estimate?: {
       toAmount?: unknown;
+      feeCosts?: SquidCostEntry[];
+      gasCosts?: SquidCostEntry[];
     };
     id?: unknown;
     quoteId?: unknown;
@@ -713,6 +733,7 @@ function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance) {
     approvalTxTarget: built.approvalTxTarget,
     providerRouteId: built.providerRouteId,
     quoteId: built.quoteId,
+    sourceAmount: built.sourceAmount,
     sourceAsset: built.sourceAsset,
     sourceChain: built.sourceChain,
     sourceNetwork: built.sourceNetwork,
@@ -720,6 +741,10 @@ function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance) {
     txTarget: built.txTarget,
     txValueHash: built.txValueHash,
     walletAddress: built.walletAddress,
+    quotedAt: built.quotedAt,
+    quotedProviderCostUsd: built.quotedProviderCostUsd,
+    quotedGasCostUsd: built.quotedGasCostUsd,
+    destinationAmount: built.destinationAmount,
   };
 }
 
@@ -873,6 +898,12 @@ async function selectAndBuildTargetFunding(
           sourceNetwork: source.network,
           walletAddress: source.walletAddress,
         }));
+      if (built.quotedProviderCostUsd === undefined) {
+        throw new Error('Squid route missing feeCosts');
+      }
+      if (built.quotedGasCostUsd === undefined) {
+        throw new Error('Squid route missing gasCosts');
+      }
       if (
         hasDestinationAmount &&
         (!built.providerDestinationAmount || BigNumber.from(built.providerDestinationAmount).lt(destinationAmountUnits))
@@ -882,11 +913,16 @@ async function selectAndBuildTargetFunding(
       if (!hasDestinationAmount && built.providerDestinationAmount === undefined) {
         throw new Error('Squid route did not return a destination amount');
       }
+      const destinationAmount =
+        built.providerDestinationAmount !== undefined
+          ? utils.formatUnits(built.providerDestinationAmount, destination.destinationAssetDecimals)
+          : undefined;
       return {
         ...built,
         amount: hasDestinationAmount
           ? body.destinationAmount!
           : utils.formatUnits(built.providerDestinationAmount!, destination.destinationAssetDecimals),
+        destinationAmount,
         destinationAsset: destination.destinationAsset,
         destinationChain: destination.destinationChain,
         destinationNetwork: destination.destinationNetwork,
@@ -1323,6 +1359,9 @@ export async function buildSquidRouterRebalance(
   const approvalTxCalldata = isSquidNativeToken(sourceAsset)
     ? undefined
     : erc20ApprovalInterface.encodeFunctionData('approve', [txTarget, amountUnits]);
+  const routeEstimate = quote.route?.estimate ?? quote.estimate;
+  const providerCostUsd = sumSquidCostUsd(routeEstimate?.feeCosts);
+  const gasCostUsd = sumSquidCostUsd(routeEstimate?.gasCosts);
   return {
     approvalCalldataHash: approvalTxCalldata ? utils.keccak256(approvalTxCalldata) : undefined,
     approvalTxCalldata,
@@ -1335,9 +1374,12 @@ export async function buildSquidRouterRebalance(
     idempotencyKey: body.idempotencyKey,
     minAmount: '0.000001',
     provider: SQUID_ROUTER_PROVIDER,
-    providerDestinationAmount: optionalText(quote.route?.estimate?.toAmount ?? quote.estimate?.toAmount),
+    providerDestinationAmount: optionalText(routeEstimate?.toAmount),
     providerRouteId: optionalText(quote.route?.id ?? quote.routeId ?? quote.id),
     quoteId: optionalText(quote.route?.quoteId ?? quote.quoteId ?? quote.route?.requestId ?? quote.requestId),
+    quotedAt: new Date().toISOString(),
+    quotedProviderCostUsd: providerCostUsd,
+    quotedGasCostUsd: gasCostUsd,
     sourceAsset,
     sourceChain: 'ethereum',
     sourceNetwork: body.sourceNetwork,
@@ -2659,6 +2701,9 @@ function newRebalanceState(
     provider: built.provider,
     providerRouteId: built.providerRouteId,
     quoteId: built.quoteId,
+    quotedAt: built.quotedAt,
+    quotedProviderCostUsd: built.quotedProviderCostUsd,
+    quotedGasCostUsd: built.quotedGasCostUsd,
     requestFingerprint,
     squidDestinationChainId: built.squidDestinationChainId,
     squidSourceChainId: built.squidSourceChainId,
@@ -2775,6 +2820,9 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         providerRouteId: built.providerRouteId,
         providerDestinationAmount: built.providerDestinationAmount,
         quoteId: built.quoteId,
+        quotedAt: built.quotedAt,
+        quotedProviderCostUsd: built.quotedProviderCostUsd,
+        quotedGasCostUsd: built.quotedGasCostUsd,
         provider: built.provider,
         squidDestinationChainId: built.squidDestinationChainId,
         squidSourceChainId: built.squidSourceChainId,
@@ -2864,6 +2912,47 @@ function optionalText(value: unknown): string | undefined {
   }
   const text = String(value).trim();
   return text ? text : undefined;
+}
+
+function sumSquidCostUsd(entries: SquidCostEntry[] | undefined): string | undefined {
+  if (entries === undefined) {
+    return undefined;
+  }
+  if (entries.length === 0) {
+    return '0';
+  }
+  let total: BigNumber | undefined;
+  for (const entry of entries) {
+    if (entry.amountUsd === undefined || entry.amountUsd === null) {
+      throw new Error('Squid cost entry missing amountUsd');
+    }
+    const raw = entry.amountUsd;
+    const text = typeof raw === 'string' ? raw.trim() : String(raw).trim();
+    if (text === '') {
+      throw new Error('Squid cost entry has empty amountUsd');
+    }
+    if (/[eE]/.test(text)) {
+      throw new Error('Squid cost amountUsd uses exponent notation');
+    }
+    const dotIndex = text.indexOf('.');
+    if (dotIndex !== -1 && text.length - dotIndex - 1 > 12) {
+      throw new Error('Squid cost amountUsd exceeds maximum precision of 12 decimals');
+    }
+    let scaledUnits: BigNumber;
+    try {
+      scaledUnits = utils.parseUnits(text, 12);
+    } catch {
+      throw new Error('Squid cost amountUsd is not a valid decimal string');
+    }
+    if (scaledUnits.lt(0)) {
+      throw new Error('Squid cost amountUsd is negative');
+    }
+    total = total ? total.add(scaledUnits) : scaledUnits;
+  }
+  if (total === undefined) {
+    return undefined;
+  }
+  return utils.formatUnits(total, 12).replace(/\.?0+$/, '');
 }
 
 function normalizeSameChainSwapSourceAsset(value: string): 'ETH' | typeof ARBITRUM_WETH_ADDRESS {
