@@ -1907,6 +1907,9 @@ async function executeSingleTransactionRebalance(
       approvalTransactionHash = state.approvalTransactionHash;
       const approvalTx = await ethereum.provider.sendTransaction(state.approvalSignedTransaction as string);
       const approvalReceipt = await ethereum.handleTransactionExecution(approvalTx);
+      if (approvalReceipt?.status === 0) {
+        return { approvalTransactionHash, responseStatus: -1, status: 'failed', transactionHash: '' };
+      }
       if (approvalReceipt?.status !== 1) {
         throw new Error('Squid ERC20 approval not confirmed');
       }
@@ -1947,9 +1950,6 @@ async function executeSingleTransactionRebalance(
       transactionHash: state.transactionHash,
     };
   }
-  if (beforeSubmission) {
-    beforeSubmission(built);
-  }
   const gasOptions = await ethereum.prepareGasOptions(
     undefined,
     gasLimit,
@@ -1957,12 +1957,19 @@ async function executeSingleTransactionRebalance(
     providerIntentSource,
     rebalanceGasGuardContext(built),
   );
-  state = await prepareRecoverableEvmTransaction(ethereum, wallet, state, 'submission', {
-    data: built.txCalldata,
-    to: built.txTarget,
-    value: BigNumber.from(built.txValue ?? 0),
-    ...gasOptions,
-  });
+  state = await prepareRecoverableEvmTransaction(
+    ethereum,
+    wallet,
+    state,
+    'submission',
+    {
+      data: built.txCalldata,
+      to: built.txTarget,
+      value: BigNumber.from(built.txValue ?? 0),
+      ...gasOptions,
+    },
+    beforeSubmission ? () => beforeSubmission(built) : undefined,
+  );
   const txResponse = await ethereum.provider.sendTransaction(state.signedTransaction as string);
   const receipt = await ethereum.handleTransactionExecution(txResponse);
   const outcome = sourceReceiptOutcome(built.provider, receipt?.status);
@@ -1993,8 +2000,10 @@ async function prepareRecoverableEvmTransaction(
   state: DurableRebalanceState,
   step: 'approval' | 'submission' | 'wrap',
   transaction: Record<string, unknown>,
+  beforeSign?: () => void,
 ): Promise<DurableRebalanceState> {
   const nonce = await ethereum.provider.getTransactionCount(state.walletAddress, 'pending');
+  beforeSign?.();
   const serialized = await wallet.signTransaction({ ...transaction, chainId: ethereum.chainId, nonce });
   const transactionHash = utils.keccak256(serialized);
   const pending: DurableRebalanceState = {

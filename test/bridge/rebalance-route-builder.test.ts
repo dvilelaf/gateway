@@ -161,6 +161,8 @@ const REBALANCE_STATE_IDS = [
   'same-chain-restart-regression',
   'same-chain-build-metadata',
   'same-chain-reverted-wrap',
+  'same-chain-stale-quote',
+  'same-chain-approval-reverted',
   'rebalance-pending-before-submit',
   'rebalance-ambiguous-restart',
   'rebalance-restart',
@@ -2595,6 +2597,120 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(providerSecond.getTransactionCount).toHaveBeenCalledTimes(2);
     // Recovered exact same wrap bytes
     expect(providerSecond.sendTransaction.mock.calls[0][0]).toBe(WRAP_SERIALIZED);
+  });
+
+  it('rejects stale same-chain quote when nonce lookup advances time past 60s', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    mockQuoteExactInputSingle.mockResolvedValue(BigNumber.from('2625000000'));
+    const idempotencyKey = 'same-chain-stale-quote';
+    const WRAP_SERIALIZED = '0x' + 'ab'.repeat(55);
+    const APPROVAL_SERIALIZED = '0x' + 'cd'.repeat(55);
+    const signTransaction = jest.fn().mockResolvedValueOnce(WRAP_SERIALIZED).mockResolvedValueOnce(APPROVAL_SERIALIZED);
+    let nonceCalls = 0;
+    const realNow = Date.now;
+    const provider = {
+      getTransactionCount: jest.fn(async () => {
+        nonceCalls += 1;
+        if (nonceCalls === 3) {
+          Date.now = jest.fn(() => realNow() + 120_000);
+        }
+        return 5;
+      }),
+      getTransactionReceipt: jest.fn(),
+      sendTransaction: jest.fn(),
+    };
+    mockEthereum({
+      chainId: 42161,
+      getWallet: jest.fn(async () => ({ signTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+      provider,
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...sameChainSwapRequest(),
+        idempotencyKey,
+        liveActionAuthorization: sameChainAuthorization('1.25'),
+      },
+    });
+
+    Date.now = realNow;
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('quote expired before swap');
+    expect(provider.getTransactionCount).toHaveBeenCalledTimes(3);
+    expect(signTransaction).toHaveBeenCalledTimes(2);
+    expect(provider.sendTransaction).toHaveBeenCalledTimes(2);
+    // Wrap and approval nonce/sign/broadcast occurred, but swap did not
+    expect(provider.sendTransaction.mock.calls[0][0]).toBe(WRAP_SERIALIZED);
+    expect(provider.sendTransaction.mock.calls[1][0]).toBe(APPROVAL_SERIALIZED);
+  });
+
+  it('returns terminal failed for same-chain approval status 0 with hash on first broadcast', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    mockQuoteExactInputSingle.mockResolvedValue(BigNumber.from('2625000000'));
+    const idempotencyKey = 'same-chain-approval-reverted';
+    const statePath = path.join(process.env.MARLIN_REBALANCE_STATE_ROOT!, `${idempotencyKey}.json`);
+    const WRAP_SERIALIZED = '0x' + 'ab'.repeat(55);
+    const APPROVAL_SERIALIZED = '0x' + 'cd'.repeat(55);
+    const WRAP_DETERMINISTIC_HASH = utils.keccak256(WRAP_SERIALIZED);
+    const APPROVAL_DETERMINISTIC_HASH = utils.keccak256(APPROVAL_SERIALIZED);
+    const signTransaction = jest.fn().mockResolvedValueOnce(WRAP_SERIALIZED).mockResolvedValueOnce(APPROVAL_SERIALIZED);
+    const provider = {
+      getTransactionCount: jest.fn(async () => 5),
+      getTransactionReceipt: jest.fn(),
+      sendTransaction: jest
+        .fn()
+        .mockResolvedValueOnce({ hash: '0xwrap-ok' })
+        .mockResolvedValueOnce({ hash: '0xapproval-reverted' }),
+    };
+    // Wrap succeeds, approval broadcasts but handleTransactionExecution returns status 0
+    let callCount = 0;
+    mockEthereum({
+      chainId: 42161,
+      getWallet: jest.fn(async () => ({ signTransaction })),
+      handleTransactionExecution: jest.fn(async () => {
+        callCount += 1;
+        return callCount === 1 ? { status: 1 } : { status: 0 };
+      }),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+      provider,
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...sameChainSwapRequest(),
+        idempotencyKey,
+        liveActionAuthorization: sameChainAuthorization('1.25'),
+      },
+    });
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ signature: '', status: -1 });
+    expect(response.json().signature).toBe('');
+    expect(persisted).toMatchObject({
+      approvalTransactionHash: APPROVAL_DETERMINISTIC_HASH,
+      status: 'failed',
+    });
+    // Wrap signed + broadcast, approval signed + broadcast, no swap
+    expect(signTransaction).toHaveBeenCalledTimes(2);
+    expect(provider.sendTransaction).toHaveBeenCalledTimes(2);
+    expect(provider.getTransactionCount).toHaveBeenCalledTimes(2);
   });
 
   it('truncates slippage to floor using integer math for non-divisible raw quote', async () => {
