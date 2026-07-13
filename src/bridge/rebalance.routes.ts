@@ -691,7 +691,7 @@ type TargetPlanStage = {
 type TargetFundingDestination = {
   canonicalChain: 'ethereum' | 'solana';
   canonicalNetwork: 'arbitrum' | 'base' | 'mainnet-beta';
-  destinationAsset: 'USDC' | 'WETH';
+  destinationAsset: 'USDC' | 'WETH' | 'ETH';
   destinationAssetAddress: string;
   destinationAssetDecimals: number;
   destinationChain: 'ethereum' | 'hyperliquid' | 'solana';
@@ -1619,7 +1619,10 @@ async function transitionFromConversionToFunding(
     if (squidBaseBuild.quotedGasCostUsd === undefined) {
       throw new Error('Squid stage-1 route missing gasCosts');
     }
-    const destinationAssetDecimals = state.planTarget!.destinationAsset === 'WETH' ? 18 : USDC_DECIMALS;
+    const destinationAssetDecimals =
+      state.planTarget!.destinationAsset === 'WETH' || state.planTarget!.destinationAsset === 'ETH'
+        ? SQUID_NATIVE_ASSET_DECIMALS
+        : USDC_DECIMALS;
     const providerDestinationAmount = squidBaseBuild.providerDestinationAmount;
     if (providerDestinationAmount === undefined) {
       throw new Error('Squid stage-1 route did not return a destination amount');
@@ -1914,14 +1917,15 @@ function resolveTargetFundingDestination(body: TargetFundingRequest): TargetFund
   if (
     ((chain === 'ethereum' && ['base', 'base-mainnet'].includes(network)) ||
       (chain === 'base' && ['mainnet', 'base', 'base-mainnet'].includes(network))) &&
-    (asset === 'USDC' || asset === 'WETH')
+    (asset === 'USDC' || asset === 'WETH' || asset === 'ETH')
   ) {
     return {
       canonicalChain: 'ethereum',
       canonicalNetwork: 'base',
       destinationAsset: asset,
-      destinationAssetAddress: asset === 'USDC' ? BASE_USDC_ADDRESS : BASE_WETH_ADDRESS,
-      destinationAssetDecimals: asset === 'USDC' ? USDC_DECIMALS : 18,
+      destinationAssetAddress:
+        asset === 'USDC' ? BASE_USDC_ADDRESS : asset === 'WETH' ? BASE_WETH_ADDRESS : SQUID_NATIVE_TOKEN_ADDRESS,
+      destinationAssetDecimals: asset === 'USDC' ? USDC_DECIMALS : SQUID_NATIVE_ASSET_DECIMALS,
       destinationChain: 'ethereum',
       destinationNetwork: 'base',
       provider: SQUID_ROUTER_PROVIDER,

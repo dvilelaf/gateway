@@ -244,6 +244,71 @@ describe('provider-owned target funding routes', () => {
     },
   );
 
+  it('forward-quotes Arbitrum USDC to Base native ETH via Squid native token address', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    const fetchMock = mockSquidRoute('56000000000000000');
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({ destinationAsset: 'ETH' }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      destinationAsset: 'ETH',
+      destinationChain: 'ethereum',
+      destinationNetwork: 'base',
+      provider: 'squid_router',
+      sourceNetwork: 'arbitrum',
+      walletAddress: utils.getAddress(ARBITRUM_WALLET),
+    });
+    const body = response.json();
+    expect(body.sourceAmount).toBe('6.0');
+    expect(body.destinationAmount).toMatch(/^\d+\.?\d*$/);
+    expect(body.quotedProviderCostUsd).toBe('3.5');
+    expect(body.quotedGasCostUsd).toBe('2.1');
+    expect(body.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    const squidPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(squidPayload).toMatchObject({
+      fromAddress: utils.getAddress(ARBITRUM_WALLET),
+      fromAmount: '6000000',
+      fromChain: '42161',
+      fromToken: ARBITRUM_USDC,
+      toAddress: BASE_WALLET,
+      toChain: '8453',
+      toToken: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
+    });
+  });
+
+  it('rejects destination asset ETH for a non-Base network', async () => {
+    const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as any;
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAsset: 'ETH',
+        destinationChain: 'solana',
+        destinationNetwork: 'mainnet-beta',
+      }),
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('unsupported target funding destination asset');
+    expect(ensureMarlinWalletExists).not.toHaveBeenCalled();
+    expect(Ethereum.getInstance).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+    expect(() => readFileSync(path.join(stateRoot, 'target-funding-1.json'))).toThrow();
+  });
+
   it('inverse-quotes realistic USDC input for a 0.01 Base WETH target', async () => {
     mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '100000000' } });
     const fetchMock = mockSquidWethRoute();
