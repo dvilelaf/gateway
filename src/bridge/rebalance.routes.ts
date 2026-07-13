@@ -422,10 +422,14 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
           allowUnsubmittedRefresh: request.body.provider === SQUID_ROUTER_PROVIDER,
         });
         const existingHash = bestKnownTransactionHash(existing);
+        const wrapAmbiguousRecoverable =
+          ['wrap_submitted', 'wrap_submission_pending', 'wrap_submission_ambiguous'].includes(existing.status) &&
+          existing.wrapSignedTransaction &&
+          existing.wrapTransactionHash;
         if (
           existing.status === 'confirmed' ||
           existing.status === 'failed' ||
-          isRebalanceSubmissionInDoubt(existing.status)
+          (isRebalanceSubmissionInDoubt(existing.status) && !wrapAmbiguousRecoverable)
         ) {
           return {
             signature: existingHash,
@@ -613,6 +617,7 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   txValueHash?: string;
   walletAddress: string;
   wrapTransactionHash?: string;
+  wrapSignedTransaction?: string;
   builtRebalance?: BuiltProviderOwnedRebalance;
   targetRequestFingerprint?: string;
   maxCostBps?: string;
@@ -1720,17 +1725,40 @@ async function executeProviderTreasurySameChainSwap(
 ): Promise<ProviderOwnedRebalanceExecution> {
   let wrapTransactionHash = state.wrapTransactionHash;
   if (built.wrapTxCalldata && built.wrapTxTarget && built.wrapTxValue) {
-    if (wrapTransactionHash && state.status === 'wrap_submitted') {
-      return {
-        responseStatus: 0,
-        status: 'wrap_submitted',
-        transactionHash: wrapTransactionHash,
-        wrapTransactionHash,
-      };
-    }
-    if (!wrapTransactionHash) {
-      const ethereum = await Ethereum.getInstance(built.sourceNetwork);
-      const wallet = await ethereum.getWallet(built.walletAddress);
+    const ethereum = await Ethereum.getInstance(built.sourceNetwork);
+    const wallet = await ethereum.getWallet(built.walletAddress);
+    if (wrapTransactionHash) {
+      const receipt = await ethereum.provider.getTransactionReceipt(wrapTransactionHash);
+      if (receipt?.status === 0) {
+        return {
+          responseStatus: -1,
+          status: 'failed',
+          transactionHash: wrapTransactionHash,
+          wrapTransactionHash,
+        };
+      }
+      if (!receipt && state.wrapSignedTransaction) {
+        const wrapTx = await ethereum.provider.sendTransaction(state.wrapSignedTransaction);
+        const wrapReceipt = await ethereum.handleTransactionExecution(wrapTx);
+        if (wrapReceipt?.status !== 1) {
+          return {
+            responseStatus: 0,
+            status: 'wrap_submitted',
+            transactionHash: wrapTransactionHash,
+            wrapTransactionHash,
+          };
+        }
+      } else if (!receipt) {
+        return {
+          responseStatus: 0,
+          status: 'wrap_submitted',
+          transactionHash: wrapTransactionHash,
+          wrapTransactionHash,
+        };
+      }
+      state = { ...state, status: 'wrap_confirmed' };
+      await saveRebalanceState(state);
+    } else {
       const gasOptions = await ethereum.prepareGasOptions(
         undefined,
         PROVIDER_TREASURY_WRAP_GAS_LIMIT,
@@ -1738,29 +1766,21 @@ async function executeProviderTreasurySameChainSwap(
         PROVIDER_TREASURY_SAME_CHAIN_SWAP,
         rebalanceGasGuardContext(built),
       );
-      state = await markRebalanceSubmissionPending(state, 'wrap');
-      const wrapTx = await wallet.sendTransaction({
+      state = await prepareRecoverableEvmTransaction(ethereum, wallet, state, 'wrap', {
         data: built.wrapTxCalldata,
         to: built.wrapTxTarget,
         value: BigNumber.from(built.wrapTxValue),
         ...gasOptions,
       });
-      wrapTransactionHash = wrapTx.hash;
-      state = {
-        ...state,
-        status: 'wrap_submitted',
-        wrapTransactionHash,
-      };
+      wrapTransactionHash = state.wrapTransactionHash;
+      const wrapTx = await ethereum.provider.sendTransaction(state.wrapSignedTransaction as string);
+      state = { ...state, status: 'wrap_submitted', wrapTransactionHash };
       await saveRebalanceState(state);
       const wrapReceipt = await ethereum.handleTransactionExecution(wrapTx);
       if (wrapReceipt?.status !== 1) {
         throw new Error('same-chain treasury ETH wrap not confirmed');
       }
-      state = {
-        ...state,
-        status: 'wrap_confirmed',
-        wrapTransactionHash,
-      };
+      state = { ...state, status: 'wrap_confirmed', wrapTransactionHash };
       await saveRebalanceState(state);
     }
   }
@@ -1902,7 +1922,7 @@ async function prepareRecoverableEvmTransaction(
   ethereum: Ethereum,
   wallet: Awaited<ReturnType<Ethereum['getWallet']>>,
   state: DurableRebalanceState,
-  step: 'approval' | 'submission',
+  step: 'approval' | 'submission' | 'wrap',
   transaction: Record<string, unknown>,
 ): Promise<DurableRebalanceState> {
   const nonce = await ethereum.provider.getTransactionCount(state.walletAddress, 'pending');
@@ -1912,8 +1932,15 @@ async function prepareRecoverableEvmTransaction(
     ...state,
     ...(step === 'approval'
       ? { approvalSignedTransaction: serialized, approvalTransactionHash: transactionHash }
-      : { signedTransaction: serialized, transactionHash }),
-    status: step === 'approval' ? 'approval_submission_pending' : 'submission_pending',
+      : step === 'wrap'
+        ? { wrapSignedTransaction: serialized, wrapTransactionHash: transactionHash }
+        : { signedTransaction: serialized, transactionHash }),
+    status:
+      step === 'approval'
+        ? 'approval_submission_pending'
+        : step === 'wrap'
+          ? 'wrap_submission_pending'
+          : 'submission_pending',
   };
   await saveRebalanceState(pending);
   return pending;

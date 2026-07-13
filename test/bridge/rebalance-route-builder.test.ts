@@ -2251,16 +2251,32 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
   it('executes same-chain wrap, approval, and swap with idempotent hashes and treasury guard context', async () => {
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
     process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
-    const sendTransaction = jest
+    const WRAP_SERIALIZED = '0x' + 'ab'.repeat(55);
+    const APPROVAL_SERIALIZED = '0x' + 'cd'.repeat(55);
+    const SWAP_SERIALIZED = '0x' + 'ef'.repeat(55);
+    const WRAP_DETERMINISTIC_HASH = utils.keccak256(WRAP_SERIALIZED);
+    const APPROVAL_DETERMINISTIC_HASH = utils.keccak256(APPROVAL_SERIALIZED);
+    const signTransaction = jest
       .fn()
-      .mockResolvedValueOnce({ hash: '0xwrap' })
-      .mockResolvedValueOnce({ hash: '0xapproval' })
-      .mockResolvedValueOnce({ hash: '0xswap' });
+      .mockResolvedValueOnce(WRAP_SERIALIZED)
+      .mockResolvedValueOnce(APPROVAL_SERIALIZED)
+      .mockResolvedValueOnce(SWAP_SERIALIZED);
+    const provider = {
+      getTransactionCount: jest.fn(async () => 5),
+      getTransactionReceipt: jest.fn(),
+      sendTransaction: jest
+        .fn()
+        .mockResolvedValueOnce({ hash: '0xwrap' })
+        .mockResolvedValueOnce({ hash: '0xapproval' })
+        .mockResolvedValueOnce({ hash: '0xswap' }),
+    };
     const prepareGasOptions = jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) }));
     mockEthereum({
-      getWallet: jest.fn(async () => ({ sendTransaction })),
+      chainId: 42161,
+      getWallet: jest.fn(async () => ({ signTransaction })),
       handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
       prepareGasOptions,
+      provider,
     });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -2288,14 +2304,17 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(first.statusCode).toBe(200);
     expect(first.json()).toMatchObject({ signature: '0xswap', status: 1 });
     expect(second.json()).toMatchObject({ signature: '0xswap', status: 1 });
-    expect(sendTransaction).toHaveBeenCalledTimes(3);
-    expect(sendTransaction.mock.calls[0][0]).toMatchObject({
+    expect(provider.sendTransaction).toHaveBeenCalledTimes(3);
+    expect(provider.sendTransaction.mock.calls[0][0]).toBe(WRAP_SERIALIZED);
+    expect(provider.sendTransaction.mock.calls[1][0]).toBe(APPROVAL_SERIALIZED);
+    expect(provider.sendTransaction.mock.calls[2][0]).toBe(SWAP_SERIALIZED);
+    expect(signTransaction.mock.calls[0][0]).toMatchObject({
       data: '0xd0e30db0',
       to: ARBITRUM_WETH,
       value: BigNumber.from('1250000000000000000'),
     });
-    expect(sendTransaction.mock.calls[1][0]).toMatchObject({ to: ARBITRUM_WETH, value: BigNumber.from(0) });
-    expect(sendTransaction.mock.calls[2][0]).toMatchObject({
+    expect(signTransaction.mock.calls[1][0]).toMatchObject({ to: ARBITRUM_WETH, value: BigNumber.from(0) });
+    expect(signTransaction.mock.calls[2][0]).toMatchObject({
       to: UNISWAP_V3_SWAP_ROUTER_02,
       value: BigNumber.from(0),
     });
@@ -2311,23 +2330,35 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
       },
     );
     expect(status.json()).toMatchObject({
-      approvalTransactionHash: '0xapproval',
+      approvalTransactionHash: APPROVAL_DETERMINISTIC_HASH,
       idempotencyKey: 'same-chain-execute',
       provider: 'provider_treasury_same_chain_swap',
       status: 'confirmed',
       transactionHash: '0xswap',
-      wrapTransactionHash: '0xwrap',
+      wrapTransactionHash: WRAP_DETERMINISTIC_HASH,
     });
   });
 
-  it('does not rebroadcast same-chain wrap after wrap hash is stored without approval or swap', async () => {
+  it('rebroadcasts same-chain wrap with identical bytes after wrap hash is stored without receipt', async () => {
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
     process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
-    const sendTransaction = jest.fn(async () => ({ hash: '0xwrap-submitted' }));
+    const WRAP_SERIALIZED = '0x' + 'ab'.repeat(55);
+    const WRAP_DETERMINISTIC_HASH = utils.keccak256(WRAP_SERIALIZED);
+    const signTransaction = jest.fn().mockResolvedValueOnce(WRAP_SERIALIZED);
+    const provider = {
+      getTransactionCount: jest.fn(async () => 5),
+      getTransactionReceipt: jest.fn(),
+      sendTransaction: jest
+        .fn()
+        .mockResolvedValueOnce({ hash: '0xwrap-submitted' })
+        .mockResolvedValueOnce({ hash: '0xwrap-retry' }),
+    };
     mockEthereum({
-      getWallet: jest.fn(async () => ({ sendTransaction })),
+      chainId: 42161,
+      getWallet: jest.fn(async () => ({ signTransaction })),
       handleTransactionExecution: jest.fn().mockRejectedValueOnce(new Error('receipt provider timeout')),
       prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+      provider,
     });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -2352,8 +2383,13 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     });
 
     expect(first.statusCode).toBe(500);
-    expect(retry.json()).toMatchObject({ signature: '0xwrap-submitted', status: 0 });
-    expect(sendTransaction).toHaveBeenCalledTimes(1);
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ signature: WRAP_DETERMINISTIC_HASH, status: 0 });
+    expect(provider.sendTransaction).toHaveBeenCalledTimes(2);
+    expect(provider.sendTransaction.mock.calls[0][0]).toBe(WRAP_SERIALIZED);
+    expect(provider.sendTransaction.mock.calls[1][0]).toBe(WRAP_SERIALIZED);
+    expect(signTransaction).toHaveBeenCalledTimes(1);
+    expect(provider.getTransactionCount).toHaveBeenCalledTimes(1);
   });
 });
 
