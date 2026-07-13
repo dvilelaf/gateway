@@ -811,6 +811,8 @@ type SquidTransactionRequest = {
 const rebalanceLocks = new Map<string, Promise<void>>();
 
 function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance, state?: DurableRebalanceState) {
+  const activeStage = state?.stages?.[state.activeStageIndex ?? 0];
+  const isActiveConversion = state?.planVersion === 1 && activeStage?.kind === 'conversion';
   const response: Record<string, unknown> = {
     amount: built.amount,
     destinationAddress: built.destinationAddress,
@@ -825,8 +827,8 @@ function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance, state?: Dura
     approvalTxTarget: built.approvalTxTarget,
     providerRouteId: built.providerRouteId,
     quoteId: built.quoteId,
-    sourceAmount: built.sourceAmount,
-    sourceAsset: built.sourceAsset,
+    sourceAmount: isActiveConversion ? built.destinationAmount : built.sourceAmount,
+    sourceAsset: isActiveConversion ? 'USDC' : built.sourceAsset,
     sourceChain: built.sourceChain,
     sourceNetwork: built.sourceNetwork,
     txCalldataHash: built.txCalldataHash,
@@ -1071,7 +1073,11 @@ async function selectAndBuildTargetFunding(
               conversionOutput.gte(minimumConversionOutput) &&
               conversionOutput.lte(desiredOutput)
             ) {
-              return conversionBuild;
+              return {
+                ...conversionBuild,
+                quotedNativeGasAmount: utils.formatEther(gasReserveWei),
+                quotedNativeGasAsset: 'ETH',
+              };
             }
           }
           let quotedOutput: BigNumber | undefined;
@@ -1106,7 +1112,11 @@ async function selectAndBuildTargetFunding(
               conversionOutput.gte(minimumConversionOutput) &&
               conversionOutput.lte(desiredOutput)
             ) {
-              return conversionBuild;
+              return {
+                ...conversionBuild,
+                quotedNativeGasAmount: utils.formatEther(gasReserveWei),
+                quotedNativeGasAsset: 'ETH',
+              };
             }
           }
         } catch {
