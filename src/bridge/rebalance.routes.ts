@@ -66,6 +66,11 @@ const ARBITRUM_WETH_ADDRESS = '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1';
 const UNISWAP_V3_SWAP_ROUTER_02_ARBITRUM = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
 const UNISWAP_WETH_USDC_ARBITRUM_FEE = 500;
 const PROVIDER_TREASURY_SAME_CHAIN_SWAP_MAX_QUOTE_AGE_MS = 60_000;
+const ETH_CONVERSION_TOTAL_RAW_GAS =
+  PROVIDER_TREASURY_WRAP_GAS_LIMIT +
+  CCTP_APPROVE_GAS_LIMIT +
+  PROVIDER_TREASURY_SAME_CHAIN_SWAP_GAS_LIMIT +
+  HYPERLIQUID_BRIDGE2_GAS_LIMIT;
 const CCTP_REGISTRY_VERSION = 'cctp-v2-evm-usdc-configured-2026-07-08';
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
@@ -835,6 +840,9 @@ async function loadOrBuildTargetFunding(body: TargetFundingRequest): Promise<Bui
     maxCostBps,
     targetRequestFingerprint,
   };
+  if (built.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
+    Object.assign(state, createTwoStagePlan(built));
+  }
   await saveRebalanceState(state);
   return built;
 }
@@ -904,6 +912,104 @@ async function selectAndBuildTargetFunding(
       continue;
     }
     if (sourceStatus.status === 'insufficient') {
+      if (destination.provider === 'hyperliquid_bridge2') {
+        try {
+          const ethereum = await Ethereum.getInstance(source.network);
+          const [nativeBalance, gasPrice] = await Promise.all([
+            ethereum.getNativeBalanceByAddress(source.walletAddress),
+            ethereum.provider.getGasPrice(),
+          ]);
+          const nativeBalanceValue = BigNumber.from(nativeBalance.value);
+          const gasPriceValue = BigNumber.from(gasPrice);
+          if (gasPriceValue.lte(0)) {
+            continue;
+          }
+          const gasReserveWei = gasPriceValue
+            .mul(ETH_CONVERSION_TOTAL_RAW_GAS)
+            .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
+            .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
+          const availableForSwap = nativeBalanceValue.sub(gasReserveWei);
+          if (availableForSwap.lte(0)) {
+            continue;
+          }
+          await provisionTargetFundingSourceWallet(source);
+          const uniswap = await Uniswap.getInstance('arbitrum');
+          const desiredOutput = sourceBudgetUnits;
+          const bridge2MinUsdc = utils.parseUnits(HYPERLIQUID_BRIDGE2_MIN_USDC, USDC_DECIMALS);
+          let requiredInput: BigNumber | undefined;
+          try {
+            requiredInput = await uniswap.quoteExactOutputSingle(
+              ARBITRUM_WETH_ADDRESS,
+              ARBITRUM_USDC_ADDRESS,
+              UNISWAP_WETH_USDC_ARBITRUM_FEE,
+              desiredOutput,
+            );
+          } catch {
+            /* quoteExactOutputSingle unavailable */
+          }
+          if (requiredInput && requiredInput.add(gasReserveWei).lte(nativeBalanceValue)) {
+            const conversionBuild = await buildProviderTreasurySameChainSwap({
+              amount: utils.formatEther(requiredInput),
+              destinationAddress: utils.getAddress(source.walletAddress),
+              destinationAsset: 'USDC',
+              idempotencyKey: body.idempotencyKey,
+              mode: 'mainnet',
+              provider: PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+              sourceAsset: 'ETH',
+              sourceAssetDecimals: 18,
+              sourceChain: 'ethereum',
+              sourceNetwork: 'arbitrum',
+              walletAddress: utils.getAddress(source.walletAddress),
+            } as BridgeRebalanceRequest);
+            const conversionOutput = utils.parseUnits(conversionBuild.destinationAmount!, USDC_DECIMALS);
+            const guaranteedOutput = utils.parseUnits(conversionBuild.minAmount!, USDC_DECIMALS);
+            if (
+              guaranteedOutput.gte(bridge2MinUsdc) &&
+              conversionOutput.gte(bridge2MinUsdc) &&
+              conversionOutput.lte(desiredOutput)
+            ) {
+              return conversionBuild;
+            }
+          }
+          let quotedOutput: BigNumber | undefined;
+          try {
+            quotedOutput = await uniswap.quoteExactInputSingle(
+              ARBITRUM_WETH_ADDRESS,
+              ARBITRUM_USDC_ADDRESS,
+              UNISWAP_WETH_USDC_ARBITRUM_FEE,
+              availableForSwap,
+            );
+          } catch {
+            /* quoteExactInputSingle unavailable */
+          }
+          if (quotedOutput && quotedOutput.gte(bridge2MinUsdc) && quotedOutput.lte(desiredOutput)) {
+            const conversionBuild = await buildProviderTreasurySameChainSwap({
+              amount: utils.formatEther(availableForSwap),
+              destinationAddress: utils.getAddress(source.walletAddress),
+              destinationAsset: 'USDC',
+              idempotencyKey: body.idempotencyKey,
+              mode: 'mainnet',
+              provider: PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+              sourceAsset: 'ETH',
+              sourceAssetDecimals: 18,
+              sourceChain: 'ethereum',
+              sourceNetwork: 'arbitrum',
+              walletAddress: utils.getAddress(source.walletAddress),
+            } as BridgeRebalanceRequest);
+            const conversionOutput = utils.parseUnits(conversionBuild.destinationAmount!, USDC_DECIMALS);
+            const guaranteedOutput = utils.parseUnits(conversionBuild.minAmount!, USDC_DECIMALS);
+            if (
+              guaranteedOutput.gte(bridge2MinUsdc) &&
+              conversionOutput.gte(bridge2MinUsdc) &&
+              conversionOutput.lte(desiredOutput)
+            ) {
+              return conversionBuild;
+            }
+          }
+        } catch {
+          /* ETH conversion attempt failed; fall through */
+        }
+      }
       continue;
     }
     fundedSourceFound = true;
@@ -1335,7 +1441,7 @@ export function createTwoStagePlan(
         kind: 'conversion' as const,
         status: 'built',
         builtRebalance: conversionBuild,
-        fingerprint: rebalanceRequestFingerprint(conversionBuild),
+        fingerprint: targetPlanStageFingerprint(conversionBuild),
       },
       {
         index: 1,
@@ -1372,12 +1478,23 @@ function assertTargetPlanIntegrity(state: DurableRebalanceState): void {
       throw new Error('invalid target plan stage kind');
     }
     if (stage.builtRebalance) {
-      const fp = rebalanceRequestFingerprint(stage.builtRebalance);
+      const fp = targetPlanStageFingerprint(stage.builtRebalance);
       if (!stage.fingerprint || stage.fingerprint !== fp) {
         throw new Error('target plan stage fingerprint mismatch');
       }
     }
   }
+  if (
+    state.stages[0]?.builtRebalance &&
+    state.builtRebalance &&
+    targetPlanStageFingerprint(state.stages[0].builtRebalance) !== targetPlanStageFingerprint(state.builtRebalance)
+  ) {
+    throw new Error('target plan top-level build mismatch');
+  }
+}
+
+function targetPlanStageFingerprint(built: BuiltProviderOwnedRebalance): string {
+  return utils.keccak256(utils.toUtf8Bytes(JSON.stringify(built)));
 }
 
 function assertPersistedTargetFundingIntegrity(state: DurableRebalanceState): void {

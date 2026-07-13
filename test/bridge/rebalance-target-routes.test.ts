@@ -15,6 +15,11 @@ jest.mock('../../src/chains/solana/solana', () => ({
     getInstance: jest.fn(),
   },
 }));
+jest.mock('../../src/connectors/uniswap/uniswap', () => ({
+  Uniswap: {
+    getInstance: jest.fn(),
+  },
+}));
 jest.mock('../../src/wallet/routes/setMarlinDefault', () => {
   return {
     deriveMarlinDefaultWalletMaterial: jest.fn((mnemonic: string, policy: { walletRef: string }) => {
@@ -46,6 +51,7 @@ jest.mock('../../src/wallet/routes/setMarlinDefault', () => {
 
 import { rebalanceRoutes } from '../../src/bridge/rebalance.routes';
 import { Ethereum } from '../../src/chains/ethereum/ethereum';
+import { Uniswap } from '../../src/connectors/uniswap/uniswap';
 import { ensureMarlinWalletExists } from '../../src/wallet/routes/setMarlinDefault';
 
 const ARBITRUM_WALLET = '0x00000000000000000000000000000000000000A1';
@@ -60,6 +66,8 @@ const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const BASE_WETH = '0x4200000000000000000000000000000000000006';
 const SOLANA_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const BRIDGE2 = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
+const ARBITRUM_WETH = '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1';
+const UNISWAP_SWAP_ROUTER_02 = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
 
 const CANONICAL_WALLETS: Record<string, string> = {
   'arbitrum:mainnet:evm_gateway': ARBITRUM_WALLET,
@@ -1181,6 +1189,152 @@ describe('provider-owned target funding routes', () => {
     expect(squidPayload.toToken).toBe(BASE_WETH);
   });
 
+  describe('ETH conversion for Hyperliquid target funding', () => {
+    it('builds exact-output ETH->USDC conversion as stage 0 when direct USDC is insufficient but native ETH covers quote plus gas reserve', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      const uniswapMock = {
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      };
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue(uniswapMock);
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.provider).toBe('provider_treasury_same_chain_swap');
+      expect(body.sourceNetwork).toBe('arbitrum');
+      expect(body.sourceAsset).toBe('ETH');
+      expect(body.destinationAsset).toBe('USDC');
+      expect(body.destinationVenue).toBeUndefined();
+      expect(body.stageIndex).toBe(0);
+      expect(body.stageCount).toBe(2);
+      expect(body.stageStatus).toBe('built');
+      expect(body.walletAddress).toBe(utils.getAddress(ARBITRUM_WALLET));
+      const ethAmount = utils.parseEther(body.amount);
+      expect(ethAmount.eq(utils.parseEther('0.005'))).toBe(true);
+      const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+      expect(persisted.planVersion).toBe(1);
+      expect(persisted.stages).toHaveLength(2);
+      expect(persisted.stages[0]).toMatchObject({ index: 0, kind: 'conversion', status: 'built' });
+      expect(persisted.stages[1]).toMatchObject({ index: 1, kind: 'funding', status: 'blocked_on_prior_stage' });
+      expect(persisted.builtRebalance).toBeDefined();
+      expect(uniswapMock.quoteExactOutputSingle).toHaveBeenCalledWith(
+        ARBITRUM_WETH,
+        ARBITRUM_USDC,
+        500,
+        utils.parseUnits('6', 6),
+      );
+      expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it('falls back to exact-input conversion when native ETH insufficient for exact-output plus gas reserve', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '5500000000000000', usdc: '0' } });
+      const uniswapMock = {
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('5.2', 6)),
+      };
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue(uniswapMock);
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.provider).toBe('provider_treasury_same_chain_swap');
+      expect(body.sourceAsset).toBe('ETH');
+      expect(body.stageIndex).toBe(0);
+      expect(body.stageCount).toBe(2);
+      expect(body.stageStatus).toBe('built');
+      const ethAmount = utils.parseEther(body.amount);
+      expect(ethAmount.eq(utils.parseEther('0.0046'))).toBe(true);
+      expect(uniswapMock.quoteExactOutputSingle).toHaveBeenCalled();
+      expect(uniswapMock.quoteExactInputSingle).toHaveBeenCalled();
+      expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it('blocks conversion when quoted output from exact-input fallback is below 5 USDC minimum', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '1500000000000000', usdc: '0' } });
+      const uniswapMock = {
+        quoteExactOutputSingle: jest.fn().mockRejectedValue(new Error('price unavailable')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('4.999999', 6)),
+      };
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue(uniswapMock);
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().message).toBe('insufficient_source_or_gas');
+      expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      expect(() => readFileSync(path.join(stateRoot, 'target-funding-1.json'))).toThrow();
+      await app.close();
+    });
+
+    it('preserves direct USDC funding when USDC balance is sufficient (existing path unchanged)', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      const uniswapMock = {
+        quoteExactOutputSingle: jest.fn(),
+        quoteExactInputSingle: jest.fn(),
+      };
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue(uniswapMock);
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.provider).toBe('hyperliquid_bridge2');
+      expect(body.sourceNetwork).toBe('arbitrum');
+      expect(body.sourceAsset).toBe('USDC');
+      expect(body.stageIndex).toBeUndefined();
+      expect(body.stageCount).toBeUndefined();
+      expect(body.stageStatus).toBeUndefined();
+      expect(uniswapMock.quoteExactOutputSingle).not.toHaveBeenCalled();
+      expect(uniswapMock.quoteExactInputSingle).not.toHaveBeenCalled();
+      await app.close();
+    });
+  });
+
   describe('two-stage target plan state', () => {
     it('adds neutral stage projection to build response and status response for a valid two-stage plan', async () => {
       mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
@@ -1206,7 +1360,7 @@ describe('provider-owned target funding routes', () => {
           kind: 'conversion',
           status: 'built',
           builtRebalance: persisted.builtRebalance,
-          fingerprint: persisted.requestFingerprint,
+          fingerprint: utils.keccak256(utils.toUtf8Bytes(JSON.stringify(persisted.builtRebalance))),
         },
         { index: 1, kind: 'funding', status: 'blocked_on_prior_stage' },
       ];
@@ -1370,7 +1524,7 @@ describe('provider-owned target funding routes', () => {
           kind: 'conversion',
           status: 'built',
           builtRebalance: { ...persisted.builtRebalance, destinationAmount: '9.9' },
-          fingerprint: persisted.requestFingerprint,
+          fingerprint: utils.keccak256(utils.toUtf8Bytes(JSON.stringify(persisted.builtRebalance))),
         },
         { index: 1, kind: 'funding', status: 'blocked_on_prior_stage' },
       ];
