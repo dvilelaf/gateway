@@ -1055,8 +1055,8 @@ async function selectAndBuildTargetFunding(
             const conversionOutput = utils.parseUnits(conversionBuild.destinationAmount!, USDC_DECIMALS);
             const guaranteedOutput = utils.parseUnits(conversionBuild.minAmount!, USDC_DECIMALS);
             if (
-              guaranteedOutput.gte(bridge2MinUsdc) &&
-              conversionOutput.gte(bridge2MinUsdc) &&
+              guaranteedOutput.gte(minimumConversionOutput) &&
+              conversionOutput.gte(minimumConversionOutput) &&
               conversionOutput.lte(desiredOutput)
             ) {
               return conversionBuild;
