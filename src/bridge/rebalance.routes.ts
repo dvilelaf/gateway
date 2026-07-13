@@ -670,6 +670,14 @@ type TargetPlanStage = {
   status: string;
   builtRebalance?: BuiltProviderOwnedRebalance;
   fingerprint?: string;
+  transactionHash?: string;
+  signedTransaction?: string;
+  wrapTransactionHash?: string;
+  wrapSignedTransaction?: string;
+  approvalTransactionHash?: string;
+  approvalSignedTransaction?: string;
+  providerStatus?: string;
+  providerError?: string;
 };
 
 type TargetFundingDestination = {
@@ -1236,6 +1244,9 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
     throw new Error('target funding selection not found');
   }
   assertPersistedTargetFundingIntegrity(state);
+  if (state.planVersion === 1 && state.stages && state.stages.length > 0) {
+    return executeTargetPlanFunding(idempotencyKey, state, providerIntentToken);
+  }
   const built = state.builtRebalance;
   const existingHash = bestKnownTransactionHash(state);
   if (state.status === 'confirmed' || state.status === 'failed') {
@@ -1331,6 +1342,461 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
       status: recoverableRebalanceErrorStatus(latest),
     });
     throw new Error(redactProviderError(error));
+  }
+}
+
+async function executeTargetPlanFunding(
+  idempotencyKey: string,
+  state: DurableRebalanceState,
+  providerIntentToken: unknown,
+) {
+  if (!marlinGatewayProviderIntentTokenMatches(providerIntentToken)) {
+    throw new Error('provider treasury authorization required');
+  }
+  const stageIndex = state.activeStageIndex!;
+  const stage = state.stages![stageIndex];
+  const built = stage.builtRebalance;
+  if (!built) {
+    throw new Error('target plan stage build missing');
+  }
+  mergeRootExecutionIntoStage(stage, state);
+
+  if (stage.kind === 'conversion') {
+    return executeConversionStage(idempotencyKey, state, stage, built);
+  }
+  return executeFundingStage(idempotencyKey, state, stage, built);
+}
+
+async function executeConversionStage(
+  idempotencyKey: string,
+  state: DurableRebalanceState,
+  stage: TargetPlanStage,
+  initialBuild: BuiltProviderOwnedRebalance,
+) {
+  if (stage.status === 'failed') {
+    return { signature: stage.transactionHash ?? stage.wrapTransactionHash ?? '', status: -1 };
+  }
+  let built = initialBuild;
+  const ethereum = await Ethereum.getInstance('arbitrum');
+  const stageHasSideEffect = Boolean(
+    stage.wrapSignedTransaction ||
+      stage.wrapTransactionHash ||
+      stage.approvalSignedTransaction ||
+      stage.approvalTransactionHash ||
+      stage.signedTransaction ||
+      stage.transactionHash,
+  );
+  if (!stageHasSideEffect) {
+    const usdc = ethereum.getContract(ARBITRUM_USDC_ADDRESS, ethereum.provider);
+    let freshBaseline: string;
+    try {
+      const balance = await ethereum.getERC20BalanceByAddress(usdc, built.walletAddress, USDC_DECIMALS, 5000, 'USDC');
+      freshBaseline = BigNumber.from(balance.value).toString();
+    } catch {
+      throw new Error('target funding pre-conversion USDC balance unavailable');
+    }
+    state.preConversionUsdcBalanceUnits = freshBaseline;
+    state.planTargetFingerprint = targetPlanMetadataFingerprint(state.planTarget!, freshBaseline);
+    await saveRebalanceState(state);
+    const [nativeBalance, gasPrice] = await Promise.all([
+      ethereum.getNativeBalanceByAddress(built.walletAddress),
+      ethereum.provider.getGasPrice(),
+    ]);
+    const nativeBalanceValue = BigNumber.from(nativeBalance.value);
+    if (BigNumber.from(gasPrice).lte(0)) {
+      throw new TargetFundingBlockedError();
+    }
+    const amountUnits = utils.parseUnits(built.amount, 18);
+    const gasReserveWei = BigNumber.from(gasPrice)
+      .mul(ETH_CONVERSION_TOTAL_RAW_GAS)
+      .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
+      .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
+    if (nativeBalanceValue.lt(amountUnits.add(gasReserveWei))) {
+      throw new TargetFundingBlockedError();
+    }
+  }
+
+  if (!stageHasSideEffect) {
+    const quotedAt = built.quotedAt;
+    if (quotedAt) {
+      const quotedTimestamp = new Date(quotedAt).getTime();
+      if (
+        Number.isFinite(quotedTimestamp) &&
+        Date.now() - quotedTimestamp > PROVIDER_TREASURY_SAME_CHAIN_SWAP_MAX_QUOTE_AGE_MS
+      ) {
+        const freshBuilt = await buildProviderTreasurySameChainSwap({
+          amount: built.amount,
+          destinationAddress: built.destinationAddress,
+          destinationAsset: 'USDC',
+          idempotencyKey,
+          mode: 'mainnet',
+          provider: PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+          sourceAsset: 'ETH',
+          sourceAssetDecimals: 18,
+          sourceChain: 'ethereum',
+          sourceNetwork: 'arbitrum',
+          walletAddress: built.walletAddress,
+        } as BridgeRebalanceRequest);
+        const freshFingerprint = targetPlanStageFingerprint(freshBuilt);
+        stage.builtRebalance = freshBuilt;
+        stage.fingerprint = freshFingerprint;
+        state.builtRebalance = freshBuilt;
+        state.requestFingerprint = rebalanceRequestFingerprint(freshBuilt);
+        await saveRebalanceState(state);
+        built = freshBuilt;
+      }
+    }
+  }
+
+  await provisionTargetFundingSourceWallet({
+    network: 'arbitrum',
+    tokenAddress: ARBITRUM_USDC_ADDRESS,
+    walletAddress: built.walletAddress,
+  });
+  const sourceAmount = built.sourceAmount ?? built.amount;
+  const liveActionAuthorization: LiveActionAuthorization = {
+    action: 'gateway_rebalance',
+    connector_id: providerTreasuryConnectorId(built.provider),
+    network: built.sourceNetwork,
+    notional: sourceAmount,
+    scope: 'provider_treasury',
+    source: 'marlin',
+    wallet_address: built.walletAddress,
+  };
+  assertMainnetMutationAllowed({
+    chain: 'ethereum',
+    expectedConnectorId: providerTreasuryConnectorId(built.provider),
+    expectedNotional: sourceAmount,
+    expectedWalletAddress: built.walletAddress,
+    internalProviderIntentSource: PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+    liveActionAuthorization,
+    network: built.sourceNetwork,
+    operation: 'ethereum_transaction',
+  });
+
+  const stageState = await copyStageFieldsToRootAndSave(state, stage);
+  try {
+    const execution = await executeStageProviderRebalance(built, stageState);
+    const latest = (await readRebalanceState(idempotencyKey)) ?? stageState;
+    copyExecutionToStage(stage, execution, latest);
+    Object.assign(state, latest);
+    state.stages![state.activeStageIndex!] = stage;
+    if (execution.status === 'confirmed' && execution.responseStatus === 1) {
+      return await transitionFromConversionToFunding(idempotencyKey, state, stage, built, ethereum);
+    }
+    if (execution.status === 'failed' && execution.responseStatus === -1) {
+      stage.status = 'failed';
+      state.status = 'failed';
+      state.stages![state.activeStageIndex!] = stage;
+      await saveRebalanceState(state);
+      return { signature: execution.transactionHash || stage.wrapTransactionHash || '', status: -1 };
+    }
+    state.stages![state.activeStageIndex!] = stage;
+    await saveRebalanceState(state);
+    return {
+      signature: execution.transactionHash || bestKnownTransactionHash(state),
+      status: execution.responseStatus,
+    };
+  } catch (error) {
+    const latest = (await readRebalanceState(idempotencyKey)) ?? stageState;
+    copyErrorToStage(stage, latest, error);
+    Object.assign(state, latest);
+    state.stages![state.activeStageIndex!] = stage;
+    await saveRebalanceState(state);
+    throw new Error(redactProviderError(error));
+  }
+}
+
+async function transitionFromConversionToFunding(
+  idempotencyKey: string,
+  state: DurableRebalanceState,
+  stage: TargetPlanStage,
+  built: BuiltProviderOwnedRebalance,
+  ethereum: Ethereum,
+) {
+  const token = ethereum.getContract(ARBITRUM_USDC_ADDRESS, ethereum.provider);
+  let postBalance: { value: BigNumber };
+  try {
+    postBalance = await ethereum.getERC20BalanceByAddress(token, built.walletAddress, USDC_DECIMALS, 5000, 'USDC');
+  } catch {
+    throw new Error('target funding post-conversion USDC balance unavailable');
+  }
+  const postBalanceUnits = BigNumber.from(postBalance.value);
+  const preConversionUnits = BigNumber.from(state.preConversionUsdcBalanceUnits!);
+  if (postBalanceUnits.lte(preConversionUnits)) {
+    throw new Error('target funding non-positive USDC output from conversion');
+  }
+  const actualOutputUnits = postBalanceUnits.sub(preConversionUnits);
+  const minBridgeUnits = utils.parseUnits(HYPERLIQUID_BRIDGE2_MIN_USDC, USDC_DECIMALS);
+  if (actualOutputUnits.lt(minBridgeUnits)) {
+    throw new Error('target funding conversion output below 5 USDC minimum');
+  }
+  const targetUnits = utils.parseUnits(state.planTarget!.targetNotionalEur, USDC_DECIMALS);
+  const bridgeUnits = actualOutputUnits.gt(targetUnits) ? targetUnits : actualOutputUnits;
+  const bridgeAmount = utils.formatUnits(bridgeUnits, USDC_DECIMALS);
+  const bridge2BaseBuild = await buildHyperliquidBridge2Transfer({
+    amount: bridgeAmount,
+    destinationAddress: built.destinationAddress,
+    destinationAsset: 'USDC',
+    destinationVenue: 'hyperliquid',
+    idempotencyKey,
+    mode: 'mainnet',
+    provider: 'hyperliquid_bridge2',
+    sourceAsset: 'USDC',
+    sourceChain: 'ethereum',
+    sourceNetwork: 'arbitrum',
+    walletAddress: built.walletAddress,
+  });
+  const gasPrice = await ethereum.provider.getGasPrice();
+  if (BigNumber.from(gasPrice).lte(0)) {
+    throw new Error('target funding Bridge2 gas price unavailable');
+  }
+  const requiredGas = BigNumber.from(gasPrice)
+    .mul(HYPERLIQUID_BRIDGE2_GAS_LIMIT)
+    .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
+    .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
+  const bridge2Built: BuiltProviderOwnedRebalance = {
+    ...bridge2BaseBuild,
+    destinationChain: state.planTarget!.destinationChain,
+    destinationNetwork: state.planTarget!.destinationNetwork,
+    quotedAt: new Date().toISOString(),
+    quotedNativeGasAmount: utils.formatEther(requiredGas),
+    quotedNativeGasAsset: 'ETH',
+  };
+  const bridge2Fingerprint = targetPlanStageFingerprint(bridge2Built);
+
+  const txnHash = stage.transactionHash;
+  delete stage.signedTransaction;
+  delete stage.wrapSignedTransaction;
+  delete stage.approvalSignedTransaction;
+  delete stage.providerStatus;
+  delete stage.providerError;
+  stage.status = 'confirmed';
+
+  const fundingStage = state.stages![1];
+  fundingStage.builtRebalance = bridge2Built;
+  fundingStage.fingerprint = bridge2Fingerprint;
+  fundingStage.status = 'built';
+
+  Object.assign(
+    state,
+    newRebalanceState(
+      bridge2Built,
+      { idempotencyKey } as BridgeRebalanceRequest,
+      rebalanceRequestFingerprint(bridge2Built),
+    ),
+  );
+  state.activeStageIndex = 1;
+  state.builtRebalance = bridge2Built;
+  state.requestFingerprint = rebalanceRequestFingerprint(bridge2Built);
+  state.status = 'built';
+  delete state.signedTransaction;
+  delete state.transactionHash;
+  delete state.wrapSignedTransaction;
+  delete state.wrapTransactionHash;
+  delete state.approvalSignedTransaction;
+  delete state.approvalTransactionHash;
+  delete state.providerError;
+  delete state.providerStatus;
+
+  await saveRebalanceState(state);
+  return { signature: txnHash ?? '', status: 0 };
+}
+
+async function executeFundingStage(
+  idempotencyKey: string,
+  state: DurableRebalanceState,
+  stage: TargetPlanStage,
+  built: BuiltProviderOwnedRebalance,
+) {
+  if (stage.status === 'source_confirmed') {
+    return { signature: stage.transactionHash ?? '', status: 0 };
+  }
+  if (stage.status === 'failed') {
+    return { signature: stage.transactionHash ?? '', status: -1 };
+  }
+  const source: TargetFundingSource = {
+    network: 'arbitrum',
+    tokenAddress: ARBITRUM_USDC_ADDRESS,
+    walletAddress: built.walletAddress,
+  };
+  const sourceAmount = built.sourceAmount ?? built.amount;
+  if (!stage.signedTransaction && !stage.transactionHash) {
+    const sourceStatus = await targetFundingSourceStatus(
+      source,
+      utils.parseUnits(sourceAmount, USDC_DECIMALS),
+      HYPERLIQUID_BRIDGE2_GAS_LIMIT,
+    );
+    if (sourceStatus.status === 'unavailable') {
+      throw new Error('target funding source balance unavailable');
+    }
+    if (sourceStatus.status === 'insufficient') {
+      throw new TargetFundingBlockedError();
+    }
+    if (
+      !built.quotedNativeGasAmount ||
+      built.quotedNativeGasAsset !== 'ETH' ||
+      sourceStatus.requiredGas!.gt(utils.parseEther(built.quotedNativeGasAmount))
+    ) {
+      throw new TargetFundingBlockedError();
+    }
+  }
+  await provisionTargetFundingSourceWallet(source);
+  const liveActionAuthorization: LiveActionAuthorization = {
+    action: 'gateway_rebalance',
+    connector_id: providerTreasuryConnectorId(built.provider),
+    network: built.sourceNetwork,
+    notional: sourceAmount,
+    scope: 'provider_treasury',
+    source: 'marlin',
+    wallet_address: built.walletAddress,
+  };
+  assertMainnetMutationAllowed({
+    chain: 'ethereum',
+    expectedConnectorId: providerTreasuryConnectorId(built.provider),
+    expectedNotional: sourceAmount,
+    expectedWalletAddress: built.walletAddress,
+    internalProviderIntentSource: 'hyperliquid_bridge2_rebalance',
+    liveActionAuthorization,
+    network: built.sourceNetwork,
+    operation: 'ethereum_transaction',
+  });
+  const stageState = await copyStageFieldsToRootAndSave(state, stage);
+  try {
+    const execution = await executeStageProviderRebalance(built, stageState);
+    const latest = (await readRebalanceState(idempotencyKey)) ?? stageState;
+    copyExecutionToStage(stage, execution, latest);
+    Object.assign(state, latest);
+    state.stages![state.activeStageIndex!] = stage;
+    if (execution.status === 'confirmed' && execution.responseStatus === 1) {
+      stage.status = 'source_confirmed';
+      state.status = 'destination_pending';
+      state.stages![state.activeStageIndex!] = stage;
+      await saveRebalanceState(state);
+      return { signature: execution.transactionHash, status: 0 };
+    }
+    if (execution.status === 'failed' && execution.responseStatus === -1) {
+      stage.status = 'failed';
+      state.status = 'failed';
+      state.stages![state.activeStageIndex!] = stage;
+      await saveRebalanceState(state);
+      return { signature: execution.transactionHash ?? '', status: -1 };
+    }
+    state.stages![state.activeStageIndex!] = stage;
+    await saveRebalanceState(state);
+    return {
+      signature: execution.transactionHash || bestKnownTransactionHash(state),
+      status: execution.responseStatus,
+    };
+  } catch (error) {
+    const latest = (await readRebalanceState(idempotencyKey)) ?? stageState;
+    copyErrorToStage(stage, latest, error);
+    Object.assign(state, latest);
+    state.stages![state.activeStageIndex!] = stage;
+    await saveRebalanceState(state);
+    throw new Error(redactProviderError(error));
+  }
+}
+
+async function executeStageProviderRebalance(
+  built: BuiltProviderOwnedRebalance,
+  state: DurableRebalanceState,
+): Promise<ProviderOwnedRebalanceExecution> {
+  const liveActionAuthorization: LiveActionAuthorization = {
+    action: 'gateway_rebalance',
+    connector_id: providerTreasuryConnectorId(built.provider),
+    network: built.sourceNetwork,
+    notional: built.sourceAmount ?? built.amount,
+    scope: 'provider_treasury',
+    source: 'marlin',
+    wallet_address: built.walletAddress,
+  };
+  return executeProviderOwnedRebalance(built, liveActionAuthorization, state);
+}
+
+async function copyStageFieldsToRootAndSave(
+  state: DurableRebalanceState,
+  stage: TargetPlanStage,
+): Promise<DurableRebalanceState> {
+  const updated: DurableRebalanceState = {
+    ...state,
+    signedTransaction: stage.signedTransaction ?? state.signedTransaction,
+    transactionHash: stage.transactionHash ?? state.transactionHash,
+    wrapSignedTransaction: stage.wrapSignedTransaction ?? state.wrapSignedTransaction,
+    wrapTransactionHash: stage.wrapTransactionHash ?? state.wrapTransactionHash,
+    approvalSignedTransaction: stage.approvalSignedTransaction ?? state.approvalSignedTransaction,
+    approvalTransactionHash: stage.approvalTransactionHash ?? state.approvalTransactionHash,
+    providerStatus: stage.providerStatus ?? state.providerStatus,
+    providerError: stage.providerError ?? state.providerError,
+    status: stage.status,
+  };
+  await saveRebalanceState(updated);
+  return updated;
+}
+
+function copyExecutionToStage(
+  stage: TargetPlanStage,
+  execution: ProviderOwnedRebalanceExecution,
+  latest: DurableRebalanceState,
+): void {
+  if (
+    !execution.status.startsWith('wrap_') &&
+    (!execution.wrapTransactionHash || execution.transactionHash !== execution.wrapTransactionHash)
+  ) {
+    stage.transactionHash = execution.transactionHash || stage.transactionHash || latest.transactionHash;
+  }
+  stage.wrapTransactionHash = execution.wrapTransactionHash ?? stage.wrapTransactionHash ?? latest.wrapTransactionHash;
+  stage.approvalTransactionHash =
+    execution.approvalTransactionHash ?? stage.approvalTransactionHash ?? latest.approvalTransactionHash;
+  stage.providerStatus = execution.providerStatus ?? latest.providerStatus;
+  stage.providerError = execution.providerError ?? latest.providerError;
+  stage.status = execution.status;
+  if (latest.signedTransaction) {
+    stage.signedTransaction = latest.signedTransaction;
+  }
+  if (latest.wrapSignedTransaction) {
+    stage.wrapSignedTransaction = latest.wrapSignedTransaction;
+  }
+  if (latest.approvalSignedTransaction) {
+    stage.approvalSignedTransaction = latest.approvalSignedTransaction;
+  }
+}
+
+function mergeRootExecutionIntoStage(stage: TargetPlanStage, state: DurableRebalanceState): void {
+  stage.signedTransaction ??= state.signedTransaction;
+  stage.transactionHash ??= state.transactionHash;
+  stage.wrapSignedTransaction ??= state.wrapSignedTransaction;
+  stage.wrapTransactionHash ??= state.wrapTransactionHash;
+  stage.approvalSignedTransaction ??= state.approvalSignedTransaction;
+  stage.approvalTransactionHash ??= state.approvalTransactionHash;
+  stage.providerStatus ??= state.providerStatus;
+  stage.providerError ??= state.providerError;
+}
+
+function copyErrorToStage(stage: TargetPlanStage, latest: DurableRebalanceState, error: unknown): void {
+  stage.providerError = redactProviderError(error);
+  if (latest.providerStatus) {
+    stage.providerStatus = latest.providerStatus;
+  }
+  const retryable = recoverableRebalanceErrorStatus(latest);
+  stage.status = retryable;
+  if (latest.signedTransaction) {
+    stage.signedTransaction = latest.signedTransaction;
+  }
+  if (latest.wrapSignedTransaction) {
+    stage.wrapSignedTransaction = latest.wrapSignedTransaction;
+  }
+  if (latest.approvalSignedTransaction) {
+    stage.approvalSignedTransaction = latest.approvalSignedTransaction;
+  }
+  if (latest.transactionHash) {
+    stage.transactionHash = latest.transactionHash;
+  }
+  if (latest.wrapTransactionHash) {
+    stage.wrapTransactionHash = latest.wrapTransactionHash;
+  }
+  if (latest.approvalTransactionHash) {
+    stage.approvalTransactionHash = latest.approvalTransactionHash;
   }
 }
 
@@ -1490,7 +1956,7 @@ function assertTargetPlanIntegrity(state: DurableRebalanceState): void {
   if (state.planVersion !== 1) {
     throw new Error('invalid target plan version');
   }
-  if (!state.stages || !Array.isArray(state.stages) || state.stages.length === 0 || state.stages.length > 2) {
+  if (!state.stages || !Array.isArray(state.stages) || state.stages.length !== 2) {
     throw new Error('invalid target plan stage count');
   }
   const conversionPlan = state.stages[0]?.builtRebalance?.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP;
@@ -1530,10 +1996,27 @@ function assertTargetPlanIntegrity(state: DurableRebalanceState): void {
       }
     }
   }
+  const [conversion, funding] = state.stages;
   if (
-    state.stages[0]?.builtRebalance &&
+    conversion.kind !== 'conversion' ||
+    conversion.builtRebalance?.provider !== PROVIDER_TREASURY_SAME_CHAIN_SWAP ||
+    funding.kind !== 'funding' ||
+    (funding.builtRebalance !== undefined && funding.builtRebalance.provider !== 'hyperliquid_bridge2')
+  ) {
+    throw new Error('invalid target plan topology');
+  }
+  if (
+    (state.activeStageIndex === 0 && funding.status !== 'blocked_on_prior_stage') ||
+    (state.activeStageIndex === 1 &&
+      (conversion.status !== 'confirmed' || !funding.builtRebalance || funding.status === 'blocked_on_prior_stage'))
+  ) {
+    throw new Error('invalid target plan transition');
+  }
+  if (
+    state.stages[state.activeStageIndex ?? 0]?.builtRebalance &&
     state.builtRebalance &&
-    targetPlanStageFingerprint(state.stages[0].builtRebalance) !== targetPlanStageFingerprint(state.builtRebalance)
+    targetPlanStageFingerprint(state.stages[state.activeStageIndex ?? 0].builtRebalance!) !==
+      targetPlanStageFingerprint(state.builtRebalance)
   ) {
     throw new Error('target plan top-level build mismatch');
   }
@@ -3020,12 +3503,24 @@ async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRe
       const ethereum = await Ethereum.getInstance(state.sourceNetwork);
       const receipt = await ethereum.provider.getTransactionReceipt(state.transactionHash);
       if (receipt?.status === 0) {
-        state = { ...state, status: 'failed' };
+        if (state.planVersion === 1 && state.activeStageIndex === 1 && state.stages?.[1]?.kind === 'funding') {
+          const stages = [...state.stages];
+          stages[1] = { ...stages[1], status: 'failed' };
+          state = { ...state, stages, status: 'failed' };
+        } else {
+          state = { ...state, status: 'failed' };
+        }
         await saveRebalanceState(state);
         return state;
       }
       if (receipt?.status === 1 && state.provider !== SQUID_ROUTER_PROVIDER) {
-        state = { ...state, status: 'confirmed' };
+        if (state.planVersion === 1 && state.activeStageIndex === 1 && state.stages?.[1]?.kind === 'funding') {
+          const stages = [...(state.stages ?? [])];
+          stages[1] = { ...stages[1], status: 'source_confirmed' };
+          state = { ...state, stages, status: 'destination_pending' };
+        } else {
+          state = { ...state, status: 'confirmed' };
+        }
         await saveRebalanceState(state);
         return state;
       }
