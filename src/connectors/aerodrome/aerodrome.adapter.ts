@@ -319,10 +319,33 @@ function createGatewayWalletExecutor(
       });
       const receipt = await ethereum.handleTransactionExecution(txResponse);
 
-      return {
+      const result = {
         signature: txResponse.hash,
         transactionHash: receipt?.transactionHash,
         status: receipt?.status === 1 ? 'CONFIRMED' : receipt?.status === 0 ? 'FAILED' : 'SUBMITTED',
+      };
+      if (receipt === null || swapRequest === undefined) {
+        return result;
+      }
+
+      const block = await ethereum.provider.getBlock(receipt.blockNumber);
+      if (block === null || block.timestamp === undefined || !Number.isFinite(block.timestamp)) {
+        throw httpErrors.internalServerError('Failed to fetch block timestamp for Aerodrome transaction receipt');
+      }
+
+      return {
+        ...result,
+        receipt: {
+          status: receipt.status,
+          gasUsed: receipt.gasUsed.toString(),
+          effectiveGasPrice: receipt.effectiveGasPrice.toString(),
+          blockTimestamp: block.timestamp,
+          logs: receipt.logs.map((log) => ({
+            address: log.address,
+            topics: [...log.topics],
+            data: log.data,
+          })),
+        },
       };
     },
   };

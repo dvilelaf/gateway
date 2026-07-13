@@ -102,7 +102,7 @@
     "fastify": "^4.29.0",
     "fastify-type-provider-zod": "^2.1.0",
     "fs-extra": "^10.1.0",
-    "hummingbot-aerodrome-gateway-connector": "github:dvilelaf/hummingbot-dex-connectors#3cffb60340ef9827035404901e7122d46d973f95&path:aerodrome",
+    "hummingbot-aerodrome-gateway-connector": "github:dvilelaf/hummingbot-dex-connectors#11820e2b7ef58753b7719275adb7059fe31953ff&path:aerodrome",
     "level": "^8.0.1",
     "mathjs": "^10.6.4",
     "minimist": "^1.2.8",

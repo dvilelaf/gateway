@@ -113,6 +113,17 @@ export const AerodromeSwapExecuteResponse = Type.Object({
       status: Type.Union([Type.Number(), Type.String()]),
     }),
   ),
+  executedAt: Type.Optional(Type.String()),
+  data: Type.Optional(
+    Type.Object({
+      tokenIn: Type.String(),
+      tokenOut: Type.String(),
+      amountIn: Type.Union([Type.Number(), Type.String()]),
+      amountOut: Type.Union([Type.Number(), Type.String()]),
+      fee: Type.Union([Type.Number(), Type.String()]),
+      feeAsset: Type.String(),
+    }),
+  ),
 });
 
 const AerodromeLiquidityBaseRequest = Type.Object({

@@ -1,3 +1,5 @@
+import { BigNumber } from 'ethers';
+
 import { Ethereum } from '../../../src/chains/ethereum/ethereum';
 import {
   executeAerodromeAddLiquidity,
@@ -81,13 +83,18 @@ describe('Aerodrome Gateway adapter', () => {
   it('executes planned transactions through the Gateway Ethereum wallet', async () => {
     const liveActionAuthorization = { version: 'live-action-authorization-v1' };
     const sendTransaction = jest.fn().mockResolvedValue({ hash: '0xabc' });
+    let executorReceipt: unknown;
     const ethereum = {
-      provider: {},
+      provider: { getBlock: jest.fn().mockResolvedValue({ timestamp: 1_700_000_000 }) },
       getWallet: jest.fn().mockResolvedValue({ sendTransaction }),
       prepareGasOptions: jest.fn().mockResolvedValue({ gasLimit: 321000 }),
       handleTransactionExecution: jest.fn().mockResolvedValue({
         transactionHash: '0xabc',
         status: 1,
+        blockNumber: 123,
+        gasUsed: BigNumber.from(200000),
+        effectiveGasPrice: BigNumber.from(1_500_000_000),
+        logs: [{ address: '0xtoken', topics: ['0xtopic'], data: '0xdata' }],
       }),
     };
     (Ethereum.getInstance as jest.Mock).mockResolvedValue(ethereum);
@@ -102,10 +109,20 @@ describe('Aerodrome Gateway adapter', () => {
     });
     executeAerodromeGatewaySwapPlan.mockImplementation(async (plan, executor) => {
       const tx = await executor.executeTransaction(plan.swap);
+      executorReceipt = tx.receipt;
       return {
         signature: tx.signature,
-        status: tx.status,
+        status: 1,
+        executedAt: '2023-11-14T22:13:20.000Z',
         transactions: [{ kind: 'swap', signature: tx.signature, status: tx.status }],
+        data: {
+          tokenIn: 'WETH',
+          tokenOut: 'USDC',
+          amountIn: '1',
+          amountOut: '3000',
+          fee: '0.0003',
+          feeAsset: 'ETH',
+        },
       };
     });
 
@@ -128,6 +145,12 @@ describe('Aerodrome Gateway adapter', () => {
       321000,
       liveActionAuthorization,
       'aerodrome_execute_swap',
+      {
+        expectedConnectorId: 'aerodrome',
+        expectedNotional: 1,
+        expectedSlippageBps: undefined,
+        expectedWalletAddress: '0x1111111111111111111111111111111111111111',
+      },
     );
     expect(sendTransaction).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -138,8 +161,60 @@ describe('Aerodrome Gateway adapter', () => {
     );
     expect(response).toMatchObject({
       signature: '0xabc',
-      status: 'CONFIRMED',
+      status: 1,
+      executedAt: '2023-11-14T22:13:20.000Z',
+      data: { tokenIn: 'WETH', tokenOut: 'USDC', feeAsset: 'ETH' },
     });
+    expect(executorReceipt).toEqual({
+      status: 1,
+      gasUsed: '200000',
+      effectiveGasPrice: '1500000000',
+      blockTimestamp: 1_700_000_000,
+      logs: [{ address: '0xtoken', topics: ['0xtopic'], data: '0xdata' }],
+    });
+  });
+
+  it('keeps pending swaps submitted without receipt evidence', async () => {
+    const getBlock = jest.fn();
+    let executorReceipt: unknown;
+    (Ethereum.getInstance as jest.Mock).mockResolvedValue({
+      provider: { getBlock },
+      getWallet: jest.fn().mockResolvedValue({
+        sendTransaction: jest.fn().mockResolvedValue({ hash: '0xpending' }),
+      }),
+      prepareGasOptions: jest.fn().mockResolvedValue({ gasLimit: 321000 }),
+      handleTransactionExecution: jest.fn().mockResolvedValue(null),
+    });
+    planAerodromeGatewaySwap.mockResolvedValue({
+      swap: {
+        to: '0x2222222222222222222222222222222222222222',
+        from: '0x1111111111111111111111111111111111111111',
+        data: '0x1234',
+        value: '0',
+        gasEstimate: '321000',
+      },
+    });
+    executeAerodromeGatewaySwapPlan.mockImplementation(async (plan, executor) => {
+      const tx = await executor.executeTransaction(plan.swap);
+      executorReceipt = tx.receipt;
+      return {
+        signature: tx.signature,
+        status: tx.status,
+        transactions: [{ kind: 'swap', signature: tx.signature, status: tx.status }],
+      };
+    });
+
+    const response = await executeAerodromeSwap('base', {
+      baseToken: 'WETH',
+      quoteToken: 'USDC',
+      amount: 1,
+      side: 'SELL',
+      walletAddress: '0x1111111111111111111111111111111111111111',
+    });
+
+    expect(response).toMatchObject({ signature: '0xpending', status: 'SUBMITTED' });
+    expect(executorReceipt).toBeUndefined();
+    expect(getBlock).not.toHaveBeenCalled();
   });
 
   it('fails closed when the planned sender wallet is unavailable', async () => {
@@ -230,12 +305,26 @@ describe('Aerodrome Gateway adapter', () => {
       1,
       expect.objectContaining({ to: '0xusdc', data: '0xapprove', gasLimit: 250000 }),
     );
-    expect(ethereum.prepareGasOptions).toHaveBeenNthCalledWith(1, undefined, 250000, undefined, undefined);
+    expect(ethereum.prepareGasOptions).toHaveBeenNthCalledWith(
+      1,
+      undefined,
+      250000,
+      undefined,
+      undefined,
+      expect.objectContaining({ expectedConnectorId: 'aerodrome' }),
+    );
     expect(sendTransaction).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ to: '0xrouter', data: '0xadd', gasLimit: 321000 }),
     );
-    expect(ethereum.prepareGasOptions).toHaveBeenNthCalledWith(2, undefined, 321000, undefined, undefined);
+    expect(ethereum.prepareGasOptions).toHaveBeenNthCalledWith(
+      2,
+      undefined,
+      321000,
+      undefined,
+      undefined,
+      expect.objectContaining({ expectedConnectorId: 'aerodrome' }),
+    );
     expect(response).toMatchObject({
       signature: '0xlpadd',
       status: 'CONFIRMED',
@@ -285,7 +374,13 @@ describe('Aerodrome Gateway adapter', () => {
         liquidity: '0.01',
       }),
     );
-    expect(ethereum.prepareGasOptions).toHaveBeenCalledWith(undefined, 300000, undefined, undefined);
+    expect(ethereum.prepareGasOptions).toHaveBeenCalledWith(
+      undefined,
+      300000,
+      undefined,
+      undefined,
+      expect.objectContaining({ expectedConnectorId: 'aerodrome' }),
+    );
     expect(response).toMatchObject({
       signature: '0xlpremove',
       status: 'CONFIRMED',
