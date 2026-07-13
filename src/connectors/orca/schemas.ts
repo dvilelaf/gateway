@@ -509,6 +509,27 @@ export const OrcaClmmQuotePositionRequest = Type.Object({
   ),
 });
 
+// Orca-specific confirmed execute-swap response
+// Requires status=1, executedAt, data, and feeAsset
+export const OrcaClmmExecuteSwapResponse = Type.Object({
+  signature: Type.String(),
+  status: Type.Literal(1, { description: 'Must be 1 (CONFIRMED) for a successful Orca swap' }),
+  executedAt: Type.String({
+    description: 'ISO-8601 timestamp of the confirmed block (Solana blockTime)',
+  }),
+  data: Type.Object({
+    tokenIn: Type.String(),
+    tokenOut: Type.String(),
+    amountIn: Type.Number(),
+    amountOut: Type.Number(),
+    fee: Type.Number(),
+    feeAsset: Type.String({ description: 'Denomination asset for the fee field (always SOL on Solana)' }),
+    baseTokenBalanceChange: Type.Number(),
+    quoteTokenBalanceChange: Type.Number(),
+  }),
+});
+export type OrcaClmmExecuteSwapResponseType = Static<typeof OrcaClmmExecuteSwapResponse>;
+
 // Orca position data structure (from @orca-so/whirlpools)
 const OrcaPositionDataSchema = Type.Object({
   discriminator: Type.Any(), // Uint8Array(8)

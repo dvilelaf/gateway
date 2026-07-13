@@ -84,54 +84,66 @@ const mockMintInfo = {
   tokenProgram: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
 };
 
+// Shared helper: build a base mockSolana with overridable methods
+const buildMockSolana = (overrides: Record<string, any> = {}) => ({
+  getToken: jest.fn().mockImplementation((symbol: string) => {
+    if (symbol === 'SOL' || symbol === mockBaseTokenInfo.address) return mockBaseTokenInfo;
+    if (symbol === 'USDC' || symbol === mockQuoteTokenInfo.address) return mockQuoteTokenInfo;
+    return null;
+  }),
+  getWallet: jest.fn().mockResolvedValue(mockWallet),
+  simulateWithErrorHandling: jest.fn().mockResolvedValue(undefined),
+  sendAndConfirmTransaction: jest.fn().mockResolvedValue({
+    signature: 'test-signature',
+  }),
+  extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+    balanceChanges: [1.0, -198.75],
+    fee: 0.00001,
+    executedAt: '2026-07-13T12:00:00.000Z',
+  }),
+  ...overrides,
+});
+
+// Shared Orca / whirlpool mock setup (called once in beforeAll)
+const buildMockOrcaDeps = () => {
+  const mockWhirlpool = {
+    getData: jest.fn().mockReturnValue(mockWhirlpoolData),
+    refreshData: jest.fn().mockResolvedValue(undefined),
+    getTokenAInfo: jest.fn().mockReturnValue({ address: mockBaseTokenInfo.address }),
+    getTokenBInfo: jest.fn().mockReturnValue({ address: mockQuoteTokenInfo.address }),
+    getTokenVaultAInfo: jest.fn().mockReturnValue({ address: 'vaultA' }),
+    getTokenVaultBInfo: jest.fn().mockReturnValue({ address: 'vaultB' }),
+  };
+
+  const mockFetcher = {
+    getMintInfo: jest.fn().mockResolvedValue(mockMintInfo),
+  };
+
+  const mockClient = {
+    getPool: jest.fn().mockResolvedValue(mockWhirlpool),
+    getFetcher: jest.fn().mockReturnValue(mockFetcher),
+    getContext: jest.fn().mockReturnValue({
+      connection: {},
+      wallet: { publicKey: mockWallet.publicKey },
+      program: {},
+    }),
+  };
+
+  const mockOrca = {
+    getWhirlpoolClientForWallet: jest.fn().mockResolvedValue(mockClient),
+  };
+
+  return { mockWhirlpool, mockFetcher, mockClient, mockOrca };
+};
+
 describe('POST /execute-swap', () => {
   let app: any;
 
   beforeAll(async () => {
     app = await buildApp();
 
-    // Mock Solana.getInstance
-    const mockSolana = {
-      getToken: jest.fn().mockImplementation((symbol: string) => {
-        if (symbol === 'SOL' || symbol === mockBaseTokenInfo.address) return mockBaseTokenInfo;
-        if (symbol === 'USDC' || symbol === mockQuoteTokenInfo.address) return mockQuoteTokenInfo;
-        return null;
-      }),
-      getWallet: jest.fn().mockResolvedValue(mockWallet),
-      simulateWithErrorHandling: jest.fn().mockResolvedValue(undefined),
-      sendAndConfirmTransaction: jest.fn().mockResolvedValue({
-        signature: 'test-signature',
-        fee: 0.000005,
-      }),
-    };
-    (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
-
-    // Mock Orca.getInstance
-    const mockWhirlpool = {
-      getData: jest.fn().mockReturnValue(mockWhirlpoolData),
-    };
-
-    const mockClient = {
-      getPool: jest.fn().mockResolvedValue(mockWhirlpool),
-    };
-
-    const mockContext = {
-      wallet: mockWallet,
-      connection: {},
-      fetcher: {
-        getMintInfo: jest.fn().mockResolvedValue(mockMintInfo),
-      },
-      program: {},
-    };
-
-    const mockOrca = {
-      getWhirlpoolContextForWallet: jest.fn().mockResolvedValue(mockContext),
-    };
+    const { mockOrca } = buildMockOrcaDeps();
     (Orca.getInstance as jest.Mock).mockResolvedValue(mockOrca);
-
-    // Mock buildWhirlpoolClient
-    const { buildWhirlpoolClient } = require('@orca-so/whirlpools-sdk');
-    (buildWhirlpoolClient as jest.Mock).mockReturnValue(mockClient);
 
     // Mock swap quote functions
     const { swapQuoteByInputToken, swapQuoteByOutputToken } = require('@orca-so/whirlpools-sdk');
@@ -147,10 +159,144 @@ describe('POST /execute-swap', () => {
     await app.close();
   });
 
-  describe('with poolAddress provided', () => {
-    // These tests require full SDK mock which is complex
-    // Simplified to test that route is accessible and validates properly
-    it('should require all mandatory parameters', async () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('SELL direction (SOL -> USDC) using pool vault deltas', () => {
+    const SELL_PAYLOAD = {
+      baseToken: 'SOL',
+      quoteToken: 'USDC',
+      amount: 1.0,
+      side: 'SELL',
+      poolAddress: mockPoolAddress,
+    };
+
+    const poolInputDelta = 1.0;
+    const poolOutputDelta = -198.75;
+    const fee = 0.00001;
+    const executedAt = '2026-07-13T12:00:00.000Z';
+
+    it('should return exact executedAt, settled amounts, and signed balance changes from pool vault', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+          balanceChanges: [poolInputDelta, poolOutputDelta],
+          fee,
+          executedAt,
+        }),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: SELL_PAYLOAD,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+
+      // Exact timestamp
+      expect(body.executedAt).toBe(executedAt);
+
+      // SELL: input=base(SOL), output=quote(USDC)
+      // User: inputChange = -poolInputDelta = -1.0, outputChange = -poolOutputDelta = 198.75
+      // amountIn = 1.0, amountOut = 198.75
+      // baseTokenBalanceChange = inputChange = -1.0 (user sells base)
+      // quoteTokenBalanceChange = outputChange = 198.75 (user receives quote)
+      expect(body.data.tokenIn).toBe('SOL');
+      expect(body.data.tokenOut).toBe('USDC');
+      expect(body.data.amountIn).toBe(1.0);
+      expect(body.data.amountOut).toBe(198.75);
+      expect(body.data.baseTokenBalanceChange).toBe(-1.0);
+      expect(body.data.quoteTokenBalanceChange).toBe(198.75);
+      expect(body.data.fee).toBe(fee);
+      expect(body.data.feeAsset).toBe('SOL');
+
+      // Verify extraction called with pool address, nativeMintAsSpl, and strictTokenBalances options
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledTimes(1);
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledWith(
+        'test-signature',
+        mockPoolAddress,
+        [mockBaseTokenInfo.address, mockQuoteTokenInfo.address],
+        { nativeMintAsSpl: true, strictTokenBalances: true },
+      );
+    });
+  });
+
+  describe('BUY direction (quote -> base, i.e. USDC -> SOL) using pool vault deltas', () => {
+    const BUY_PAYLOAD = {
+      baseToken: 'SOL',
+      quoteToken: 'USDC',
+      amount: 0.1,
+      side: 'BUY',
+      poolAddress: mockPoolAddress,
+    };
+
+    const poolInputDelta = 20.5; // pool receives 20.5 USDC
+    const poolOutputDelta = -0.0985; // pool gives 0.0985 WSOL/SOL
+    const fee = 0.00001;
+    const executedAt = '2026-07-13T12:00:05.000Z';
+
+    it('should return correct settled amounts for BUY direction', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+          balanceChanges: [poolInputDelta, poolOutputDelta],
+          fee,
+          executedAt,
+        }),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: BUY_PAYLOAD,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+
+      // Exact timestamp
+      expect(body.executedAt).toBe(executedAt);
+
+      // BUY: input=quote(USDC), output=base(SOL)
+      // User: inputChange = -poolInputDelta = -20.5, outputChange = -poolOutputDelta = 0.0985
+      // amountIn = 20.5, amountOut = 0.0985
+      // baseTokenBalanceChange = outputChange = 0.0985 (user receives base)
+      // quoteTokenBalanceChange = inputChange = -20.5 (user pays quote)
+      expect(body.data.tokenIn).toBe('USDC');
+      expect(body.data.tokenOut).toBe('SOL');
+      expect(body.data.amountIn).toBe(20.5);
+      expect(body.data.amountOut).toBe(0.0985);
+      expect(body.data.baseTokenBalanceChange).toBe(0.0985);
+      expect(body.data.quoteTokenBalanceChange).toBe(-20.5);
+      expect(body.data.fee).toBe(fee);
+      expect(body.data.feeAsset).toBe('SOL');
+
+      // Verify extraction called with pool address, nativeMintAsSpl, and strictTokenBalances options
+      // For BUY: input=USDC, output=SOL
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledTimes(1);
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledWith(
+        'test-signature',
+        mockPoolAddress,
+        [mockQuoteTokenInfo.address, mockBaseTokenInfo.address],
+        { nativeMintAsSpl: true, strictTokenBalances: true },
+      );
+    });
+  });
+
+  describe('invalid pool vault delta validation', () => {
+    it('should return 500 when pool input delta is zero', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+          balanceChanges: [0, -198.75],
+          fee: 0.00001,
+          executedAt: '2026-07-13T12:00:00.000Z',
+        }),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
       const response = await app.inject({
         method: 'POST',
         url: '/execute-swap',
@@ -163,20 +309,197 @@ describe('POST /execute-swap', () => {
         },
       });
 
-      // Either succeeds (200) or fails with proper error (400/500)
-      expect([200, 400, 500]).toContain(response.statusCode);
+      expect(response.statusCode).toBe(500);
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return 500 when pool output delta is zero', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+          balanceChanges: [1.0, 0],
+          fee: 0.00001,
+          executedAt: '2026-07-13T12:00:00.000Z',
+        }),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: {
+          baseToken: 'SOL',
+          quoteToken: 'USDC',
+          amount: 1.0,
+          side: 'SELL',
+          poolAddress: mockPoolAddress,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return 500 when pool deltas are reversed (negative input, positive output)', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+          balanceChanges: [-1.0, 198.75],
+          fee: 0.00001,
+          executedAt: '2026-07-13T12:00:00.000Z',
+        }),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: {
+          baseToken: 'SOL',
+          quoteToken: 'USDC',
+          amount: 1.0,
+          side: 'SELL',
+          poolAddress: mockPoolAddress,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('fee validation', () => {
+    it('should return 500 when fee is zero', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+          balanceChanges: [1.0, -198.75],
+          fee: 0,
+          executedAt: '2026-07-13T12:00:00.000Z',
+        }),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: {
+          baseToken: 'SOL',
+          quoteToken: 'USDC',
+          amount: 1.0,
+          side: 'SELL',
+          poolAddress: mockPoolAddress,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+    });
+
+    it('should return 500 when fee is NaN', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+          balanceChanges: [1.0, -198.75],
+          fee: NaN,
+          executedAt: '2026-07-13T12:00:00.000Z',
+        }),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: {
+          baseToken: 'SOL',
+          quoteToken: 'USDC',
+          amount: 1.0,
+          side: 'SELL',
+          poolAddress: mockPoolAddress,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+    });
+
+    it('should return 500 when fee is negative', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest.fn().mockResolvedValue({
+          balanceChanges: [1.0, -198.75],
+          fee: -0.00001,
+          executedAt: '2026-07-13T12:00:00.000Z',
+        }),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: {
+          baseToken: 'SOL',
+          quoteToken: 'USDC',
+          amount: 1.0,
+          side: 'SELL',
+          poolAddress: mockPoolAddress,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+    });
+  });
+
+  describe('extractBalanceChangesAndFee failure propagation', () => {
+    it('should return 500 when receipt is missing (transaction not found)', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest
+          .fn()
+          .mockRejectedValue(new Error('Transaction test-signature not found after retries')),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: {
+          baseToken: 'SOL',
+          quoteToken: 'USDC',
+          amount: 1.0,
+          side: 'SELL',
+          poolAddress: mockPoolAddress,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return 500 when blockTime is missing', async () => {
+      const mockSolana = buildMockSolana({
+        extractBalanceChangesAndFee: jest
+          .fn()
+          .mockRejectedValue(new Error('Confirmed transaction test-signature is missing a valid block time')),
+      });
+      (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/execute-swap',
+        payload: {
+          baseToken: 'SOL',
+          quoteToken: 'USDC',
+          amount: 1.0,
+          side: 'SELL',
+          poolAddress: mockPoolAddress,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(mockSolana.extractBalanceChangesAndFee).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('without poolAddress (pool lookup)', () => {
     it('should return 404 when pool not found', async () => {
-      // Mock Solana to return valid tokens
       const mockSolana = {
         getToken: jest.fn().mockResolvedValueOnce(MOCK_SOL_TOKEN).mockResolvedValueOnce(MOCK_USDC_TOKEN),
       };
       (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolana);
 
-      // Mock PoolService to return null (no pool found)
       const mockPoolService = {
         getPool: jest.fn().mockResolvedValue(null),
       };
@@ -245,11 +568,9 @@ describe('POST /execute-swap', () => {
           quoteToken: 'USDC',
           amount: 1.0,
           poolAddress: mockPoolAddress,
-          // side omitted - schema has default but it may not apply correctly
         },
       });
 
-      // May return 400 (validation) or 500 (execution with undefined side)
       expect([400, 500]).toContain(response.statusCode);
     });
 
@@ -274,7 +595,6 @@ describe('POST /execute-swap', () => {
         },
       });
 
-      // May return 400 (if HTTP error is properly caught) or 500 (if wrapped in generic error)
       expect([400, 500]).toContain(response.statusCode);
     });
   });
@@ -306,7 +626,6 @@ describe('POST /execute-swap', () => {
         },
       });
 
-      // Should return error status code
       expect(response.statusCode).toBeGreaterThanOrEqual(400);
     });
   });

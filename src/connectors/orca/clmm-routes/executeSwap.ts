@@ -17,7 +17,7 @@ import { FastifyPluginAsync } from 'fastify';
 
 import { Solana } from '../../../chains/solana/solana';
 import { getSolanaChainConfig } from '../../../chains/solana/solana.config';
-import { ExecuteSwapRequestType, ExecuteSwapResponseType, ExecuteSwapResponse } from '../../../schemas/clmm-schema';
+import { ExecuteSwapRequestType } from '../../../schemas/clmm-schema';
 import { httpErrors } from '../../../services/error-handler';
 import { logger } from '../../../services/logger';
 import {
@@ -28,7 +28,12 @@ import {
 } from '../../../services/runtime-guard';
 import { Orca } from '../orca';
 import { handleWsolAta } from '../orca.utils';
-import { OrcaClmmExecuteSwapRequest, OrcaClmmExecuteSwapRequestType } from '../schemas';
+import {
+  OrcaClmmExecuteSwapRequest,
+  OrcaClmmExecuteSwapRequestType,
+  OrcaClmmExecuteSwapResponse,
+  OrcaClmmExecuteSwapResponseType,
+} from '../schemas';
 
 const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token';
 
@@ -47,7 +52,7 @@ export async function executeSwap(
     MainnetMutationGuardInput,
     'expectedConnectorId' | 'expectedNotional' | 'expectedSlippageBps' | 'expectedWalletAddress'
   > = {},
-): Promise<ExecuteSwapResponseType> {
+): Promise<OrcaClmmExecuteSwapResponseType> {
   const solana = await Solana.getInstance(network);
   const orca = await Orca.getInstance(network);
   const wallet = await solana.getWallet(address);
@@ -255,7 +260,7 @@ export async function executeSwap(
   // Build, simulate, and send transaction
   const txPayload = await builder.build();
   await solana.simulateWithErrorHandling(txPayload.transaction);
-  const { signature, fee } = await solana.sendAndConfirmTransaction(
+  const { signature } = await solana.sendAndConfirmTransaction(
     txPayload.transaction,
     [wallet],
     undefined,
@@ -264,12 +269,41 @@ export async function executeSwap(
     guardContext,
   );
 
-  // Calculate balance changes based on side
-  const amountIn = Number(quote.estimatedAmountIn) / Math.pow(10, inputDecimals);
-  const amountOut = Number(quote.estimatedAmountOut) / Math.pow(10, outputDecimals);
+  // Extract on-chain pool vault balance changes for exact settlement
+  // Use the whirlpool (pool) address as owner so pre/post token balances
+  // reflect the whirlpool's vault token holdings, not the user's wallet.
+  // With nativeMintAsSpl:true, NATIVE_MINT (WSOL) uses SPL token balances
+  // instead of native lamports, avoiding ATA creation/closure contamination.
+  const poolAddressStr = whirlpoolPubkey.toBase58();
+  const { balanceChanges, fee, executedAt } = await solana.extractBalanceChangesAndFee(
+    signature,
+    poolAddressStr,
+    [inputTokenMint, outputTokenMint],
+    { nativeMintAsSpl: true, strictTokenBalances: true },
+  );
 
-  const baseTokenBalanceChange = isBuyingSide ? amountOut : -amountIn;
-  const quoteTokenBalanceChange = isBuyingSide ? -amountIn : amountOut;
+  const poolInputDelta = balanceChanges[0];
+  const poolOutputDelta = balanceChanges[1];
+
+  if (!Number.isFinite(poolInputDelta) || poolInputDelta <= 0) {
+    throw httpErrors.internalServerError(`Pool vault input delta must be finite and positive: got ${poolInputDelta}`);
+  }
+  if (!Number.isFinite(poolOutputDelta) || poolOutputDelta >= 0) {
+    throw httpErrors.internalServerError(`Pool vault output delta must be finite and negative: got ${poolOutputDelta}`);
+  }
+  if (!Number.isFinite(fee) || fee <= 0) {
+    throw httpErrors.internalServerError(`Transaction fee must be finite and positive: got ${fee}`);
+  }
+
+  // User signed changes are the inverse of pool vault deltas
+  const inputChange = -poolInputDelta;
+  const outputChange = -poolOutputDelta;
+
+  const amountIn = Math.abs(inputChange);
+  const amountOut = Math.abs(outputChange);
+
+  const baseTokenBalanceChange = isBuyingSide ? outputChange : inputChange;
+  const quoteTokenBalanceChange = isBuyingSide ? inputChange : outputChange;
 
   logger.info(
     `Swap executed: ${amountIn} ${inputTokenInfo.symbol} -> ${amountOut} ${outputTokenInfo.symbol}, fee: ${fee}`,
@@ -277,13 +311,15 @@ export async function executeSwap(
 
   return {
     signature,
-    status: 1, // CONFIRMED
+    status: 1 as const,
+    executedAt,
     data: {
-      tokenIn: inputTokenInfo.address,
-      tokenOut: outputTokenInfo.address,
+      tokenIn: inputTokenInfo.symbol,
+      tokenOut: outputTokenInfo.symbol,
       amountIn,
       amountOut,
       fee,
+      feeAsset: 'SOL',
       baseTokenBalanceChange,
       quoteTokenBalanceChange,
     },
@@ -293,7 +329,7 @@ export async function executeSwap(
 export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{
     Body: OrcaClmmExecuteSwapRequestType;
-    Reply: ExecuteSwapResponseType;
+    Reply: OrcaClmmExecuteSwapResponseType;
   }>(
     '/execute-swap',
     {
@@ -301,7 +337,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
         description: 'Execute a token swap on Orca CLMM',
         tags: ['/connector/orca'],
         body: OrcaClmmExecuteSwapRequest,
-        response: { 200: ExecuteSwapResponse },
+        response: { 200: OrcaClmmExecuteSwapResponse },
       },
     },
     async (request) => {

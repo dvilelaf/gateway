@@ -1718,12 +1718,18 @@ export class Solana {
    * @param signature Transaction signature
    * @param owner Owner address (required for SPL tokens and SOL balance extraction)
    * @param tokens Array of token mint addresses or 'SOL' for native SOL
+   * @param options Optional settings. When nativeMintAsSpl is true, NATIVE_MINT uses
+   *                SPL pre/post token balances instead of native lamport balances.
+   *                When strictTokenBalances is true, every requested SPL mint must have
+   *                both matching owner pre and post records with valid raw amount/decimals;
+   *                otherwise throws. When false (default), missing records are treated as zero.
    * @returns Array of balance changes in the same order as tokens, and transaction fee
    */
   async extractBalanceChangesAndFee(
     signature: string,
     owner: string,
     tokens: string[],
+    options?: { nativeMintAsSpl?: boolean; strictTokenBalances?: boolean },
   ): Promise<{
     balanceChanges: number[];
     fee: number;
@@ -1752,7 +1758,7 @@ export class Solana {
     // Process each token and return array of balance changes
     const balanceChanges = tokens.map((token) => {
       // Check if this is native SOL
-      if (token === 'So11111111111111111111111111111111111111112') {
+      if (token === 'So11111111111111111111111111111111111111112' && !options?.nativeMintAsSpl) {
         // For native SOL, we need to calculate from lamport balance changes
         const accountIndex = txDetails.transaction.message.accountKeys.findIndex((key) =>
           key.pubkey.equals(ownerPubkey),
@@ -1768,13 +1774,38 @@ export class Solana {
         return lamportChange * LAMPORT_TO_SOL;
       } else {
         // Token mint address provided - get SPL token balance change
-        const preBalance =
-          preTokenBalances.find((balance) => balance.mint === token && balance.owner === owner)?.uiTokenAmount
-            .uiAmount || 0;
+        const preRecord = preTokenBalances.find((balance) => balance.mint === token && balance.owner === owner);
+        const postRecord = postTokenBalances.find((balance) => balance.mint === token && balance.owner === owner);
 
-        const postBalance =
-          postTokenBalances.find((balance) => balance.mint === token && balance.owner === owner)?.uiTokenAmount
-            .uiAmount || 0;
+        const strictTokenBalances = options?.strictTokenBalances ?? false;
+
+        if (strictTokenBalances) {
+          if (!preRecord || !postRecord) {
+            throw new Error(`Strict token balances: missing pre/post record for mint ${token} and owner ${owner}`);
+          }
+          const preAmount = preRecord.uiTokenAmount.amount;
+          const postAmount = postRecord.uiTokenAmount.amount;
+          const preDecimals = preRecord.uiTokenAmount.decimals;
+          const postDecimals = postRecord.uiTokenAmount.decimals;
+
+          if (preAmount == null || postAmount == null) {
+            throw new Error(`Strict token balances: missing raw amount for mint ${token}`);
+          }
+          if (typeof preDecimals !== 'number' || typeof postDecimals !== 'number') {
+            throw new Error(`Strict token balances: missing decimals for mint ${token}`);
+          }
+          if (preDecimals !== postDecimals) {
+            throw new Error(
+              `Strict token balances: decimals mismatch for mint ${token}: pre=${preDecimals}, post=${postDecimals}`,
+            );
+          }
+
+          const rawDelta = BigInt(postAmount) - BigInt(preAmount);
+          return Number(rawDelta) / Math.pow(10, preDecimals);
+        }
+
+        const preBalance = preRecord?.uiTokenAmount?.uiAmount ?? 0;
+        const postBalance = postRecord?.uiTokenAmount?.uiAmount ?? 0;
 
         return postBalance - preBalance;
       }
