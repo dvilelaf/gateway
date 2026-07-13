@@ -65,6 +65,7 @@ const PROVIDER_TREASURY_WRAP_GAS_LIMIT = 90000;
 const ARBITRUM_WETH_ADDRESS = '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1';
 const UNISWAP_V3_SWAP_ROUTER_02_ARBITRUM = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
 const UNISWAP_WETH_USDC_ARBITRUM_FEE = 500;
+const PROVIDER_TREASURY_SAME_CHAIN_SWAP_MAX_QUOTE_AGE_MS = 60_000;
 const CCTP_REGISTRY_VERSION = 'cctp-v2-evm-usdc-configured-2026-07-08';
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
@@ -755,7 +756,7 @@ function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance) {
     txTarget: built.txTarget,
     txValueHash: built.txValueHash,
     walletAddress: built.walletAddress,
-    quotedAt: built.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP ? undefined : built.quotedAt,
+    quotedAt: built.quotedAt,
     quotedProviderCostUsd: built.quotedProviderCostUsd,
     quotedGasCostUsd: built.quotedGasCostUsd,
     destinationAmount: built.destinationAmount,
@@ -1770,6 +1771,14 @@ async function executeProviderTreasurySameChainSwap(
       if (!receipt && state.wrapSignedTransaction) {
         const wrapTx = await ethereum.provider.sendTransaction(state.wrapSignedTransaction);
         const wrapReceipt = await ethereum.handleTransactionExecution(wrapTx);
+        if (wrapReceipt?.status === 0) {
+          return {
+            responseStatus: -1,
+            status: 'failed',
+            transactionHash: wrapTransactionHash,
+            wrapTransactionHash,
+          };
+        }
         if (wrapReceipt?.status !== 1) {
           return {
             responseStatus: 0,
@@ -1807,6 +1816,14 @@ async function executeProviderTreasurySameChainSwap(
       state = { ...state, status: 'wrap_submitted', wrapTransactionHash };
       await saveRebalanceState(state);
       const wrapReceipt = await ethereum.handleTransactionExecution(wrapTx);
+      if (wrapReceipt?.status === 0) {
+        return {
+          responseStatus: -1,
+          status: 'failed',
+          transactionHash: wrapTransactionHash,
+          wrapTransactionHash,
+        };
+      }
       if (wrapReceipt?.status !== 1) {
         throw new Error('same-chain treasury ETH wrap not confirmed');
       }
@@ -1814,12 +1831,30 @@ async function executeProviderTreasurySameChainSwap(
       await saveRebalanceState(state);
     }
   }
+  const beforeSwapSubmission = (built: BuiltProviderOwnedRebalance): void => {
+    const quotedAt = built.quotedAt;
+    if (!quotedAt) {
+      throw new Error('same-chain treasury swap quote missing quotedAt; rebuild fresh quote');
+    }
+    const quotedTimestamp = new Date(quotedAt).getTime();
+    if (!Number.isFinite(quotedTimestamp)) {
+      throw new Error('same-chain treasury swap quotedAt is not a valid timestamp; rebuild fresh quote');
+    }
+    const now = Date.now();
+    if (quotedTimestamp > now) {
+      throw new Error('same-chain treasury swap quotedAt is in the future; rebuild fresh quote');
+    }
+    if (now - quotedTimestamp > PROVIDER_TREASURY_SAME_CHAIN_SWAP_MAX_QUOTE_AGE_MS) {
+      throw new Error('same-chain treasury swap quote expired before swap; rebuild fresh quote');
+    }
+  };
   const execution = await executeSingleTransactionRebalance(
     built,
     liveActionAuthorization,
     state,
     PROVIDER_TREASURY_SAME_CHAIN_SWAP_GAS_LIMIT,
     PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+    beforeSwapSubmission,
   );
   return {
     ...execution,
@@ -1833,6 +1868,7 @@ async function executeSingleTransactionRebalance(
   state: DurableRebalanceState,
   gasLimit: number,
   providerIntentSource: string,
+  beforeSubmission?: (built: BuiltProviderOwnedRebalance) => void,
 ): Promise<ProviderOwnedRebalanceExecution> {
   const ethereum = await Ethereum.getInstance(built.sourceNetwork);
   const wallet = await ethereum.getWallet(built.walletAddress);
@@ -1910,6 +1946,9 @@ async function executeSingleTransactionRebalance(
       status: outcome.status,
       transactionHash: state.transactionHash,
     };
+  }
+  if (beforeSubmission) {
+    beforeSubmission(built);
   }
   const gasOptions = await ethereum.prepareGasOptions(
     undefined,
@@ -2901,6 +2940,7 @@ function isRebalanceSubmissionInDoubt(status: string): boolean {
 }
 
 function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string {
+  const isSameChain = built.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP;
   return utils.keccak256(
     utils.toUtf8Bytes(
       JSON.stringify({
@@ -2916,7 +2956,7 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         cctpSourceDomain: built.cctpSourceDomain,
         cctpSourceTokenMessengerAddress: built.cctpSourceTokenMessengerAddress,
         destinationAddress: built.destinationAddress,
-        destinationAmount: built.destinationAmount,
+        destinationAmount: isSameChain ? undefined : built.destinationAmount,
         destinationAsset: built.destinationAsset,
         destinationChain: built.destinationChain,
         destinationNetwork: built.destinationNetwork,
@@ -2936,7 +2976,7 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         sourceAmount: built.sourceAmount,
         sourceNetwork: built.sourceNetwork,
         tokenAddress: built.tokenAddress,
-        txCalldataHash: built.txCalldataHash,
+        txCalldataHash: isSameChain ? undefined : built.txCalldataHash,
         txTarget: built.txTarget,
         txValueHash: built.txValueHash,
         walletAddress: built.walletAddress,

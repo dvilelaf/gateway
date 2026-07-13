@@ -158,6 +158,9 @@ const REBALANCE_STATE_IDS = [
   'same-chain-build-status',
   'same-chain-execute',
   'same-chain-wrap-submitted',
+  'same-chain-restart-regression',
+  'same-chain-build-metadata',
+  'same-chain-reverted-wrap',
   'rebalance-pending-before-submit',
   'rebalance-ambiguous-restart',
   'rebalance-restart',
@@ -173,6 +176,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     process.env.MARLIN_REBALANCE_STATE_ROOT = path.resolve(process.cwd(), 'conf/marlin/rebalances');
     cleanupRebalanceState();
     global.fetch = originalFetch;
+    mockQuoteExactInputSingle.mockReset();
   });
 
   afterEach(() => {
@@ -2253,6 +2257,24 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(built.minAmount).toBe('2572.5');
   });
 
+  it('returns same-chain build metadata with quotedAt, destinationAmount, minAmount via /rebalance/build', async () => {
+    mockQuoteExactInputSingle.mockResolvedValueOnce(BigNumber.from('2625000000'));
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/build',
+      payload: { ...sameChainSwapRequest(), idempotencyKey: 'same-chain-build-metadata' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      quotedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      destinationAmount: '2625.0',
+      minAmount: '2572.5',
+    });
+  });
+
   it('rejects same-chain treasury swap when Uniswap quote returns zero', async () => {
     mockQuoteExactInputSingle.mockResolvedValueOnce(BigNumber.from(0));
     await expect(buildProviderOwnedRebalance(sameChainSwapRequest() as any)).rejects.toThrow(
@@ -2389,6 +2411,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
   it('rebroadcasts same-chain wrap with identical bytes after wrap hash is stored without receipt', async () => {
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
     process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    mockQuoteExactInputSingle.mockResolvedValue(BigNumber.from('2625000000'));
     const WRAP_SERIALIZED = '0x' + 'ab'.repeat(55);
     const WRAP_DETERMINISTIC_HASH = utils.keccak256(WRAP_SERIALIZED);
     const signTransaction = jest.fn().mockResolvedValueOnce(WRAP_SERIALIZED);
@@ -2437,6 +2460,153 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(provider.sendTransaction.mock.calls[1][0]).toBe(WRAP_SERIALIZED);
     expect(signTransaction).toHaveBeenCalledTimes(1);
     expect(provider.getTransactionCount).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns terminal failed status for reverted wrap and never signs approval or swap', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    mockQuoteExactInputSingle.mockResolvedValue(BigNumber.from('2625000000'));
+    const WRAP_SERIALIZED = '0x' + 'ab'.repeat(55);
+    const WRAP_DETERMINISTIC_HASH = utils.keccak256(WRAP_SERIALIZED);
+    const idempotencyKey = 'same-chain-reverted-wrap';
+    const statePath = path.join(process.env.MARLIN_REBALANCE_STATE_ROOT!, `${idempotencyKey}.json`);
+    const signTransaction = jest.fn().mockResolvedValueOnce(WRAP_SERIALIZED);
+    const provider = {
+      getTransactionCount: jest.fn(async () => 5),
+      getTransactionReceipt: jest.fn(),
+      sendTransaction: jest.fn().mockResolvedValueOnce({ hash: '0xwrap-reverted' }),
+    };
+    mockEthereum({
+      chainId: 42161,
+      getWallet: jest.fn(async () => ({ signTransaction })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 0 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+      provider,
+    });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    await app.ready();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...sameChainSwapRequest(),
+        idempotencyKey,
+        liveActionAuthorization: sameChainAuthorization('1.25'),
+      },
+    });
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ signature: WRAP_DETERMINISTIC_HASH, status: -1 });
+    expect(persisted).toMatchObject({ status: 'failed', wrapTransactionHash: WRAP_DETERMINISTIC_HASH });
+    expect(signTransaction).toHaveBeenCalledTimes(1);
+    expect(provider.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(provider.getTransactionCount).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers persisted wrap bytes from a real execute crash before persisting swap, without re-signing wrap on restart', async () => {
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
+    const WRAP_SERIALIZED = '0x' + 'ab'.repeat(55);
+    const WRAP_DETERMINISTIC_HASH = utils.keccak256(WRAP_SERIALIZED);
+    const APPROVAL_SERIALIZED = '0x' + 'cd'.repeat(55);
+    const SWAP_SERIALIZED = '0x' + 'ef'.repeat(55);
+    const idempotencyKey = 'same-chain-restart-regression';
+    const statePath = path.join(process.env.MARLIN_REBALANCE_STATE_ROOT!, `${idempotencyKey}.json`);
+
+    // First session: execute with valid quote. Wrap is signed and sent,
+    // but provider.sendTransaction throws before the swap is accepted.
+    mockQuoteExactInputSingle.mockResolvedValue(BigNumber.from('2625000000'));
+    const signTxFirst = jest.fn().mockResolvedValueOnce(WRAP_SERIALIZED);
+    const sendTx = jest.fn().mockRejectedValueOnce(new Error('provider crash before wrap acceptance'));
+    const providerFirst = {
+      getTransactionCount: jest.fn(async () => 5),
+      getTransactionReceipt: jest.fn(),
+      sendTransaction: sendTx,
+    };
+    mockEthereum({
+      chainId: 42161,
+      getWallet: jest.fn(async () => ({ signTransaction: signTxFirst })),
+      handleTransactionExecution: jest.fn(),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+      provider: providerFirst,
+    });
+    const firstApp = Fastify();
+    await firstApp.register(rebalanceRoutes, { prefix: '/bridge' });
+    await firstApp.ready();
+    await firstApp.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...sameChainSwapRequest(),
+        idempotencyKey,
+        liveActionAuthorization: sameChainAuthorization('1.25'),
+      },
+    });
+    await firstApp.close();
+
+    // Assert persisted JSON already contains exact signed bytes/hash and pending/ambiguous wrap status
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    expect(persisted.wrapSignedTransaction).toBe(WRAP_SERIALIZED);
+    expect(persisted.wrapTransactionHash).toBe(WRAP_DETERMINISTIC_HASH);
+    expect(persisted.status).toBe('wrap_submission_ambiguous');
+
+    // Second session with a DIFFERENT quote
+    mockQuoteExactInputSingle.mockResolvedValue(BigNumber.from('2750000000'));
+    const signTxSecond = jest.fn().mockResolvedValueOnce(APPROVAL_SERIALIZED).mockResolvedValueOnce(SWAP_SERIALIZED);
+    const providerSecond = {
+      getTransactionCount: jest.fn(async () => 5),
+      getTransactionReceipt: jest.fn(),
+      sendTransaction: jest
+        .fn()
+        .mockResolvedValueOnce({ hash: '0xwrap-recovered' })
+        .mockResolvedValueOnce({ hash: '0xapproval-restart' })
+        .mockResolvedValueOnce({ hash: '0xswap-restart' }),
+    };
+    mockEthereum({
+      chainId: 42161,
+      getWallet: jest.fn(async () => ({ signTransaction: signTxSecond })),
+      handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+      prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, maxFeePerGas: BigNumber.from(10) })),
+      provider: providerSecond,
+    });
+    const executeApp = Fastify();
+    await executeApp.register(rebalanceRoutes, { prefix: '/bridge' });
+    await executeApp.ready();
+    const response = await executeApp.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      payload: {
+        ...sameChainSwapRequest(),
+        idempotencyKey,
+        liveActionAuthorization: sameChainAuthorization('1.25'),
+      },
+    });
+    await executeApp.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ signature: '0xswap-restart', status: 1 });
+    // Wrap was NOT re-signed - signTxSecond only has approval+swap
+    expect(signTxSecond).toHaveBeenCalledTimes(2);
+    // No wrap nonce allocated again
+    expect(providerSecond.getTransactionCount).toHaveBeenCalledTimes(2);
+    // Recovered exact same wrap bytes
+    expect(providerSecond.sendTransaction.mock.calls[0][0]).toBe(WRAP_SERIALIZED);
+  });
+
+  it('truncates slippage to floor using integer math for non-divisible raw quote', async () => {
+    mockQuoteExactInputSingle.mockResolvedValueOnce(BigNumber.from('2625123'));
+    const built = await buildProviderOwnedRebalance(sameChainSwapRequest() as any);
+    const swap = new utils.Interface([
+      'function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) payable returns (uint256 amountOut)',
+    ]);
+    const decodedSwap = swap.decodeFunctionData('exactInputSingle', built.txCalldata);
+    const params = decodedSwap[0];
+    // 2625123 * 9800 / 10000 = 2572620.54 → floor to 2572620
+    expect(params.amountOutMinimum.toString()).toBe('2572620');
   });
 });
 

@@ -336,26 +336,31 @@ export function getSpender(network: string, connectorName: string): string {
  */
 
 /**
- * Uniswap V3 QuoterV2 ABI for quote methods
+ * Uniswap V3 QuoterV2 ABI for quote methods.
+ * Uses the canonical tuple-based parameter struct for quoteExactInputSingle
+ * matching IQuoterV2.sol: QuoteExactInputSingleParams.
  */
 export const IQuoterV2ABI = [
   {
     inputs: [
-      { internalType: 'address', name: 'tokenIn', type: 'address' },
-      { internalType: 'address', name: 'tokenOut', type: 'address' },
-      { internalType: 'uint24', name: 'fee', type: 'uint24' },
-      { internalType: 'uint256', name: 'amountIn', type: 'uint256' },
-      { internalType: 'uint160', name: 'sqrtPriceLimitX96', type: 'uint160' },
+      {
+        components: [
+          { internalType: 'address', name: 'tokenIn', type: 'address' },
+          { internalType: 'address', name: 'tokenOut', type: 'address' },
+          { internalType: 'uint256', name: 'amountIn', type: 'uint256' },
+          { internalType: 'uint24', name: 'fee', type: 'uint24' },
+          { internalType: 'uint160', name: 'sqrtPriceLimitX96', type: 'uint160' },
+        ],
+        internalType: 'struct IQuoterV2.QuoteExactInputSingleParams',
+        name: 'params',
+        type: 'tuple',
+      },
     ],
     name: 'quoteExactInputSingle',
     outputs: [
       { internalType: 'uint256', name: 'amountOut', type: 'uint256' },
       { internalType: 'uint160', name: 'sqrtPriceX96After', type: 'uint160' },
-      {
-        internalType: 'uint32',
-        name: 'initializedTicksCrossed',
-        type: 'uint32',
-      },
+      { internalType: 'uint32', name: 'initializedTicksCrossed', type: 'uint32' },
       { internalType: 'uint256', name: 'gasEstimate', type: 'uint256' },
     ],
     stateMutability: 'nonpayable',
@@ -363,21 +368,24 @@ export const IQuoterV2ABI = [
   },
   {
     inputs: [
-      { internalType: 'address', name: 'tokenIn', type: 'address' },
-      { internalType: 'address', name: 'tokenOut', type: 'address' },
-      { internalType: 'uint24', name: 'fee', type: 'uint24' },
-      { internalType: 'uint256', name: 'amountOut', type: 'uint256' },
-      { internalType: 'uint160', name: 'sqrtPriceLimitX96', type: 'uint160' },
+      {
+        components: [
+          { internalType: 'address', name: 'tokenIn', type: 'address' },
+          { internalType: 'address', name: 'tokenOut', type: 'address' },
+          { internalType: 'uint256', name: 'amountOut', type: 'uint256' },
+          { internalType: 'uint24', name: 'fee', type: 'uint24' },
+          { internalType: 'uint160', name: 'sqrtPriceLimitX96', type: 'uint160' },
+        ],
+        internalType: 'struct IQuoterV2.QuoteExactOutputSingleParams',
+        name: 'params',
+        type: 'tuple',
+      },
     ],
     name: 'quoteExactOutputSingle',
     outputs: [
       { internalType: 'uint256', name: 'amountIn', type: 'uint256' },
       { internalType: 'uint160', name: 'sqrtPriceX96After', type: 'uint160' },
-      {
-        internalType: 'uint32',
-        name: 'initializedTicksCrossed',
-        type: 'uint32',
-      },
+      { internalType: 'uint32', name: 'initializedTicksCrossed', type: 'uint32' },
       { internalType: 'uint256', name: 'gasEstimate', type: 'uint256' },
     ],
     stateMutability: 'nonpayable',

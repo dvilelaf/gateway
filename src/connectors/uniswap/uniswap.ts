@@ -587,7 +587,13 @@ export class Uniswap {
     fee: number,
     amountIn: BigNumber,
   ): Promise<BigNumber> {
-    const result = await this.v3Quoter.callStatic.quoteExactInputSingle(tokenIn, tokenOut, fee, amountIn, 0);
+    const result = await this.v3Quoter.callStatic.quoteExactInputSingle({
+      tokenIn,
+      tokenOut,
+      amountIn,
+      fee,
+      sqrtPriceLimitX96: 0,
+    });
     const amountOut: BigNumber = result[0];
     if (amountOut.isZero()) {
       throw new Error('Uniswap V3 quote returned zero output');
