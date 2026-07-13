@@ -1229,6 +1229,17 @@ describe('provider-owned target funding routes', () => {
       expect(persisted.stages[0]).toMatchObject({ index: 0, kind: 'conversion', status: 'built' });
       expect(persisted.stages[1]).toMatchObject({ index: 1, kind: 'funding', status: 'blocked_on_prior_stage' });
       expect(persisted.builtRebalance).toBeDefined();
+      expect(persisted.planTarget).toEqual({
+        destinationAddress: utils.getAddress(ARBITRUM_WALLET),
+        destinationAsset: 'USDC',
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+        targetNotionalEur: '6',
+      });
+      expect(persisted.preConversionUsdcBalanceUnits).toBe('0');
+      expect(persisted.planTargetFingerprint).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(body.planTarget).toBeUndefined();
+      expect(body.preConversionUsdcBalanceUnits).toBeUndefined();
       expect(uniswapMock.quoteExactOutputSingle).toHaveBeenCalledWith(
         ARBITRUM_WETH,
         ARBITRUM_USDC,
@@ -1236,6 +1247,58 @@ describe('provider-owned target funding routes', () => {
         utils.parseUnits('6', 6),
       );
       expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it('rejects tampered two-stage target metadata before execution', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue({
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const payload = targetRequest({
+        destinationAddress: ARBITRUM_WALLET,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+      });
+      expect((await app.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload })).statusCode).toBe(200);
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.preConversionUsdcBalanceUnits = '1';
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const reload = await app.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload });
+      expect(reload.statusCode).toBe(500);
+      expect(reload.body).toContain('target plan metadata fingerprint mismatch');
+      await app.close();
+    });
+
+    it('does not persist a conversion plan when the baseline USDC read fails', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      ethereum.arbitrum.getERC20BalanceByAddress
+        .mockResolvedValueOnce({ decimals: 6, value: BigNumber.from(0) })
+        .mockRejectedValueOnce(new Error('balance unavailable'));
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue({
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.body).toContain('target funding pre-conversion USDC balance unavailable');
+      expect(() => readFileSync(path.join(stateRoot, 'target-funding-1.json'))).toThrow();
       await app.close();
     });
 

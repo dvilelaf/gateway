@@ -646,11 +646,22 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   planVersion?: number;
   activeStageIndex?: number;
   stages?: TargetPlanStage[];
+  planTarget?: TargetPlanFinalTarget;
+  preConversionUsdcBalanceUnits?: string;
+  planTargetFingerprint?: string;
   targetRequestFingerprint?: string;
   maxCostBps?: string;
   signedTransaction?: string;
   quotedNativeGasAmount?: string;
   quotedNativeGasAsset?: string;
+};
+
+type TargetPlanFinalTarget = {
+  destinationAddress: string;
+  destinationAsset: string;
+  destinationChain: string;
+  destinationNetwork: string;
+  targetNotionalEur: string;
 };
 
 type TargetPlanStage = {
@@ -841,7 +852,27 @@ async function loadOrBuildTargetFunding(body: TargetFundingRequest): Promise<Bui
     targetRequestFingerprint,
   };
   if (built.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
-    Object.assign(state, createTwoStagePlan(built));
+    const ethereum = await Ethereum.getInstance('arbitrum');
+    const usdc = ethereum.getContract(ARBITRUM_USDC_ADDRESS, ethereum.provider);
+    let preConversionUsdcBalanceUnits: string;
+    try {
+      const balance = await ethereum.getERC20BalanceByAddress(usdc, built.walletAddress, USDC_DECIMALS, 5000, 'USDC');
+      preConversionUsdcBalanceUnits = BigNumber.from(balance.value).toString();
+    } catch {
+      throw new Error('target funding pre-conversion USDC balance unavailable');
+    }
+    const planTarget: TargetPlanFinalTarget = {
+      destinationAddress: canonicalDestinationAddress,
+      destinationAsset: destination.destinationAsset,
+      destinationChain: destination.destinationChain,
+      destinationNetwork: destination.destinationNetwork,
+      targetNotionalEur: body.targetNotionalEur,
+    };
+    Object.assign(state, createTwoStagePlan(built), {
+      planTarget,
+      preConversionUsdcBalanceUnits,
+      planTargetFingerprint: targetPlanMetadataFingerprint(planTarget, preConversionUsdcBalanceUnits),
+    });
   }
   await saveRebalanceState(state);
   return built;
@@ -1462,6 +1493,21 @@ function assertTargetPlanIntegrity(state: DurableRebalanceState): void {
   if (!state.stages || !Array.isArray(state.stages) || state.stages.length === 0 || state.stages.length > 2) {
     throw new Error('invalid target plan stage count');
   }
+  const conversionPlan = state.stages[0]?.builtRebalance?.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP;
+  if (conversionPlan) {
+    if (
+      !state.planTarget ||
+      state.preConversionUsdcBalanceUnits === undefined ||
+      !state.planTargetFingerprint ||
+      state.planTargetFingerprint !==
+        targetPlanMetadataFingerprint(state.planTarget, state.preConversionUsdcBalanceUnits)
+    ) {
+      throw new Error('target plan metadata fingerprint mismatch');
+    }
+    if (BigNumber.from(state.preConversionUsdcBalanceUnits).lt(0)) {
+      throw new Error('target plan pre-conversion balance invalid');
+    }
+  }
   if (
     state.activeStageIndex === undefined ||
     state.activeStageIndex < 0 ||
@@ -1495,6 +1541,10 @@ function assertTargetPlanIntegrity(state: DurableRebalanceState): void {
 
 function targetPlanStageFingerprint(built: BuiltProviderOwnedRebalance): string {
   return utils.keccak256(utils.toUtf8Bytes(JSON.stringify(built)));
+}
+
+function targetPlanMetadataFingerprint(target: TargetPlanFinalTarget, balanceUnits: string): string {
+  return utils.keccak256(utils.toUtf8Bytes(JSON.stringify({ balanceUnits, target })));
 }
 
 function assertPersistedTargetFundingIntegrity(state: DurableRebalanceState): void {
