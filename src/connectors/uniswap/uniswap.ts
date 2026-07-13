@@ -602,6 +602,31 @@ export class Uniswap {
   }
 
   /**
+   * Quote an exact-output single-pool swap via the on-chain V3 QuoterV2.
+   * Returns the raw input amount (as ethers BigNumber) needed to obtain a
+   * fixed amountOut, or throws if the quote is unavailable or zero.
+   */
+  public async quoteExactOutputSingle(
+    tokenIn: string,
+    tokenOut: string,
+    fee: number,
+    amountOut: BigNumber,
+  ): Promise<BigNumber> {
+    const result = await this.v3Quoter.callStatic.quoteExactOutputSingle({
+      tokenIn,
+      tokenOut,
+      amountOut,
+      fee,
+      sqrtPriceLimitX96: 0,
+    });
+    const amountIn: BigNumber = result[0];
+    if (amountIn.isZero()) {
+      throw new Error('Uniswap V3 exact-output quote returned zero input');
+    }
+    return amountIn;
+  }
+
+  /**
    * Close the Uniswap instance and clean up resources
    */
   public async close() {
