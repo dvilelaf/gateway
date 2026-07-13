@@ -53,12 +53,15 @@ function validateSwapExecution(response) {
     typeof response.signature === 'string' &&
     typeof response.status === 'number' && // Added: status field
     (response.status !== 1 || // If not CONFIRMED
-      (response.data && // then data is optional
+      (typeof response.executedAt === 'string' &&
+        !Number.isNaN(Date.parse(response.executedAt)) &&
+        response.data && // then data is optional
         typeof response.data.tokenIn === 'string' &&
         typeof response.data.tokenOut === 'string' &&
         typeof response.data.amountIn === 'number' &&
         typeof response.data.amountOut === 'number' &&
         typeof response.data.fee === 'number' &&
+        response.data.feeAsset === 'SOL' &&
         typeof response.data.baseTokenBalanceChange === 'number' &&
         typeof response.data.quoteTokenBalanceChange === 'number'))
   );
@@ -265,12 +268,14 @@ describe('Jupiter Swap Tests (Solana Mainnet)', () => {
       const executeResponse = {
         signature: '2XGwPTNGFvRjLb6HkBQq8qwsRZ8XNjEjvuehVeNDdz3TxxKnvYBfgMsYCQKNHMpDYzKcUfKdCwzBvkPvDz5aLfYc',
         status: 1, // CONFIRMED
+        executedAt: '2026-07-13T10:00:00.000Z',
         data: {
           tokenIn: BASE_TOKEN,
           tokenOut: QUOTE_TOKEN,
           amountIn: 1.0,
           amountOut: 163.456119,
           fee: 0.001,
+          feeAsset: 'SOL',
           baseTokenBalanceChange: -1.0,
           quoteTokenBalanceChange: 163.456119,
         },
@@ -325,12 +330,14 @@ describe('Jupiter Swap Tests (Solana Mainnet)', () => {
       const executeResponse = {
         signature: '3YHqPTNGFvRjLb6HkBQq8qwsRZ8XNjEjvuehVeNDdz3TxxKnvYBfgMsYCQKNHMpDYzKcUfKdCwzBvkPvDz5aLfYd',
         status: 1, // CONFIRMED
+        executedAt: '2026-07-13T10:01:00.000Z',
         data: {
           tokenIn: BASE_TOKEN,
           tokenOut: QUOTE_TOKEN,
           amountIn: 1.0,
           amountOut: 16.391234,
           fee: 0.002, // Higher fee due to priority
+          feeAsset: 'SOL',
           baseTokenBalanceChange: -1.0,
           quoteTokenBalanceChange: 16.391234,
         },

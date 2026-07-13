@@ -1727,6 +1727,7 @@ export class Solana {
   ): Promise<{
     balanceChanges: number[];
     fee: number;
+    executedAt: string;
   }> {
     // Fetch transaction details with retry (data may not be immediately available after confirmation)
     const txDetails = await this._fetchTransactionWithRetry(signature, 5, 500, true);
@@ -1737,6 +1738,10 @@ export class Solana {
 
     // Calculate fee including priority fee using the same method as getFee
     const fee = this.getFee(txDetails);
+    if (typeof txDetails.blockTime !== 'number' || !Number.isFinite(txDetails.blockTime)) {
+      throw new Error(`Confirmed transaction ${signature} is missing a valid block time`);
+    }
+    const executedAt = new Date(txDetails.blockTime * 1000).toISOString();
 
     const preBalances = txDetails.meta?.preBalances || [];
     const postBalances = txDetails.meta?.postBalances || [];
@@ -1775,7 +1780,7 @@ export class Solana {
       }
     });
 
-    return { balanceChanges, fee };
+    return { balanceChanges, fee, executedAt };
   }
 
   /**
@@ -1990,19 +1995,21 @@ export class Solana {
   ): Promise<{
     signature: string;
     status: number;
+    executedAt?: string;
     data?: {
       tokenIn: string;
       tokenOut: string;
       amountIn: number;
       amountOut: number;
       fee: number;
+      feeAsset?: string;
       baseTokenBalanceChange: number;
       quoteTokenBalanceChange: number;
     };
   }> {
     if (confirmed && txData) {
       // Transaction confirmed, extract balance changes
-      const { balanceChanges, fee } = await this.extractBalanceChangesAndFee(signature, walletAddress, [
+      const { balanceChanges, fee, executedAt } = await this.extractBalanceChangesAndFee(signature, walletAddress, [
         tokenIn,
         tokenOut,
       ]);
@@ -2031,12 +2038,14 @@ export class Solana {
       return {
         signature,
         status: 1, // CONFIRMED
+        ...(executedAt === undefined ? {} : { executedAt }),
         data: {
           tokenIn,
           tokenOut,
           amountIn,
           amountOut,
           fee,
+          feeAsset: 'SOL',
           baseTokenBalanceChange: baseTokenBalanceChange!,
           quoteTokenBalanceChange: quoteTokenBalanceChange!,
         },

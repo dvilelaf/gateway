@@ -138,6 +138,11 @@ export const SwapExecuteResponse = Type.Object(
     status: Type.Number({
       description: 'Transaction status: 0 = PENDING, 1 = CONFIRMED, -1 = FAILED',
     }),
+    executedAt: Type.Optional(
+      Type.String({
+        description: 'ISO 8601 UTC terminal time derived from the confirmed transaction block',
+      }),
+    ),
 
     // Only included when status = CONFIRMED
     data: Type.Optional(
@@ -157,6 +162,11 @@ export const SwapExecuteResponse = Type.Object(
         fee: Type.Number({
           description: 'Transaction fee paid',
         }),
+        feeAsset: Type.Optional(
+          Type.String({
+            description: 'Native asset denomination of the transaction fee',
+          }),
+        ),
         baseTokenBalanceChange: Type.Number({
           description: 'Change in base token balance (negative for decrease)',
         }),
