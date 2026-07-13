@@ -987,7 +987,7 @@ async function selectAndBuildTargetFunding(
           }
           await provisionTargetFundingSourceWallet(source);
           const uniswap = await Uniswap.getInstance('arbitrum');
-          const desiredOutput = sourceBudgetUnits;
+          const desiredOutput = candidateSourceAmountUnits;
           const minimumConversionOutput =
             destination.provider === 'hyperliquid_bridge2'
               ? utils.parseUnits(HYPERLIQUID_BRIDGE2_MIN_USDC, USDC_DECIMALS)
