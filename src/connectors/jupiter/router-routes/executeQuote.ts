@@ -96,8 +96,10 @@ export async function executeQuote(
     walletAddress,
   );
 
-  // Remove quote from cache only after successful execution (confirmed)
-  if (result.status === 1) {
+  if (result.status === 1 && result.data) {
+    result.data.tokenIn = inputToken.symbol;
+    result.data.tokenOut = outputToken.symbol;
+
     quoteCache.delete(quoteId);
     logger.info(
       `Swap executed successfully: ${result.data?.amountIn.toFixed(4)} ${inputToken.symbol} -> ${result.data?.amountOut.toFixed(4)} ${outputToken.symbol}`,
