@@ -1528,9 +1528,9 @@ describe('provider-owned target funding routes', () => {
   describe('two-stage target plan execution', () => {
     const BRIDGE2 = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
 
-    it('blocks stage-0 conversion when native ETH balance is below amount plus gas reserve', async () => {
+    it('blocks Squid stage-0 conversion at the reserve boundary before spending native ETH', async () => {
       const ethereum = mockEthereumContexts(
-        { arbitrum: { gas: '500000000000000', usdc: '0' } },
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
         {
           chainId: 42161,
           getWallet: jest.fn(),
@@ -1551,16 +1551,16 @@ describe('provider-owned target funding routes', () => {
       ethereum.arbitrum.getNativeBalanceByAddress
         .mockResolvedValueOnce({ decimals: 18, value: BigNumber.from('20000000000000000') })
         .mockResolvedValueOnce({ decimals: 18, value: BigNumber.from('20000000000000000') })
-        .mockResolvedValue({ decimals: 18, value: BigNumber.from('500000000000000') });
+        .mockResolvedValue({ decimals: 18, value: BigNumber.from('6100000000000000') });
       const app = Fastify();
       await app.register(rebalanceRoutes, { prefix: '/bridge' });
       const build = await app.inject({
         method: 'POST',
         url: '/bridge/rebalance/targets',
         payload: targetRequest({
-          destinationAddress: ARBITRUM_WALLET,
-          destinationChain: 'hyperliquid',
-          destinationNetwork: 'mainnet',
+          destinationAddress: BASE_WALLET,
+          destinationChain: 'ethereum',
+          destinationNetwork: 'base',
         }),
       });
       expect(build.statusCode).toBe(200);
@@ -1726,7 +1726,7 @@ describe('provider-owned target funding routes', () => {
         quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
       };
       (Uniswap.getInstance as jest.Mock).mockResolvedValue(uniswapMock);
-      mockSquidRoute();
+      const squidRoute = mockSquidRoute();
 
       ethereum.arbitrum.getERC20BalanceByAddress
         .mockResolvedValueOnce({ decimals: 6, value: BigNumber.from(0) })
@@ -1764,10 +1764,39 @@ describe('provider-owned target funding routes', () => {
       expect(persisted.stages[1].kind).toBe('funding');
       expect(persisted.stages[1].builtRebalance).toBeDefined();
       expect(persisted.stages[1].builtRebalance.provider).toBe('squid_router');
+      expect(persisted.stages[1].builtRebalance).toMatchObject({
+        amount: '6.0',
+        destinationAddress: BASE_WALLET,
+        destinationAmount: '6.0',
+        destinationAsset: 'USDC',
+        destinationChain: 'ethereum',
+        destinationNetwork: 'base',
+        sourceAmount: '6.0',
+      });
       expect(persisted.activeStageIndex).toBe(1);
       expect(persisted.status).toBe('built');
       expect(persisted.builtRebalance.provider).toBe('squid_router');
       expect(persisted.provider).toBe('squid_router');
+      expect(JSON.parse(squidRoute.mock.calls[0][1].body)).toMatchObject({
+        fromAddress: utils.getAddress(ARBITRUM_WALLET),
+        fromAmount: '6000000',
+        fromChain: '42161',
+        fromToken: ARBITRUM_USDC,
+        toAddress: BASE_WALLET,
+        toChain: '8453',
+        toToken: BASE_USDC,
+      });
+
+      const sendsBeforeFunding = sendTransaction.mock.calls.length;
+      ethereum.arbitrum.getERC20BalanceByAddress.mockResolvedValue({ decimals: 6, value: BigNumber.from(0) });
+      const blockedFunding = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/target-funding-1/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      expect(blockedFunding.statusCode).toBe(409);
+      expect(blockedFunding.json().message).toBe('insufficient_source_or_gas');
+      expect(sendTransaction).toHaveBeenCalledTimes(sendsBeforeFunding);
       await app.close();
     });
 

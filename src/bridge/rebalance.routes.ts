@@ -664,6 +664,7 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
 
 type TargetPlanFinalTarget = {
   destinationAddress: string;
+  destinationAmount?: string;
   destinationAsset: string;
   destinationAssetAddress: string;
   destinationChain: string;
@@ -878,6 +879,7 @@ async function loadOrBuildTargetFunding(body: TargetFundingRequest): Promise<Bui
     }
     const planTarget: TargetPlanFinalTarget = {
       destinationAddress: canonicalDestinationAddress,
+      destinationAmount: body.destinationAmount,
       destinationAsset: destination.destinationAsset,
       destinationAssetAddress: destination.destinationAssetAddress,
       destinationChain: destination.destinationChain,
@@ -986,7 +988,10 @@ async function selectAndBuildTargetFunding(
           await provisionTargetFundingSourceWallet(source);
           const uniswap = await Uniswap.getInstance('arbitrum');
           const desiredOutput = sourceBudgetUnits;
-          const bridge2MinUsdc = utils.parseUnits(HYPERLIQUID_BRIDGE2_MIN_USDC, USDC_DECIMALS);
+          const minimumConversionOutput =
+            destination.provider === 'hyperliquid_bridge2'
+              ? utils.parseUnits(HYPERLIQUID_BRIDGE2_MIN_USDC, USDC_DECIMALS)
+              : BigNumber.from(1);
           let requiredInput: BigNumber | undefined;
           try {
             requiredInput = await uniswap.quoteExactOutputSingle(
@@ -1015,8 +1020,8 @@ async function selectAndBuildTargetFunding(
             const conversionOutput = utils.parseUnits(conversionBuild.destinationAmount!, USDC_DECIMALS);
             const guaranteedOutput = utils.parseUnits(conversionBuild.minAmount!, USDC_DECIMALS);
             if (
-              guaranteedOutput.gte(bridge2MinUsdc) &&
-              conversionOutput.gte(bridge2MinUsdc) &&
+              guaranteedOutput.gte(minimumConversionOutput) &&
+              conversionOutput.gte(minimumConversionOutput) &&
               conversionOutput.lte(desiredOutput)
             ) {
               return conversionBuild;
@@ -1033,7 +1038,7 @@ async function selectAndBuildTargetFunding(
           } catch {
             /* quoteExactInputSingle unavailable */
           }
-          if (quotedOutput && quotedOutput.gte(bridge2MinUsdc) && quotedOutput.lte(desiredOutput)) {
+          if (quotedOutput && quotedOutput.gte(minimumConversionOutput) && quotedOutput.lte(desiredOutput)) {
             const conversionBuild = await buildProviderTreasurySameChainSwap({
               amount: utils.formatEther(availableForSwap),
               destinationAddress: utils.getAddress(source.walletAddress),
@@ -1419,8 +1424,12 @@ async function executeConversionStage(
       throw new TargetFundingBlockedError();
     }
     const amountUnits = utils.parseUnits(built.amount, 18);
+    const conversionTotalRawGas =
+      state.planTarget!.destinationChain === 'hyperliquid'
+        ? ETH_CONVERSION_TOTAL_RAW_GAS
+        : ETH_CONVERSION_TOTAL_RAW_GAS_SQUID;
     const gasReserveWei = BigNumber.from(gasPrice)
-      .mul(ETH_CONVERSION_TOTAL_RAW_GAS)
+      .mul(conversionTotalRawGas)
       .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
       .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
     if (nativeBalanceValue.lt(amountUnits.add(gasReserveWei))) {
@@ -1539,9 +1548,16 @@ async function transitionFromConversionToFunding(
     throw new Error('target funding non-positive USDC output from conversion');
   }
   const actualOutputUnits = postBalanceUnits.sub(preConversionUnits);
-  const minBridgeUnits = utils.parseUnits(HYPERLIQUID_BRIDGE2_MIN_USDC, USDC_DECIMALS);
-  if (actualOutputUnits.lt(minBridgeUnits)) {
-    throw new Error('target funding conversion output below 5 USDC minimum');
+  const isHyperliquid = state.planTarget!.destinationChain === 'hyperliquid';
+  const minFundingUnits = isHyperliquid
+    ? utils.parseUnits(HYPERLIQUID_BRIDGE2_MIN_USDC, USDC_DECIMALS)
+    : BigNumber.from(1);
+  if (actualOutputUnits.lt(minFundingUnits)) {
+    throw new Error(
+      isHyperliquid
+        ? 'target funding conversion output below 5 USDC minimum'
+        : 'target funding conversion output below provider minimum',
+    );
   }
   const targetUnits = utils.parseUnits(state.planTarget!.targetNotionalEur, USDC_DECIMALS);
   const bridgeUnits = actualOutputUnits.gt(targetUnits) ? targetUnits : actualOutputUnits;
@@ -1550,7 +1566,6 @@ async function transitionFromConversionToFunding(
   if (BigNumber.from(gasPrice).lte(0)) {
     throw new Error('target funding gas price unavailable');
   }
-  const isHyperliquid = state.planTarget!.destinationChain === 'hyperliquid';
   const stageOneGasLimit = isHyperliquid
     ? HYPERLIQUID_BRIDGE2_GAS_LIMIT
     : SQUID_ROUTER_APPROVE_GAS_LIMIT + SQUID_ROUTER_GAS_LIMIT;
@@ -1604,12 +1619,30 @@ async function transitionFromConversionToFunding(
     if (squidBaseBuild.quotedGasCostUsd === undefined) {
       throw new Error('Squid stage-1 route missing gasCosts');
     }
+    const destinationAssetDecimals = state.planTarget!.destinationAsset === 'WETH' ? 18 : USDC_DECIMALS;
+    const providerDestinationAmount = squidBaseBuild.providerDestinationAmount;
+    if (providerDestinationAmount === undefined) {
+      throw new Error('Squid stage-1 route did not return a destination amount');
+    }
+    if (
+      state.planTarget!.destinationAmount !== undefined &&
+      BigNumber.from(providerDestinationAmount).lt(
+        utils.parseUnits(state.planTarget!.destinationAmount, destinationAssetDecimals),
+      )
+    ) {
+      throw new Error('Squid stage-1 route does not satisfy destination funding amount');
+    }
+    const destinationAmount = utils.formatUnits(providerDestinationAmount, destinationAssetDecimals);
     fundingBuilt = {
       ...squidBaseBuild,
+      amount: state.planTarget!.destinationAmount ?? destinationAmount,
+      destinationAmount,
+      destinationAsset: state.planTarget!.destinationAsset,
       destinationChain: state.planTarget!.destinationChain,
       destinationNetwork: state.planTarget!.destinationNetwork,
       quotedNativeGasAmount: utils.formatEther(requiredGas),
       quotedNativeGasAsset: 'ETH',
+      sourceAmount: squidBaseBuild.amount,
     };
   }
   const fundingFingerprint = targetPlanStageFingerprint(fundingBuilt);
