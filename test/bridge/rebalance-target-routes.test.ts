@@ -267,7 +267,7 @@ describe('provider-owned target funding routes', () => {
     });
     const body = response.json();
     expect(body.sourceAmount).toBe('6.0');
-    expect(body.destinationAmount).toMatch(/^\d+\.?\d*$/);
+    expect(body.destinationAmount).toBe('0.056');
     expect(body.quotedProviderCostUsd).toBe('3.5');
     expect(body.quotedGasCostUsd).toBe('2.1');
     expect(body.quotedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
