@@ -20,6 +20,8 @@ import {
   marlinProviderIntentAuthorizationMatches,
 } from '../services/runtime-guard';
 
+import { buildMayanSwap, getMayanStatus } from './providers/mayan';
+
 const MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN_HEADER = 'x-marlin-gateway-provider-intent-token';
 const HYPERLIQUID_BRIDGE2_ADDRESS = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7';
 const ARBITRUM_USDC_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
@@ -54,6 +56,12 @@ const SQUID_ROUTER_GAS_LIMIT = 450000;
 const SQUID_ROUTER_APPROVE_GAS_LIMIT = 90000;
 const SQUID_NATIVE_TOKEN_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const SQUID_NATIVE_ASSET_DECIMALS = 18;
+const MAYAN_PROVIDER = 'mayan';
+const MAYAN_PROVIDER_INTENT_SOURCE = 'mayan_rebalance';
+const MAYAN_TARGET_ETH_AMOUNT = '0.0005';
+const MAYAN_MAX_GAS_LIMIT = 2000000;
+const ARBITRUM_NATIVE_TOKEN_ADDRESS = '0x0000000000000000000000000000000000000000';
+const SOLANA_NATIVE_TOKEN_ADDRESS = 'So11111111111111111111111111111111111111112';
 const PROVIDER_TREASURY_SAME_CHAIN_SWAP = 'provider_treasury_same_chain_swap';
 const TARGET_FUNDING_BLOCKER = 'insufficient_source_or_gas';
 const TARGET_FUNDING_GAS_BUFFER_NUMERATOR = 12;
@@ -553,13 +561,20 @@ type BuiltProviderOwnedRebalance = {
   approvalCalldataHash?: string;
   approvalTxCalldata?: string;
   approvalTxTarget?: string;
+  deadline?: number;
   destinationAddress: string;
   destinationAsset: string;
   destinationNetwork?: string;
   destinationVenue?: string;
+  gasLimit?: number;
   idempotencyKey: string;
   minAmount: string;
-  provider: 'hyperliquid_bridge2' | 'cctp_usdc' | 'squid_router' | typeof PROVIDER_TREASURY_SAME_CHAIN_SWAP;
+  provider:
+    | 'hyperliquid_bridge2'
+    | 'cctp_usdc'
+    | 'squid_router'
+    | typeof PROVIDER_TREASURY_SAME_CHAIN_SWAP
+    | typeof MAYAN_PROVIDER;
   sourceAsset: string;
   sourceAmount?: string;
   sourceChain: 'ethereum';
@@ -596,6 +611,8 @@ type BuiltProviderOwnedRebalance = {
   destinationAmount?: string;
   quotedNativeGasAmount?: string;
   quotedNativeGasAsset?: string;
+  routePayload?: string;
+  routePayloadHash?: string;
 };
 
 type ProviderOwnedRebalanceExecution = {
@@ -691,12 +708,12 @@ type TargetPlanStage = {
 type TargetFundingDestination = {
   canonicalChain: 'ethereum' | 'solana';
   canonicalNetwork: 'arbitrum' | 'base' | 'mainnet-beta';
-  destinationAsset: 'USDC' | 'WETH' | 'ETH';
+  destinationAsset: 'USDC' | 'WETH' | 'ETH' | 'SOL';
   destinationAssetAddress: string;
   destinationAssetDecimals: number;
   destinationChain: 'ethereum' | 'hyperliquid' | 'solana';
   destinationNetwork: string;
-  provider: 'hyperliquid_bridge2' | 'squid_router';
+  provider: 'hyperliquid_bridge2' | 'squid_router' | typeof MAYAN_PROVIDER;
 };
 
 type TargetFundingSource = (typeof TARGET_FUNDING_EVM_USDC_SOURCES)[number] & {
@@ -902,6 +919,36 @@ async function selectAndBuildTargetFunding(
   destinationAddress: string,
   maxCostBps: string | undefined,
 ): Promise<BuiltProviderOwnedRebalance> {
+  if (destination.provider === MAYAN_PROVIDER) {
+    await provisionTargetFundingSourceWallet({
+      network: 'arbitrum',
+      walletAddress: await canonicalTargetFundingWalletAddress('ethereum', 'arbitrum'),
+    });
+    const built = await buildMayanTargetFunding(destinationAddress, body.idempotencyKey);
+    assertMayanBuildMetadata(built);
+    const sourceWalletAddress = built.walletAddress;
+    const ethereum = await Ethereum.getInstance('arbitrum');
+    const [nativeBalance, gasPrice] = await Promise.all([
+      ethereum.getNativeBalanceByAddress(sourceWalletAddress),
+      ethereum.provider.getGasPrice(),
+    ]);
+    const nativeBalanceValue = BigNumber.from(nativeBalance.value);
+    const gasPriceValue = BigNumber.from(gasPrice);
+    if (gasPriceValue.lte(0)) {
+      throw new TargetFundingBlockedError();
+    }
+    const txValueWei = BigNumber.from(built.txValue ?? '0');
+    const mayanGasLimit = built.gasLimit!;
+    const gasReserveWei = gasPriceValue
+      .mul(mayanGasLimit)
+      .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
+      .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
+    const requiredWei = txValueWei.add(gasReserveWei);
+    if (nativeBalanceValue.lt(requiredWei)) {
+      throw new TargetFundingBlockedError();
+    }
+    return built;
+  }
   const sourceBudgetUnits = utils.parseUnits(body.targetNotionalEur, USDC_DECIMALS);
   if (sourceBudgetUnits.lte(0)) {
     throw new Error('target funding notional must be positive');
@@ -1275,6 +1322,76 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
   if (!marlinGatewayProviderIntentTokenMatches(providerIntentToken)) {
     throw new Error('provider treasury authorization required');
   }
+  if (built.provider === MAYAN_PROVIDER) {
+    const sourceAmount = built.sourceAmount ?? built.amount;
+    if (!state.signedTransaction && !state.transactionHash) {
+      assertMayanBuildMetadata(built);
+      const ethereum = await Ethereum.getInstance('arbitrum');
+      const [nativeBalance, gasPrice] = await Promise.all([
+        ethereum.getNativeBalanceByAddress(built.walletAddress),
+        ethereum.provider.getGasPrice(),
+      ]);
+      const nativeBalanceValue = BigNumber.from(nativeBalance.value);
+      if (BigNumber.from(gasPrice).lte(0)) {
+        throw new TargetFundingBlockedError();
+      }
+      const txValueWei = BigNumber.from(built.txValue ?? '0');
+      const mayanGasLimit = built.gasLimit!;
+      const gasReserveWei = BigNumber.from(gasPrice)
+        .mul(mayanGasLimit)
+        .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
+        .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
+      const requiredWei = txValueWei.add(gasReserveWei);
+      if (nativeBalanceValue.lt(requiredWei)) {
+        throw new TargetFundingBlockedError();
+      }
+    }
+    await provisionTargetFundingSourceWallet({
+      network: 'arbitrum',
+      walletAddress: built.walletAddress,
+    });
+    const liveActionAuthorization: LiveActionAuthorization = {
+      action: 'gateway_rebalance',
+      connector_id: providerTreasuryConnectorId(built.provider),
+      network: built.sourceNetwork,
+      notional: sourceAmount,
+      scope: 'provider_treasury',
+      source: 'marlin',
+      wallet_address: built.walletAddress,
+    };
+    assertMainnetMutationAllowed({
+      chain: 'ethereum',
+      expectedConnectorId: providerTreasuryConnectorId(built.provider),
+      expectedNotional: sourceAmount,
+      expectedWalletAddress: built.walletAddress,
+      internalProviderIntentSource: providerTreasuryIntentSource(built.provider),
+      liveActionAuthorization,
+      network: built.sourceNetwork,
+      operation: 'ethereum_transaction',
+    });
+    try {
+      const execution = await executeProviderOwnedRebalance(built, liveActionAuthorization, state);
+      const latest = (await readRebalanceState(idempotencyKey)) ?? state;
+      state = {
+        ...latest,
+        approvalTransactionHash: execution.approvalTransactionHash,
+        providerError: execution.providerError,
+        providerStatus: execution.providerStatus,
+        status: execution.status,
+        transactionHash: execution.transactionHash || bestKnownTransactionHash(state),
+      };
+      await saveRebalanceState(state);
+      return { signature: execution.transactionHash, status: execution.responseStatus };
+    } catch (error) {
+      const latest = (await readRebalanceState(idempotencyKey)) ?? state;
+      await saveRebalanceState({
+        ...latest,
+        providerError: redactProviderError(error),
+        status: recoverableRebalanceErrorStatus(latest),
+      });
+      throw new Error(redactProviderError(error));
+    }
+  }
   const source = {
     network: built.sourceNetwork,
     tokenAddress: built.tokenAddress,
@@ -1471,7 +1588,6 @@ async function executeConversionStage(
 
   await provisionTargetFundingSourceWallet({
     network: 'arbitrum',
-    tokenAddress: ARBITRUM_USDC_ADDRESS,
     walletAddress: built.walletAddress,
   });
   const sourceAmount = built.sourceAmount ?? built.amount;
@@ -1943,10 +2059,22 @@ function resolveTargetFundingDestination(body: TargetFundingRequest): TargetFund
       provider: SQUID_ROUTER_PROVIDER,
     };
   }
+  if (chain === 'solana' && ['mainnet-beta', 'solana-mainnet-beta', 'solana'].includes(network) && asset === 'SOL') {
+    return {
+      canonicalChain: 'solana',
+      canonicalNetwork: 'mainnet-beta',
+      destinationAsset: 'SOL',
+      destinationAssetAddress: SOLANA_NATIVE_TOKEN_ADDRESS,
+      destinationAssetDecimals: 9,
+      destinationChain: 'solana',
+      destinationNetwork: 'mainnet-beta',
+      provider: MAYAN_PROVIDER,
+    };
+  }
   throw new Error('unsupported target funding destination asset');
 }
 
-async function provisionTargetFundingSourceWallet(source: TargetFundingSource): Promise<void> {
+async function provisionTargetFundingSourceWallet(source: { network: string; walletAddress: string }): Promise<void> {
   const { ensureMarlinWalletExists, marlinWalletPolicyFor } = await import('../wallet/routes/setMarlinDefault');
   const policy = marlinWalletPolicyFor('ethereum', source.network);
   if (!policy) {
@@ -2499,6 +2627,74 @@ export async function buildHyperliquidBridge2Transfer(
   };
 }
 
+function assertMayanBuildMetadata(built: BuiltProviderOwnedRebalance): void {
+  const expectedAmount = utils.parseEther(MAYAN_TARGET_ETH_AMOUNT);
+  let sourceAmount: BigNumber;
+  let txValue: BigNumber;
+  try {
+    sourceAmount = utils.parseEther(built.sourceAmount ?? built.amount);
+    txValue = BigNumber.from(built.txValue);
+  } catch {
+    throw new Error('mayan source amount invalid; rebuild fresh quote');
+  }
+  if (!sourceAmount.eq(expectedAmount) || !txValue.eq(expectedAmount)) {
+    throw new Error('mayan source amount must equal fixed target amount; rebuild fresh quote');
+  }
+  if (!Number.isSafeInteger(built.deadline) || built.deadline! <= 0) {
+    throw new Error('mayan quote deadline invalid; rebuild fresh quote');
+  }
+  if (built.deadline! * 1000 <= Date.now()) {
+    throw new Error('mayan quote deadline expired before execution; rebuild fresh quote');
+  }
+  if (!Number.isSafeInteger(built.gasLimit) || built.gasLimit! <= 0 || built.gasLimit! > MAYAN_MAX_GAS_LIMIT) {
+    throw new Error('mayan gasLimit invalid; rebuild fresh quote');
+  }
+}
+
+async function buildMayanTargetFunding(
+  destinationAddress: string,
+  idempotencyKey: string,
+): Promise<BuiltProviderOwnedRebalance> {
+  const sourceAddress = await canonicalTargetFundingWalletAddress('ethereum', 'arbitrum');
+  const canonicalDestinationAddress = await canonicalTargetFundingWalletAddress('solana', 'mainnet-beta');
+  if (!targetFundingAddressesEqual(destinationAddress, canonicalDestinationAddress, 'solana')) {
+    throw new Error('destinationAddress does not match the canonical MARLIN_MNEMONIC wallet');
+  }
+  const mayanBuild = await buildMayanSwap({
+    sourceAddress,
+    destinationAddress: canonicalDestinationAddress,
+    amount: MAYAN_TARGET_ETH_AMOUNT,
+  });
+  const walletAddress = utils.getAddress(sourceAddress);
+  return {
+    amount: mayanBuild.sourceAmount,
+    deadline: mayanBuild.deadline,
+    destinationAddress: canonicalDestinationAddress,
+    destinationAmount: mayanBuild.destinationAmount,
+    destinationAsset: 'SOL',
+    destinationChain: 'solana',
+    destinationNetwork: 'mainnet-beta',
+    gasLimit: mayanBuild.gasLimit,
+    idempotencyKey,
+    minAmount: mayanBuild.minAmountOut,
+    provider: MAYAN_PROVIDER,
+    quoteId: mayanBuild.quoteId,
+    sourceAmount: mayanBuild.sourceAmount,
+    sourceAsset: 'ETH',
+    sourceChain: 'ethereum',
+    sourceNetwork: 'arbitrum',
+    tokenAddress: ARBITRUM_NATIVE_TOKEN_ADDRESS,
+    txCalldata: mayanBuild.txCalldata,
+    txCalldataHash: utils.keccak256(mayanBuild.txCalldata),
+    txTarget: mayanBuild.txTarget,
+    txValue: mayanBuild.txValue,
+    txValueHash: transactionValueHash(mayanBuild.txValue),
+    routePayload: mayanBuild.routePayload,
+    routePayloadHash: mayanBuild.routePayloadHash,
+    walletAddress,
+  };
+}
+
 export async function buildCctpBaseArbitrumUsdcTransfer(
   body: CctpBaseArbitrumRebalanceRequest,
 ): Promise<BuiltProviderOwnedRebalance> {
@@ -2576,6 +2772,15 @@ async function executeProviderOwnedRebalance(
   }
   if (built.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
     return executeProviderTreasurySameChainSwap(built, liveActionAuthorization, state);
+  }
+  if (built.provider === MAYAN_PROVIDER) {
+    return executeSingleTransactionRebalance(
+      built,
+      liveActionAuthorization,
+      state,
+      built.gasLimit!,
+      MAYAN_PROVIDER_INTENT_SOURCE,
+    );
   }
   return executeSingleTransactionRebalance(
     built,
@@ -2833,7 +3038,7 @@ function sourceReceiptOutcome(
   if (receiptStatus === 0) {
     return { responseStatus: -1, status: 'failed' };
   }
-  if (receiptStatus === 1 && provider !== SQUID_ROUTER_PROVIDER) {
+  if (receiptStatus === 1 && provider !== SQUID_ROUTER_PROVIDER && provider !== MAYAN_PROVIDER) {
     return { responseStatus: 1, status: 'confirmed' };
   }
   return { responseStatus: 0, status: 'submitted' };
@@ -3599,7 +3804,10 @@ async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRe
   if (!state || state.status === 'confirmed' || state.status === 'failed') {
     return state;
   }
-  if (state.transactionHash && ['hyperliquid_bridge2', SQUID_ROUTER_PROVIDER].includes(state.provider)) {
+  if (
+    state.transactionHash &&
+    ['hyperliquid_bridge2', SQUID_ROUTER_PROVIDER, MAYAN_PROVIDER].includes(state.provider)
+  ) {
     try {
       const ethereum = await Ethereum.getInstance(state.sourceNetwork);
       const receipt = await ethereum.provider.getTransactionReceipt(state.transactionHash);
@@ -3615,19 +3823,48 @@ async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRe
         return state;
       }
       if (receipt?.status === 1 && state.provider !== SQUID_ROUTER_PROVIDER) {
-        if (state.planVersion === 1 && state.activeStageIndex === 1 && state.stages?.[1]?.kind === 'funding') {
+        if (state.provider === MAYAN_PROVIDER) {
+          if (state.status !== 'destination_pending') {
+            state = { ...state, status: 'destination_pending' };
+            await saveRebalanceState(state);
+          }
+        } else if (state.planVersion === 1 && state.activeStageIndex === 1 && state.stages?.[1]?.kind === 'funding') {
           const stages = [...(state.stages ?? [])];
           stages[1] = { ...stages[1], status: 'source_confirmed' };
           state = { ...state, stages, status: 'destination_pending' };
+          await saveRebalanceState(state);
+          return state;
         } else {
           state = { ...state, status: 'confirmed' };
+          await saveRebalanceState(state);
+          return state;
         }
-        await saveRebalanceState(state);
-        return state;
       }
     } catch (error) {
       state = { ...state, providerError: redactProviderError(error) };
       await saveRebalanceState(state);
+    }
+  }
+  if (state.provider === MAYAN_PROVIDER && state.status === 'destination_pending' && state.transactionHash) {
+    try {
+      const mayanStatus = await getMayanStatus(state.transactionHash);
+      if (mayanStatus.status === 'confirmed') {
+        state = { ...state, providerStatus: mayanStatus.providerStatus, status: 'confirmed' };
+        await saveRebalanceState(state);
+        return state;
+      }
+      if (mayanStatus.status === 'failed') {
+        state = { ...state, providerStatus: mayanStatus.providerStatus, status: 'failed' };
+        await saveRebalanceState(state);
+        return state;
+      }
+      state = { ...state, providerStatus: mayanStatus.providerStatus, status: 'destination_pending' };
+      await saveRebalanceState(state);
+      return state;
+    } catch (error) {
+      state = { ...state, providerError: redactProviderError(error), status: 'destination_pending' };
+      await saveRebalanceState(state);
+      return state;
     }
   }
   if (state.provider !== SQUID_ROUTER_PROVIDER) {
@@ -3821,12 +4058,14 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         cctpSolanaUsdcAta: built.cctpSolanaUsdcAta,
         cctpSourceDomain: built.cctpSourceDomain,
         cctpSourceTokenMessengerAddress: built.cctpSourceTokenMessengerAddress,
+        deadline: built.deadline,
         destinationAddress: built.destinationAddress,
         destinationAmount: isSameChain ? undefined : built.destinationAmount,
         destinationAsset: built.destinationAsset,
         destinationChain: built.destinationChain,
         destinationNetwork: built.destinationNetwork,
         destinationVenue: built.destinationVenue,
+        gasLimit: built.gasLimit,
         providerRouteId: built.providerRouteId,
         providerDestinationAmount: built.providerDestinationAmount,
         quoteId: built.quoteId,
@@ -3835,6 +4074,7 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         quotedNativeGasAmount: built.quotedNativeGasAmount,
         quotedNativeGasAsset: built.quotedNativeGasAsset,
         provider: built.provider,
+        routePayloadHash: built.routePayloadHash,
         squidDestinationChainId: built.squidDestinationChainId,
         squidSourceChainId: built.squidSourceChainId,
         squidStatusRequestId: built.squidStatusRequestId,
@@ -4063,7 +4303,8 @@ function providerTreasuryConnectorId(provider: string): string {
   if (
     isCctpProvider(provider) ||
     provider === SQUID_ROUTER_PROVIDER ||
-    provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP
+    provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP ||
+    provider === MAYAN_PROVIDER
   ) {
     return 'treasury';
   }
@@ -4079,6 +4320,9 @@ function providerTreasuryIntentSource(provider: string): string {
   }
   if (provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP) {
     return PROVIDER_TREASURY_SAME_CHAIN_SWAP;
+  }
+  if (provider === MAYAN_PROVIDER) {
+    return MAYAN_PROVIDER_INTENT_SOURCE;
   }
   return 'hyperliquid_bridge2_rebalance';
 }

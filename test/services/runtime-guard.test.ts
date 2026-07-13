@@ -603,6 +603,32 @@ describe('runtime guard', () => {
     ).not.toThrow();
   });
 
+  it('allows Marlin Mayan treasury authorization for Arbitrum Ethereum transaction', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '0.0005',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000aa',
+        internalProviderIntentSource: 'mayan_rebalance',
+        liveActionAuthorization: {
+          action: 'gateway_rebalance',
+          connector_id: 'treasury',
+          network: 'arbitrum',
+          notional: '0.0005',
+          scope: 'provider_treasury',
+          source: 'marlin',
+          wallet_address: '0x00000000000000000000000000000000000000aa',
+        },
+        network: 'arbitrum',
+        operation: 'ethereum_transaction',
+      }),
+    ).not.toThrow();
+  });
+
   it('blocks Squid Router treasury authorization with mismatched wallet or connector context', () => {
     delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
@@ -689,6 +715,58 @@ describe('runtime guard', () => {
         },
         network: 'mainnet-beta',
         operation: 'solana_raw_transaction',
+      }),
+    ).toThrow(/direct mainnet mutation disabled/);
+  });
+
+  it('blocks Mayan treasury authorization on non-Arbitrum network', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '0.0005',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000aa',
+        internalProviderIntentSource: 'mayan_rebalance',
+        liveActionAuthorization: {
+          action: 'gateway_rebalance',
+          connector_id: 'treasury',
+          network: 'base',
+          notional: '0.0005',
+          scope: 'provider_treasury',
+          source: 'marlin',
+          wallet_address: '0x00000000000000000000000000000000000000aa',
+        },
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).toThrow(/direct mainnet mutation disabled/);
+  });
+
+  it('blocks Mayan treasury authorization with mismatched wallet', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        expectedConnectorId: 'treasury',
+        expectedNotional: '0.0005',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000bb',
+        internalProviderIntentSource: 'mayan_rebalance',
+        liveActionAuthorization: {
+          action: 'gateway_rebalance',
+          connector_id: 'treasury',
+          network: 'arbitrum',
+          notional: '0.0005',
+          scope: 'provider_treasury',
+          source: 'marlin',
+          wallet_address: '0x00000000000000000000000000000000000000aa',
+        },
+        network: 'arbitrum',
+        operation: 'ethereum_transaction',
       }),
     ).toThrow(/direct mainnet mutation disabled/);
   });

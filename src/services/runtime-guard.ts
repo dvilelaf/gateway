@@ -261,6 +261,12 @@ function isMarlinProviderTreasuryAuthorization(input: MainnetMutationGuardInput)
       sourceMatches &&
       requiredGuardContextPresent) ||
     (input.chain === 'ethereum' &&
+      input.internalProviderIntentSource === 'mayan_rebalance' &&
+      input.network === 'arbitrum' &&
+      input.operation === 'ethereum_transaction' &&
+      sourceMatches &&
+      requiredGuardContextPresent) ||
+    (input.chain === 'ethereum' &&
       input.network === 'arbitrum' &&
       input.operation === 'ethereum_transaction' &&
       input.internalProviderIntentSource === 'provider_treasury_same_chain_swap' &&

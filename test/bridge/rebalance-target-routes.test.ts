@@ -49,6 +49,44 @@ jest.mock('../../src/wallet/routes/setMarlinDefault', () => {
   };
 });
 
+jest.mock('../../src/bridge/providers/mayan', () => ({
+  buildMayanSwap: jest.fn(async (params: { sourceAddress: string; destinationAddress: string; amount: string }) => {
+    const { utils } = require('ethers');
+    if (params.amount !== '0.0005') {
+      throw new Error(`mayan amount must be 0.0005, got ${params.amount}`);
+    }
+    if (!params.sourceAddress.startsWith('0x')) {
+      throw new Error('mayan source address must be EVM');
+    }
+    return {
+      provider: 'mayan',
+      quoteId: 'mayan-quote-1',
+      sourceChain: 'ethereum',
+      sourceNetwork: 'arbitrum',
+      sourceAsset: 'ETH',
+      destinationChain: 'solana',
+      destinationNetwork: 'mainnet-beta',
+      destinationAsset: 'SOL',
+      sourceAddress: params.sourceAddress,
+      destinationAddress: params.destinationAddress,
+      sourceAmount: '0.0005',
+      destinationAmount: '50000000',
+      minAmountOut: '49000000',
+      deadline: 9999999999999,
+      type: 'FAST_MCTP',
+      txTarget: '0x337685fdaB40D39bd02028545a4FfA7D287cC3E2',
+      txCalldata: '0xabcdef',
+      txValue: '500000000000000',
+      gasLimit: 500000,
+      routePayload: '{"quoteId":"mayan-quote-1"}',
+      routePayloadHash: '0x' + 'ab'.repeat(32),
+    };
+  }),
+  getMayanStatus: jest.fn(async (_sourceTxHash: string) => {
+    return { status: 'confirmed', providerStatus: 'settled' };
+  }),
+}));
+
 import { rebalanceRoutes } from '../../src/bridge/rebalance.routes';
 import { Ethereum } from '../../src/chains/ethereum/ethereum';
 import { Uniswap } from '../../src/connectors/uniswap/uniswap';
@@ -2647,6 +2685,508 @@ describe('provider-owned target funding routes', () => {
       expect(statusBody.stageIndex).toBeUndefined();
       expect(statusBody.stageCount).toBeUndefined();
       expect(statusBody.stageStatus).toBeUndefined();
+      await app.close();
+    });
+  });
+
+  describe('Mayan target funding for canonical SOL on Solana', () => {
+    const { buildMayanSwap, getMayanStatus } = require('../../src/bridge/providers/mayan');
+
+    it('builds a fixed 0.0005 ETH Mayan FAST_MCTP swap for solana/mainnet-beta/SOL', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-1',
+          mode: 'mainnet',
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.provider).toBe('mayan');
+      expect(body.sourceAsset).toBe('ETH');
+      expect(body.sourceNetwork).toBe('arbitrum');
+      expect(body.destinationAsset).toBe('SOL');
+      expect(body.destinationChain).toBe('solana');
+      expect(body.destinationNetwork).toBe('mainnet-beta');
+      expect(body.destinationAddress).toBe(SOLANA_WALLET);
+      expect(body.sourceAmount).toBe('0.0005');
+      expect(body.amount).toBe('0.0005');
+      expect(body.txTarget).toBe('0x337685fdaB40D39bd02028545a4FfA7D287cC3E2');
+      expect(body.walletAddress).toBe(utils.getAddress(ARBITRUM_WALLET));
+      expect(body.quoteId).toBe('mayan-quote-1');
+      expect(buildMayanSwap).toHaveBeenCalledWith({
+        sourceAddress: utils.getAddress(ARBITRUM_WALLET),
+        destinationAddress: SOLANA_WALLET,
+        amount: '0.0005',
+      });
+      expect(ethereum.arbitrum.getNativeBalanceByAddress).toHaveBeenCalledWith(utils.getAddress(ARBITRUM_WALLET));
+      const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'mayan-funding-1.json'), 'utf8'));
+      expect(persisted.provider).toBe('mayan');
+      expect(persisted.builtRebalance.provider).toBe('mayan');
+      expect(persisted.builtRebalance.sourceAmount).toBe('0.0005');
+      expect(persisted.builtRebalance.routePayload).toBeDefined();
+      expect(persisted.builtRebalance.routePayloadHash).toBeDefined();
+      await app.close();
+    });
+
+    it('rejects when source wallet has insufficient native ETH for 0.0005 txValue plus gas reserve', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '1099999999999999', usdc: '0' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-2',
+          mode: 'mainnet',
+        },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().message).toBe('insufficient_source_or_gas');
+      expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      expect(() => readFileSync(path.join(stateRoot, 'mayan-funding-2.json'))).toThrow();
+      await app.close();
+    });
+
+    it('rejects a Mayan build whose native value differs from the fixed source amount', async () => {
+      const baseBuild = await buildMayanSwap({
+        sourceAddress: utils.getAddress(ARBITRUM_WALLET),
+        destinationAddress: SOLANA_WALLET,
+        amount: '0.0005',
+      });
+      buildMayanSwap.mockResolvedValueOnce({ ...baseBuild, txValue: '500000000000001' });
+      mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-wrong-value',
+          mode: 'mainnet',
+        },
+      });
+      expect(response.statusCode).toBe(500);
+      expect(response.body).toContain('mayan source amount must equal fixed target amount');
+      expect(() => readFileSync(path.join(stateRoot, 'mayan-funding-wrong-value.json'))).toThrow();
+      await app.close();
+    });
+
+    it('executes a persisted Mayan build and checks source receipt', async () => {
+      const signer = new Wallet(`0x${'88'.repeat(32)}`);
+      const signTransaction = jest.spyOn(signer, 'signTransaction');
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+      const getTransactionReceipt = jest.fn().mockResolvedValue(null);
+      const ethereum = mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        {
+          chainId: 42161,
+          getWallet: jest.fn(async () => signer),
+          handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+          prepareGasOptions: jest.fn(async () => ({ gasLimit: 500000, gasPrice: BigNumber.from(10) })),
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransactionCount: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2),
+            getTransactionReceipt,
+            sendTransaction,
+          },
+        },
+      );
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const build = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-3',
+          mode: 'mainnet',
+        },
+      });
+      expect(build.statusCode).toBe(200);
+
+      const execute = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/mayan-funding-3/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      expect(execute.statusCode).toBe(200);
+      expect(execute.json().status).toBe(0);
+
+      const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'mayan-funding-3.json'), 'utf8'));
+      expect(persisted.status).toBe('submitted');
+      expect(persisted.transactionHash).toBeDefined();
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+      const sent = utils.parseTransaction(sendTransaction.mock.calls[0][0]);
+      expect(sent.to).toBe(utils.getAddress('0x337685fdaB40D39bd02028545a4FfA7D287cC3E2'));
+      expect(sent.data).toBe('0xabcdef');
+      expect(sent.value.eq('500000000000000')).toBe(true);
+      expect(ethereum.arbitrum.prepareGasOptions.mock.calls[0][1]).toBe(500000);
+      expect(ethereum.arbitrum.prepareGasOptions.mock.calls[0][3]).toBe('mayan_rebalance');
+
+      await app.close();
+      const resumedApp = Fastify();
+      await resumedApp.register(rebalanceRoutes, { prefix: '/bridge' });
+      const retry = await resumedApp.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/mayan-funding-3/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      expect(retry.json().signature).toBe(execute.json().signature);
+      expect(signTransaction).toHaveBeenCalledTimes(1);
+      expect(sendTransaction).toHaveBeenCalledTimes(2);
+      expect(sendTransaction.mock.calls[1][0]).toBe(sendTransaction.mock.calls[0][0]);
+      expect(buildMayanSwap).toHaveBeenCalledTimes(1);
+
+      // After source receipt is confirmed by fresh read and Mayan confirmed, status becomes confirmed
+      getTransactionReceipt.mockResolvedValue({ status: 1 });
+      const refreshed = await resumedApp.inject({ method: 'GET', url: '/bridge/rebalance/mayan-funding-3' });
+      expect(refreshed.json().status).toBe('confirmed');
+      await resumedApp.close();
+    });
+
+    it('marks status confirmed when Mayan explorer reports settled after source receipt', async () => {
+      getMayanStatus.mockResolvedValue({ status: 'confirmed', providerStatus: 'settled' });
+      const signer = new Wallet(`0x${'99'.repeat(32)}`);
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+      const getTransactionReceipt = jest.fn().mockResolvedValue(null);
+      const ethereum = mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        {
+          chainId: 42161,
+          getWallet: jest.fn(async () => signer),
+          handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+          prepareGasOptions: jest.fn(async () => ({ gasLimit: 500000, gasPrice: BigNumber.from(10) })),
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransactionCount: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2),
+            getTransactionReceipt,
+            sendTransaction,
+          },
+        },
+      );
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-4',
+          mode: 'mainnet',
+        },
+      });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/mayan-funding-4/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      // Mock receipt confirmed so refreshRebalanceStatus enters destination_pending and Mayan status polling
+      getTransactionReceipt.mockResolvedValue({ status: 1 });
+      const statusAfterTx = await app.inject({ method: 'GET', url: '/bridge/rebalance/mayan-funding-4' });
+      expect(statusAfterTx.statusCode).toBe(200);
+      expect(statusAfterTx.json().status).toBe('confirmed');
+      expect(statusAfterTx.json().providerStatus).toBe('settled');
+      expect(statusAfterTx.json().provider).toBe('mayan');
+      await app.close();
+    });
+
+    it('marks status failed when Mayan explorer reports failed after source receipt', async () => {
+      getMayanStatus.mockResolvedValue({ status: 'failed', providerStatus: 'REFUNDED' });
+      const signer = new Wallet(`0x${'aa'.repeat(32)}`);
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+      const getTransactionReceipt = jest.fn().mockResolvedValue(null);
+      mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        {
+          chainId: 42161,
+          getWallet: jest.fn(async () => signer),
+          handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+          prepareGasOptions: jest.fn(async () => ({ gasLimit: 500000, gasPrice: BigNumber.from(10) })),
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransactionCount: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2),
+            getTransactionReceipt,
+            sendTransaction,
+          },
+        },
+      );
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-5',
+          mode: 'mainnet',
+        },
+      });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/mayan-funding-5/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      getTransactionReceipt.mockResolvedValue({ status: 1 });
+      const statusAfterTx = await app.inject({ method: 'GET', url: '/bridge/rebalance/mayan-funding-5' });
+      expect(statusAfterTx.statusCode).toBe(200);
+      expect(statusAfterTx.json().status).toBe('failed');
+      await app.close();
+    });
+
+    it('stays nonterminal when Mayan explorer reports pending after source receipt', async () => {
+      getMayanStatus.mockResolvedValue({ status: 'pending', providerStatus: 'in_progress' });
+      const signer = new Wallet(`0x${'bb'.repeat(32)}`);
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+      const getTransactionReceipt = jest.fn().mockResolvedValue(null);
+      mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        {
+          chainId: 42161,
+          getWallet: jest.fn(async () => signer),
+          handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+          prepareGasOptions: jest.fn(async () => ({ gasLimit: 500000, gasPrice: BigNumber.from(10) })),
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransactionCount: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2),
+            getTransactionReceipt,
+            sendTransaction,
+          },
+        },
+      );
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-6',
+          mode: 'mainnet',
+        },
+      });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/mayan-funding-6/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      getTransactionReceipt.mockResolvedValue({ status: 1 });
+      const statusAfterTx = await app.inject({ method: 'GET', url: '/bridge/rebalance/mayan-funding-6' });
+      expect(statusAfterTx.statusCode).toBe(200);
+      expect(statusAfterTx.json().status).toBe('destination_pending');
+      await app.close();
+    });
+
+    it('rejects caller-supplied provider, source, and wallet authority fields for Mayan', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-7',
+          mode: 'mainnet',
+          provider: 'mayan',
+        },
+      });
+      expect(response.statusCode).toBe(400);
+      await app.close();
+    });
+
+    it('rejects Mayan execute when deadline is expired', async () => {
+      const signer = new Wallet(`0x${'cc'.repeat(32)}`);
+      const sendTransaction = jest.fn();
+      const ethereum = mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        { getWallet: jest.fn(async () => signer) },
+      );
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const baseBuild = await buildMayanSwap({
+        sourceAddress: utils.getAddress(ARBITRUM_WALLET),
+        destinationAddress: SOLANA_WALLET,
+        amount: '0.0005',
+      });
+      const deadline = Math.floor(Date.now() / 1000) + 60;
+      buildMayanSwap.mockResolvedValueOnce({ ...baseBuild, deadline });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-expired-deadline',
+          mode: 'mainnet',
+        },
+      });
+      const now = jest.spyOn(Date, 'now').mockReturnValue((deadline + 1) * 1000);
+      const execute = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/mayan-funding-expired-deadline/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+
+      expect(execute.statusCode).toBe(500);
+      expect(execute.body).toContain('mayan quote deadline expired before execution; rebuild fresh quote');
+      expect(sendTransaction).not.toHaveBeenCalled();
+      expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      now.mockRestore();
+      await app.close();
+    });
+
+    it('rejects persisted Mayan selection with tampered deadline via fingerprint mismatch', async () => {
+      const signer = new Wallet(`0x${'dd'.repeat(32)}`);
+      const sendTransaction = jest.fn();
+      const ethereum = mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        { getWallet: jest.fn(async () => signer) },
+      );
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-tampered-deadline',
+          mode: 'mainnet',
+        },
+      });
+      const statePath = path.join(stateRoot, 'mayan-funding-tampered-deadline.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      delete persisted.builtRebalance.deadline;
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const execute = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/mayan-funding-tampered-deadline/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+
+      expect(execute.statusCode).toBe(500);
+      expect(execute.body).toContain('persisted target funding selection fingerprint mismatch');
+      expect(sendTransaction).not.toHaveBeenCalled();
+      expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it('rejects persisted Mayan selection with tampered gasLimit via fingerprint mismatch', async () => {
+      const signer = new Wallet(`0x${'ee'.repeat(32)}`);
+      const sendTransaction = jest.fn();
+      const ethereum = mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        { getWallet: jest.fn(async () => signer) },
+      );
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-tampered-gaslimit',
+          mode: 'mainnet',
+        },
+      });
+      const statePath = path.join(stateRoot, 'mayan-funding-tampered-gaslimit.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.builtRebalance.gasLimit = 999999;
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const execute = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/mayan-funding-tampered-gaslimit/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+
+      expect(execute.statusCode).toBe(500);
+      expect(execute.body).toContain('persisted target funding selection fingerprint mismatch');
+      expect(sendTransaction).not.toHaveBeenCalled();
+      expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it('uses adapter gasLimit for balance reserve on build', async () => {
+      const baseBuild = await buildMayanSwap({
+        sourceAddress: utils.getAddress(ARBITRUM_WALLET),
+        destinationAddress: SOLANA_WALLET,
+        amount: '0.0005',
+      });
+      buildMayanSwap.mockResolvedValueOnce({ ...baseBuild, gasLimit: 321000 });
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '885200000000000', usdc: '0' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: {
+          targetNotionalEur: '1',
+          destinationAddress: SOLANA_WALLET,
+          destinationAsset: 'SOL',
+          destinationChain: 'solana',
+          destinationNetwork: 'mainnet-beta',
+          idempotencyKey: 'mayan-funding-adapter-gaslimit',
+          mode: 'mainnet',
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.provider).toBe('mayan');
+      const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'mayan-funding-adapter-gaslimit.json'), 'utf8'));
+      expect(persisted.builtRebalance.gasLimit).toBe(321000);
+      expect(ethereum.arbitrum.getNativeBalanceByAddress).toHaveBeenCalledWith(utils.getAddress(ARBITRUM_WALLET));
       await app.close();
     });
   });
