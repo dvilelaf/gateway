@@ -1313,7 +1313,7 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
       }
       const freshGasWei = sourceStatus.requiredGas!;
       const persistedGasWei = utils.parseEther(quotedNativeGasAmount);
-      if (freshGasWei.gt(persistedGasWei)) {
+      if (!freshGasFitsPersistedBufferedQuote(freshGasWei, persistedGasWei)) {
         throw new TargetFundingBlockedError();
       }
     }
@@ -1722,7 +1722,7 @@ async function executeFundingStage(
     if (
       !built.quotedNativeGasAmount ||
       built.quotedNativeGasAsset !== 'ETH' ||
-      sourceStatus.requiredGas!.gt(utils.parseEther(built.quotedNativeGasAmount))
+      !freshGasFitsPersistedBufferedQuote(sourceStatus.requiredGas!, utils.parseEther(built.quotedNativeGasAmount))
     ) {
       throw new TargetFundingBlockedError();
     }
@@ -1784,6 +1784,13 @@ async function executeFundingStage(
     await saveRebalanceState(state);
     throw new Error(redactProviderError(error));
   }
+}
+
+function freshGasFitsPersistedBufferedQuote(freshBufferedGas: BigNumber, persistedBufferedGas: BigNumber): boolean {
+  const freshUnbufferedGas = freshBufferedGas
+    .mul(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR)
+    .div(TARGET_FUNDING_GAS_BUFFER_NUMERATOR);
+  return freshUnbufferedGas.lte(persistedBufferedGas);
 }
 
 async function executeStageProviderRebalance(

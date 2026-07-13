@@ -585,6 +585,7 @@ describe('provider-owned target funding routes', () => {
       }),
     });
     expect(buildResponse.statusCode).toBe(200);
+    ethereum.arbitrum.provider.getGasPrice.mockResolvedValue(BigNumber.from('1010000000'));
 
     const response = await app.inject({
       method: 'POST',
