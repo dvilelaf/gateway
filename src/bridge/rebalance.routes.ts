@@ -71,6 +71,12 @@ const ETH_CONVERSION_TOTAL_RAW_GAS =
   CCTP_APPROVE_GAS_LIMIT +
   PROVIDER_TREASURY_SAME_CHAIN_SWAP_GAS_LIMIT +
   HYPERLIQUID_BRIDGE2_GAS_LIMIT;
+const ETH_CONVERSION_TOTAL_RAW_GAS_SQUID =
+  PROVIDER_TREASURY_WRAP_GAS_LIMIT +
+  CCTP_APPROVE_GAS_LIMIT +
+  PROVIDER_TREASURY_SAME_CHAIN_SWAP_GAS_LIMIT +
+  SQUID_ROUTER_APPROVE_GAS_LIMIT +
+  SQUID_ROUTER_GAS_LIMIT;
 const CCTP_REGISTRY_VERSION = 'cctp-v2-evm-usdc-configured-2026-07-08';
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
@@ -659,6 +665,7 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
 type TargetPlanFinalTarget = {
   destinationAddress: string;
   destinationAsset: string;
+  destinationAssetAddress: string;
   destinationChain: string;
   destinationNetwork: string;
   targetNotionalEur: string;
@@ -872,6 +879,7 @@ async function loadOrBuildTargetFunding(body: TargetFundingRequest): Promise<Bui
     const planTarget: TargetPlanFinalTarget = {
       destinationAddress: canonicalDestinationAddress,
       destinationAsset: destination.destinationAsset,
+      destinationAssetAddress: destination.destinationAssetAddress,
       destinationChain: destination.destinationChain,
       destinationNetwork: destination.destinationNetwork,
       targetNotionalEur: body.targetNotionalEur,
@@ -951,7 +959,7 @@ async function selectAndBuildTargetFunding(
       continue;
     }
     if (sourceStatus.status === 'insufficient') {
-      if (destination.provider === 'hyperliquid_bridge2') {
+      if (source.network === 'arbitrum') {
         try {
           const ethereum = await Ethereum.getInstance(source.network);
           const [nativeBalance, gasPrice] = await Promise.all([
@@ -963,8 +971,12 @@ async function selectAndBuildTargetFunding(
           if (gasPriceValue.lte(0)) {
             continue;
           }
+          const conversionTotalRawGas =
+            destination.provider === 'hyperliquid_bridge2'
+              ? ETH_CONVERSION_TOTAL_RAW_GAS
+              : ETH_CONVERSION_TOTAL_RAW_GAS_SQUID;
           const gasReserveWei = gasPriceValue
-            .mul(ETH_CONVERSION_TOTAL_RAW_GAS)
+            .mul(conversionTotalRawGas)
             .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
             .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
           const availableForSwap = nativeBalanceValue.sub(gasReserveWei);
@@ -1534,36 +1546,73 @@ async function transitionFromConversionToFunding(
   const targetUnits = utils.parseUnits(state.planTarget!.targetNotionalEur, USDC_DECIMALS);
   const bridgeUnits = actualOutputUnits.gt(targetUnits) ? targetUnits : actualOutputUnits;
   const bridgeAmount = utils.formatUnits(bridgeUnits, USDC_DECIMALS);
-  const bridge2BaseBuild = await buildHyperliquidBridge2Transfer({
-    amount: bridgeAmount,
-    destinationAddress: built.destinationAddress,
-    destinationAsset: 'USDC',
-    destinationVenue: 'hyperliquid',
-    idempotencyKey,
-    mode: 'mainnet',
-    provider: 'hyperliquid_bridge2',
-    sourceAsset: 'USDC',
-    sourceChain: 'ethereum',
-    sourceNetwork: 'arbitrum',
-    walletAddress: built.walletAddress,
-  });
   const gasPrice = await ethereum.provider.getGasPrice();
   if (BigNumber.from(gasPrice).lte(0)) {
-    throw new Error('target funding Bridge2 gas price unavailable');
+    throw new Error('target funding gas price unavailable');
   }
+  const isHyperliquid = state.planTarget!.destinationChain === 'hyperliquid';
+  const stageOneGasLimit = isHyperliquid
+    ? HYPERLIQUID_BRIDGE2_GAS_LIMIT
+    : SQUID_ROUTER_APPROVE_GAS_LIMIT + SQUID_ROUTER_GAS_LIMIT;
   const requiredGas = BigNumber.from(gasPrice)
-    .mul(HYPERLIQUID_BRIDGE2_GAS_LIMIT)
+    .mul(stageOneGasLimit)
     .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
     .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
-  const bridge2Built: BuiltProviderOwnedRebalance = {
-    ...bridge2BaseBuild,
-    destinationChain: state.planTarget!.destinationChain,
-    destinationNetwork: state.planTarget!.destinationNetwork,
-    quotedAt: new Date().toISOString(),
-    quotedNativeGasAmount: utils.formatEther(requiredGas),
-    quotedNativeGasAsset: 'ETH',
-  };
-  const bridge2Fingerprint = targetPlanStageFingerprint(bridge2Built);
+
+  let fundingBuilt: BuiltProviderOwnedRebalance;
+  if (isHyperliquid) {
+    const bridge2BaseBuild = await buildHyperliquidBridge2Transfer({
+      amount: bridgeAmount,
+      destinationAddress: built.destinationAddress,
+      destinationAsset: 'USDC',
+      destinationVenue: 'hyperliquid',
+      idempotencyKey,
+      mode: 'mainnet',
+      provider: 'hyperliquid_bridge2',
+      sourceAsset: 'USDC',
+      sourceChain: 'ethereum',
+      sourceNetwork: 'arbitrum',
+      walletAddress: built.walletAddress,
+    });
+    fundingBuilt = {
+      ...bridge2BaseBuild,
+      destinationChain: state.planTarget!.destinationChain,
+      destinationNetwork: state.planTarget!.destinationNetwork,
+      quotedAt: new Date().toISOString(),
+      quotedNativeGasAmount: utils.formatEther(requiredGas),
+      quotedNativeGasAsset: 'ETH',
+    };
+  } else {
+    const squidBaseBuild = await buildSquidRouterRebalance({
+      amount: bridgeAmount,
+      destinationAddress: state.planTarget!.destinationAddress,
+      destinationAsset: state.planTarget!.destinationAssetAddress,
+      destinationChain: state.planTarget!.destinationChain,
+      destinationNetwork: state.planTarget!.destinationNetwork,
+      idempotencyKey,
+      mode: 'mainnet',
+      provider: SQUID_ROUTER_PROVIDER,
+      sourceAsset: ARBITRUM_USDC_ADDRESS,
+      sourceAssetDecimals: USDC_DECIMALS,
+      sourceChain: 'ethereum',
+      sourceNetwork: 'arbitrum',
+      walletAddress: built.walletAddress,
+    });
+    if (squidBaseBuild.quotedProviderCostUsd === undefined) {
+      throw new Error('Squid stage-1 route missing feeCosts');
+    }
+    if (squidBaseBuild.quotedGasCostUsd === undefined) {
+      throw new Error('Squid stage-1 route missing gasCosts');
+    }
+    fundingBuilt = {
+      ...squidBaseBuild,
+      destinationChain: state.planTarget!.destinationChain,
+      destinationNetwork: state.planTarget!.destinationNetwork,
+      quotedNativeGasAmount: utils.formatEther(requiredGas),
+      quotedNativeGasAsset: 'ETH',
+    };
+  }
+  const fundingFingerprint = targetPlanStageFingerprint(fundingBuilt);
 
   const txnHash = stage.transactionHash;
   delete stage.signedTransaction;
@@ -1574,21 +1623,21 @@ async function transitionFromConversionToFunding(
   stage.status = 'confirmed';
 
   const fundingStage = state.stages![1];
-  fundingStage.builtRebalance = bridge2Built;
-  fundingStage.fingerprint = bridge2Fingerprint;
+  fundingStage.builtRebalance = fundingBuilt;
+  fundingStage.fingerprint = fundingFingerprint;
   fundingStage.status = 'built';
 
   Object.assign(
     state,
     newRebalanceState(
-      bridge2Built,
+      fundingBuilt,
       { idempotencyKey } as BridgeRebalanceRequest,
-      rebalanceRequestFingerprint(bridge2Built),
+      rebalanceRequestFingerprint(fundingBuilt),
     ),
   );
   state.activeStageIndex = 1;
-  state.builtRebalance = bridge2Built;
-  state.requestFingerprint = rebalanceRequestFingerprint(bridge2Built);
+  state.builtRebalance = fundingBuilt;
+  state.requestFingerprint = rebalanceRequestFingerprint(fundingBuilt);
   state.status = 'built';
   delete state.signedTransaction;
   delete state.transactionHash;
@@ -1621,11 +1670,15 @@ async function executeFundingStage(
     walletAddress: built.walletAddress,
   };
   const sourceAmount = built.sourceAmount ?? built.amount;
+  const stageGasLimit =
+    built.provider === SQUID_ROUTER_PROVIDER
+      ? SQUID_ROUTER_APPROVE_GAS_LIMIT + SQUID_ROUTER_GAS_LIMIT
+      : HYPERLIQUID_BRIDGE2_GAS_LIMIT;
   if (!stage.signedTransaction && !stage.transactionHash) {
     const sourceStatus = await targetFundingSourceStatus(
       source,
       utils.parseUnits(sourceAmount, USDC_DECIMALS),
-      HYPERLIQUID_BRIDGE2_GAS_LIMIT,
+      stageGasLimit,
     );
     if (sourceStatus.status === 'unavailable') {
       throw new Error('target funding source balance unavailable');
@@ -1642,6 +1695,8 @@ async function executeFundingStage(
     }
   }
   await provisionTargetFundingSourceWallet(source);
+  const stageIntentSource =
+    built.provider === SQUID_ROUTER_PROVIDER ? SQUID_ROUTER_PROVIDER_INTENT_SOURCE : 'hyperliquid_bridge2_rebalance';
   const liveActionAuthorization: LiveActionAuthorization = {
     action: 'gateway_rebalance',
     connector_id: providerTreasuryConnectorId(built.provider),
@@ -1656,7 +1711,7 @@ async function executeFundingStage(
     expectedConnectorId: providerTreasuryConnectorId(built.provider),
     expectedNotional: sourceAmount,
     expectedWalletAddress: built.walletAddress,
-    internalProviderIntentSource: 'hyperliquid_bridge2_rebalance',
+    internalProviderIntentSource: stageIntentSource,
     liveActionAuthorization,
     network: built.sourceNetwork,
     operation: 'ethereum_transaction',
@@ -1997,11 +2052,13 @@ function assertTargetPlanIntegrity(state: DurableRebalanceState): void {
     }
   }
   const [conversion, funding] = state.stages;
+  const expectedFundingProvider =
+    state.planTarget?.destinationChain === 'hyperliquid' ? 'hyperliquid_bridge2' : SQUID_ROUTER_PROVIDER;
   if (
     conversion.kind !== 'conversion' ||
     conversion.builtRebalance?.provider !== PROVIDER_TREASURY_SAME_CHAIN_SWAP ||
     funding.kind !== 'funding' ||
-    (funding.builtRebalance !== undefined && funding.builtRebalance.provider !== 'hyperliquid_bridge2')
+    (funding.builtRebalance !== undefined && funding.builtRebalance.provider !== expectedFundingProvider)
   ) {
     throw new Error('invalid target plan topology');
   }

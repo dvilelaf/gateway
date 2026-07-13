@@ -1232,6 +1232,7 @@ describe('provider-owned target funding routes', () => {
       expect(persisted.planTarget).toEqual({
         destinationAddress: utils.getAddress(ARBITRUM_WALLET),
         destinationAsset: 'USDC',
+        destinationAssetAddress: ARBITRUM_USDC,
         destinationChain: 'hyperliquid',
         destinationNetwork: 'mainnet',
         targetNotionalEur: '6',
@@ -1394,6 +1395,132 @@ describe('provider-owned target funding routes', () => {
       expect(body.stageStatus).toBeUndefined();
       expect(uniswapMock.quoteExactOutputSingle).not.toHaveBeenCalled();
       expect(uniswapMock.quoteExactInputSingle).not.toHaveBeenCalled();
+      await app.close();
+    });
+  });
+
+  describe('ETH conversion for Squid target funding (Base/Solana)', () => {
+    it.each([
+      {
+        destinationChain: 'ethereum',
+        destinationNetwork: 'base',
+        destinationAddress: BASE_WALLET,
+        expectedAssetAddress: BASE_USDC,
+      },
+      {
+        destinationChain: 'solana',
+        destinationNetwork: 'mainnet-beta',
+        destinationAddress: SOLANA_WALLET,
+        expectedAssetAddress: SOLANA_USDC,
+      },
+    ])(
+      'builds exact-output ETH->USDC conversion as stage 0 for $destinationNetwork when direct USDC is insufficient but native ETH covers quote plus gas reserve',
+      async ({ destinationChain, destinationNetwork, destinationAddress, expectedAssetAddress }) => {
+        const ethereum = mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+        const uniswapMock = {
+          quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+          quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+        };
+        (Uniswap.getInstance as jest.Mock).mockResolvedValue(uniswapMock);
+        const app = Fastify();
+        await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+        const response = await app.inject({
+          method: 'POST',
+          url: '/bridge/rebalance/targets',
+          payload: targetRequest({ destinationAddress, destinationChain, destinationNetwork }),
+        });
+
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.provider).toBe('provider_treasury_same_chain_swap');
+        expect(body.sourceNetwork).toBe('arbitrum');
+        expect(body.sourceAsset).toBe('ETH');
+        expect(body.destinationAsset).toBe('USDC');
+        expect(body.stageIndex).toBe(0);
+        expect(body.stageCount).toBe(2);
+        expect(body.stageStatus).toBe('built');
+        expect(body.walletAddress).toBe(utils.getAddress(ARBITRUM_WALLET));
+        const ethAmount = utils.parseEther(body.amount);
+        expect(ethAmount.eq(utils.parseEther('0.005'))).toBe(true);
+        const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+        expect(persisted.planVersion).toBe(1);
+        expect(persisted.stages).toHaveLength(2);
+        expect(persisted.stages[0]).toMatchObject({ index: 0, kind: 'conversion', status: 'built' });
+        expect(persisted.stages[1]).toMatchObject({ index: 1, kind: 'funding', status: 'blocked_on_prior_stage' });
+        expect(persisted.planTarget).toEqual({
+          destinationAddress,
+          destinationAsset: 'USDC',
+          destinationAssetAddress: expectedAssetAddress,
+          destinationChain,
+          destinationNetwork,
+          targetNotionalEur: '6',
+        });
+        expect(persisted.preConversionUsdcBalanceUnits).toBe('0');
+        expect(persisted.planTargetFingerprint).toMatch(/^0x[0-9a-f]{64}$/);
+        expect(uniswapMock.quoteExactOutputSingle).toHaveBeenCalledWith(
+          ARBITRUM_WETH,
+          ARBITRUM_USDC,
+          500,
+          utils.parseUnits('6', 6),
+        );
+        expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+        await app.close();
+      },
+    );
+
+    it('blocks when native ETH insufficient for conversion plus squid stage-1 gas reserve', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '500000000000000', usdc: '0' } });
+      const uniswapMock = {
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      };
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue(uniswapMock);
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: BASE_WALLET,
+          destinationChain: 'ethereum',
+          destinationNetwork: 'base',
+        }),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().message).toBe('insufficient_source_or_gas');
+      expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it('preserves direct Squid USDC funding when USDC balance is sufficient (existing path unchanged)', async () => {
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+      const fetchMock = mockSquidRoute();
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: BASE_WALLET,
+          destinationChain: 'ethereum',
+          destinationNetwork: 'base',
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.provider).toBe('squid_router');
+      expect(body.sourceNetwork).toBe('arbitrum');
+      expect(body.stageIndex).toBeUndefined();
+      expect(body.stageCount).toBeUndefined();
+      const squidPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(squidPayload.fromToken).toBe(ARBITRUM_USDC);
+      expect(squidPayload.toChain).toBe('8453');
+      expect(squidPayload.toToken).toBe(BASE_USDC);
       await app.close();
     });
   });
@@ -1572,6 +1699,75 @@ describe('provider-owned target funding routes', () => {
       expect(persisted.status).toBe('built');
       expect(persisted.builtRebalance.provider).toBe('hyperliquid_bridge2');
       expect(persisted.provider).toBe('hyperliquid_bridge2');
+      await app.close();
+    });
+
+    it('completes stage-0 conversion swap and transitions to stage-1 Squid build for Base on confirmed receipt', async () => {
+      const signer = new Wallet(`0x${'77'.repeat(32)}`);
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+      const getTransactionReceipt = jest.fn().mockResolvedValue(null);
+      const ethereum = mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        {
+          chainId: 42161,
+          getWallet: jest.fn(async () => signer),
+          handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+          prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, gasPrice: BigNumber.from(10) })),
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransactionCount: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2).mockResolvedValueOnce(3),
+            getTransactionReceipt,
+            sendTransaction,
+          },
+        },
+      );
+      const uniswapMock = {
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      };
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue(uniswapMock);
+      mockSquidRoute();
+
+      ethereum.arbitrum.getERC20BalanceByAddress
+        .mockResolvedValueOnce({ decimals: 6, value: BigNumber.from(0) })
+        .mockResolvedValueOnce({ decimals: 6, value: BigNumber.from(0) })
+        .mockResolvedValueOnce({ decimals: 6, value: BigNumber.from(0) })
+        .mockResolvedValue({ decimals: 6, value: BigNumber.from('8000000') });
+
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const build = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: BASE_WALLET,
+          destinationChain: 'ethereum',
+          destinationNetwork: 'base',
+        }),
+      });
+      expect(build.statusCode).toBe(200);
+      expect(build.json().stageIndex).toBe(0);
+
+      const firstExecute = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/target-funding-1/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+
+      expect(firstExecute.statusCode).toBe(200);
+      expect(firstExecute.json().status).toBe(0);
+
+      const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+      expect(persisted.stages[0].status).toBe('confirmed');
+      expect(persisted.stages[1].status).toBe('built');
+      expect(persisted.stages[1].kind).toBe('funding');
+      expect(persisted.stages[1].builtRebalance).toBeDefined();
+      expect(persisted.stages[1].builtRebalance.provider).toBe('squid_router');
+      expect(persisted.activeStageIndex).toBe(1);
+      expect(persisted.status).toBe('built');
+      expect(persisted.builtRebalance.provider).toBe('squid_router');
+      expect(persisted.provider).toBe('squid_router');
       await app.close();
     });
 
@@ -2041,6 +2237,128 @@ describe('provider-owned target funding routes', () => {
         },
         { index: 1, kind: 'funding', status: 'blocked_on_prior_stage' },
       ];
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const reload = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(reload.statusCode).toBe(500);
+      expect(reload.body).toContain('invalid target plan topology');
+      await app.close();
+    });
+
+    it('rejects a Squid plan whose funding stage uses Bridge2 (provider does not match planTarget)', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue({
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const buildResponse = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: BASE_WALLET,
+          destinationChain: 'ethereum',
+          destinationNetwork: 'base',
+        }),
+      });
+      expect(buildResponse.statusCode).toBe(200);
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.planVersion = 1;
+      persisted.activeStageIndex = 0;
+      persisted.stages = [
+        {
+          index: 0,
+          kind: 'conversion',
+          status: 'built',
+          builtRebalance: persisted.builtRebalance,
+          fingerprint: utils.keccak256(utils.toUtf8Bytes(JSON.stringify(persisted.builtRebalance))),
+        },
+        {
+          index: 1,
+          kind: 'funding',
+          status: 'built',
+          builtRebalance: { ...persisted.builtRebalance, provider: 'hyperliquid_bridge2' },
+          fingerprint: utils.keccak256(
+            utils.toUtf8Bytes(JSON.stringify({ ...persisted.builtRebalance, provider: 'hyperliquid_bridge2' })),
+          ),
+        },
+      ];
+      persisted.planTarget = {
+        ...persisted.planTarget,
+        destinationChain: 'ethereum',
+        destinationNetwork: 'base',
+      };
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const reload = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: BASE_WALLET,
+          destinationChain: 'ethereum',
+          destinationNetwork: 'base',
+        }),
+      });
+      expect(reload.statusCode).toBe(500);
+      expect(reload.body).toContain('invalid target plan topology');
+      await app.close();
+    });
+
+    it('rejects a plan whose funding stage uses Squid for a Hyperliquid target', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue({
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const buildResponse = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(buildResponse.statusCode).toBe(200);
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.planVersion = 1;
+      persisted.activeStageIndex = 0;
+      persisted.stages = [
+        {
+          index: 0,
+          kind: 'conversion',
+          status: 'built',
+          builtRebalance: persisted.builtRebalance,
+          fingerprint: utils.keccak256(utils.toUtf8Bytes(JSON.stringify(persisted.builtRebalance))),
+        },
+        {
+          index: 1,
+          kind: 'funding',
+          status: 'built',
+          builtRebalance: { ...persisted.builtRebalance, provider: 'squid_router' },
+          fingerprint: utils.keccak256(
+            utils.toUtf8Bytes(JSON.stringify({ ...persisted.builtRebalance, provider: 'squid_router' })),
+          ),
+        },
+      ];
+      persisted.planTarget = {
+        ...persisted.planTarget,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+      };
       writeFileSync(statePath, JSON.stringify(persisted));
 
       const reload = await app.inject({
