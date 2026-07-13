@@ -1180,6 +1180,244 @@ describe('provider-owned target funding routes', () => {
     expect(squidPayload.fromToken).toBe(ARBITRUM_USDC);
     expect(squidPayload.toToken).toBe(BASE_WETH);
   });
+
+  describe('two-stage target plan state', () => {
+    it('adds neutral stage projection to build response and status response for a valid two-stage plan', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const buildResponse = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(buildResponse.statusCode).toBe(200);
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.planVersion = 1;
+      persisted.activeStageIndex = 0;
+      persisted.stages = [
+        {
+          index: 0,
+          kind: 'conversion',
+          status: 'built',
+          builtRebalance: persisted.builtRebalance,
+          fingerprint: persisted.requestFingerprint,
+        },
+        { index: 1, kind: 'funding', status: 'blocked_on_prior_stage' },
+      ];
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const reload = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(reload.statusCode).toBe(200);
+      const reloadBody = reload.json();
+      expect(reloadBody.stageIndex).toBe(0);
+      expect(reloadBody.stageCount).toBe(2);
+      expect(reloadBody.stageStatus).toBe('built');
+      expect(reloadBody.stages).toBeUndefined();
+
+      const statusResponse = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+      expect(statusResponse.statusCode).toBe(200);
+      const statusBody = statusResponse.json();
+      expect(statusBody.stageIndex).toBe(0);
+      expect(statusBody.stageCount).toBe(2);
+      expect(statusBody.stageStatus).toBe('built');
+      expect(statusBody.stages).toBeUndefined();
+      await app.close();
+    });
+
+    it('rejects plan with invalid version on reload', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.planVersion = 0;
+      persisted.activeStageIndex = 0;
+      persisted.stages = [{ index: 0, kind: 'conversion', status: 'built' }];
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const reload = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(reload.statusCode).toBe(500);
+      expect(reload.body).toContain('invalid target plan version');
+      await app.close();
+    });
+
+    it('rejects plan with invalid stage order', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.planVersion = 1;
+      persisted.activeStageIndex = 0;
+      persisted.stages = [
+        { index: 1, kind: 'conversion', status: 'built' },
+        { index: 0, kind: 'funding', status: 'blocked_on_prior_stage' },
+      ];
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const reload = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(reload.statusCode).toBe(500);
+      expect(reload.body).toContain('invalid target plan stage order');
+      await app.close();
+    });
+
+    it('rejects plan with more than two stages', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.planVersion = 1;
+      persisted.activeStageIndex = 0;
+      persisted.stages = [
+        { index: 0, kind: 'conversion', status: 'built' },
+        { index: 1, kind: 'funding', status: 'built' },
+        { index: 2, kind: 'funding', status: 'built' },
+      ];
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const reload = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(reload.statusCode).toBe(500);
+      expect(reload.body).toContain('invalid target plan stage count');
+      await app.close();
+    });
+
+    it('rejects plan with tampered stage build fingerprint', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.planVersion = 1;
+      persisted.activeStageIndex = 0;
+      persisted.stages = [
+        {
+          index: 0,
+          kind: 'conversion',
+          status: 'built',
+          builtRebalance: { ...persisted.builtRebalance, destinationAmount: '9.9' },
+          fingerprint: persisted.requestFingerprint,
+        },
+        { index: 1, kind: 'funding', status: 'blocked_on_prior_stage' },
+      ];
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const reload = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(reload.statusCode).toBe(500);
+      expect(reload.body).toContain('target plan stage fingerprint mismatch');
+      await app.close();
+    });
+
+    it('does not add stage projection fields for a direct funded target without plan fields', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      const buildResponse = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(buildResponse.statusCode).toBe(200);
+      const body = buildResponse.json();
+      expect(body.stageIndex).toBeUndefined();
+      expect(body.stageCount).toBeUndefined();
+      expect(body.stageStatus).toBeUndefined();
+
+      const statusResponse = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+      expect(statusResponse.statusCode).toBe(200);
+      const statusBody = statusResponse.json();
+      expect(statusBody.stageIndex).toBeUndefined();
+      expect(statusBody.stageCount).toBeUndefined();
+      expect(statusBody.stageStatus).toBeUndefined();
+      await app.close();
+    });
+  });
 });
 
 function targetRequest(overrides: Record<string, unknown> = {}) {

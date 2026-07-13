@@ -256,6 +256,9 @@ const TargetFundingBlockerResponseSchema = Type.Object({
 const BridgeRebalanceExecutionStatusSchema = Type.Object({
   idempotencyKey: Type.String(),
   status: Type.String(),
+  stageIndex: Type.Optional(Type.Number()),
+  stageCount: Type.Optional(Type.Number()),
+  stageStatus: Type.Optional(Type.String()),
   amount: Type.Optional(Type.String()),
   approvalTransactionHash: Type.Optional(Type.String()),
   burnTransactionHash: Type.Optional(Type.String()),
@@ -275,6 +278,9 @@ const BridgeRebalanceExecutionStatusSchema = Type.Object({
 });
 
 const BridgeRebalanceBuildResponseSchema = Type.Object({
+  stageIndex: Type.Optional(Type.Number()),
+  stageCount: Type.Optional(Type.Number()),
+  stageStatus: Type.Optional(Type.String()),
   provider: Type.String(),
   idempotencyKey: Type.String(),
   sourceChain: Type.Literal('ethereum'),
@@ -344,7 +350,8 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
       withRebalanceLock(request.body.idempotencyKey, async () => {
         try {
           const built = await loadOrBuildTargetFunding(request.body);
-          return rebalanceBuildResponse(built);
+          const state = await readRebalanceState(request.body.idempotencyKey);
+          return rebalanceBuildResponse(built, state);
         } catch (error) {
           if (error instanceof TargetFundingBlockedError) {
             return reply.status(409).send(targetFundingBlockerResponse());
@@ -512,11 +519,21 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
         response: { 200: BridgeRebalanceExecutionStatusSchema },
       },
     },
-    async (request) =>
-      (await refreshRebalanceStatus(request.params.idempotencyKey)) ?? {
-        idempotencyKey: request.params.idempotencyKey,
-        status: 'not_found',
-      },
+    async (request) => {
+      const state = await refreshRebalanceStatus(request.params.idempotencyKey);
+      if (!state) {
+        return { idempotencyKey: request.params.idempotencyKey, status: 'not_found' };
+      }
+      if (state.planVersion === 1 && state.stages && state.stages.length > 0) {
+        return {
+          ...state,
+          stageIndex: state.activeStageIndex,
+          stageCount: state.stages.length,
+          stageStatus: state.stages[state.activeStageIndex ?? 0]?.status,
+        };
+      }
+      return state;
+    },
   );
 };
 
@@ -621,11 +638,22 @@ type DurableRebalanceState = BridgeRebalanceStatus & {
   wrapTransactionHash?: string;
   wrapSignedTransaction?: string;
   builtRebalance?: BuiltProviderOwnedRebalance;
+  planVersion?: number;
+  activeStageIndex?: number;
+  stages?: TargetPlanStage[];
   targetRequestFingerprint?: string;
   maxCostBps?: string;
   signedTransaction?: string;
   quotedNativeGasAmount?: string;
   quotedNativeGasAsset?: string;
+};
+
+type TargetPlanStage = {
+  index: number;
+  kind: 'conversion' | 'funding';
+  status: string;
+  builtRebalance?: BuiltProviderOwnedRebalance;
+  fingerprint?: string;
 };
 
 type TargetFundingDestination = {
@@ -733,8 +761,8 @@ type SquidTransactionRequest = {
 
 const rebalanceLocks = new Map<string, Promise<void>>();
 
-function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance) {
-  return {
+function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance, state?: DurableRebalanceState) {
+  const response: Record<string, unknown> = {
     amount: built.amount,
     destinationAddress: built.destinationAddress,
     destinationAsset: built.destinationAsset,
@@ -763,6 +791,12 @@ function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance) {
     quotedNativeGasAmount: built.quotedNativeGasAmount,
     quotedNativeGasAsset: built.quotedNativeGasAsset,
   };
+  if (state && state.planVersion === 1 && state.stages && state.stages.length > 0) {
+    response.stageIndex = state.activeStageIndex;
+    response.stageCount = state.stages.length;
+    response.stageStatus = state.stages[state.activeStageIndex ?? 0]?.status;
+  }
+  return response;
 }
 
 async function loadOrBuildTargetFunding(body: TargetFundingRequest): Promise<BuiltProviderOwnedRebalance> {
@@ -1289,7 +1323,67 @@ function targetFundingBlockerResponse() {
   return { error: 'Conflict' as const, message: TARGET_FUNDING_BLOCKER, statusCode: 409 as const };
 }
 
+export function createTwoStagePlan(
+  conversionBuild: BuiltProviderOwnedRebalance,
+): Pick<DurableRebalanceState, 'planVersion' | 'activeStageIndex' | 'stages'> {
+  return {
+    planVersion: 1,
+    activeStageIndex: 0,
+    stages: [
+      {
+        index: 0,
+        kind: 'conversion' as const,
+        status: 'built',
+        builtRebalance: conversionBuild,
+        fingerprint: rebalanceRequestFingerprint(conversionBuild),
+      },
+      {
+        index: 1,
+        kind: 'funding' as const,
+        status: 'blocked_on_prior_stage',
+      },
+    ],
+  };
+}
+
+function assertTargetPlanIntegrity(state: DurableRebalanceState): void {
+  if (state.planVersion === undefined && state.stages === undefined && state.activeStageIndex === undefined) {
+    return;
+  }
+  if (state.planVersion !== 1) {
+    throw new Error('invalid target plan version');
+  }
+  if (!state.stages || !Array.isArray(state.stages) || state.stages.length === 0 || state.stages.length > 2) {
+    throw new Error('invalid target plan stage count');
+  }
+  if (
+    state.activeStageIndex === undefined ||
+    state.activeStageIndex < 0 ||
+    state.activeStageIndex >= state.stages.length
+  ) {
+    throw new Error('invalid target plan active stage index');
+  }
+  for (let i = 0; i < state.stages.length; i += 1) {
+    const stage = state.stages[i];
+    if (stage.index !== i) {
+      throw new Error('invalid target plan stage order');
+    }
+    if (stage.kind !== 'conversion' && stage.kind !== 'funding') {
+      throw new Error('invalid target plan stage kind');
+    }
+    if (stage.builtRebalance) {
+      const fp = rebalanceRequestFingerprint(stage.builtRebalance);
+      if (!stage.fingerprint || stage.fingerprint !== fp) {
+        throw new Error('target plan stage fingerprint mismatch');
+      }
+    }
+  }
+}
+
 function assertPersistedTargetFundingIntegrity(state: DurableRebalanceState): void {
+  if (state.planVersion !== undefined || state.stages !== undefined) {
+    assertTargetPlanIntegrity(state);
+  }
   if (!state.builtRebalance || state.requestFingerprint !== rebalanceRequestFingerprint(state.builtRebalance)) {
     throw new Error('persisted target funding selection fingerprint mismatch');
   }
