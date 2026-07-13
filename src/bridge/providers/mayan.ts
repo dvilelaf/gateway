@@ -15,7 +15,7 @@ const MAYAN_PROVIDER = 'mayan';
 const FAST_MCTP = 'FAST_MCTP';
 const MAYAN_SLIPPAGE_BPS = 300;
 const ARBITRUM_CHAIN_ID = 42161;
-const DEFAULT_GAS_LIMIT = 500000;
+const MIN_GAS_LIMIT = 750000;
 const MAYAN_QUOTE_TIMEOUT = 15000;
 
 export type MayanBuildParams = {
@@ -160,6 +160,7 @@ export async function buildMayanSwap(params: MayanBuildParams): Promise<MayanBui
     type: quote.type,
     destinationAddress,
   });
+  const sdkGasLimit = BigNumber.from(txPayload.gasLimit ?? 0);
 
   return {
     provider: MAYAN_PROVIDER,
@@ -180,7 +181,7 @@ export async function buildMayanSwap(params: MayanBuildParams): Promise<MayanBui
     txTarget: utils.getAddress(txPayload.to ?? MAYAN_FORWARDER_CONTRACT),
     txCalldata: requireHex(txPayload.data, 'Mayan transaction calldata'),
     txValue: normalizeTransactionValue(txPayload.value ?? '0'),
-    gasLimit: DEFAULT_GAS_LIMIT,
+    gasLimit: sdkGasLimit.gte(MIN_GAS_LIMIT) ? sdkGasLimit.toNumber() : MIN_GAS_LIMIT,
     routePayload,
     routePayloadHash: sha256(routePayload),
   };

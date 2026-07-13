@@ -144,6 +144,7 @@ describe('buildMayanSwap', () => {
     expect(utils.isHexString(result.txCalldata)).toBe(true);
     expect(BigNumber.from(result.txValue).gt(0)).toBe(true);
     expect(result.gasLimit).toBeGreaterThan(0);
+    expect(result.gasLimit).toBe(750000);
     expect(result.deadline).toBe(FUTURE_DEADLINE);
     expect(result.routePayload).toBeTruthy();
     expect(result.routePayloadHash).toBeTruthy();
@@ -170,6 +171,28 @@ describe('buildMayanSwap', () => {
       { value: 0n, deadline: 0, v: 0, r: '0x', s: '0x' },
       null,
     );
+  });
+
+  it('preserves an SDK gas limit above the minimum', async () => {
+    mockQuoteApiCall({ quotes: [validQuote()] });
+    mockGetFastMctpFromEvmTxPayload.mockResolvedValueOnce(validTxPayload({ gasLimit: '900000' }));
+
+    const result = await buildMayanSwap({
+      sourceAddress: EVM_ADDRESS,
+      destinationAddress: SOLANA_ADDRESS,
+      amount: AMOUNT,
+    });
+
+    expect(result.gasLimit).toBe(900000);
+  });
+
+  it('rejects an unsafe SDK gas limit', async () => {
+    mockQuoteApiCall({ quotes: [validQuote()] });
+    mockGetFastMctpFromEvmTxPayload.mockResolvedValueOnce(validTxPayload({ gasLimit: '9007199254740992' }));
+
+    await expect(
+      buildMayanSwap({ sourceAddress: EVM_ADDRESS, destinationAddress: SOLANA_ADDRESS, amount: AMOUNT }),
+    ).rejects.toThrow('overflow');
   });
 
   it('rejects non-FAST_MCTP quote type', async () => {
