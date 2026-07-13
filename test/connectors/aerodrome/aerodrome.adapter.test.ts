@@ -53,7 +53,47 @@ describe('Aerodrome Gateway adapter', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.AERODROME_GATEWAY_TIMEOUT_MS;
+    executorReceiptRef = undefined;
   });
+
+  let executorReceiptRef: { current: unknown } | undefined;
+
+  function setupBlockLookup(getBlock: jest.Mock, expectedHash: string): void {
+    executorReceiptRef = { current: undefined };
+    (Ethereum.getInstance as jest.Mock).mockResolvedValue({
+      provider: { getBlock },
+      getWallet: jest.fn().mockResolvedValue({
+        sendTransaction: jest.fn().mockResolvedValue({ hash: expectedHash }),
+      }),
+      prepareGasOptions: jest.fn().mockResolvedValue({ gasLimit: 321000 }),
+      handleTransactionExecution: jest.fn().mockResolvedValue({
+        transactionHash: expectedHash,
+        status: 1,
+        blockNumber: 999,
+        gasUsed: BigNumber.from(200000),
+        effectiveGasPrice: BigNumber.from(1_500_000_000),
+        logs: [{ address: '0xtoken', topics: ['0xtopic'], data: '0xdata' }],
+      }),
+    });
+    planAerodromeGatewaySwap.mockResolvedValue({
+      swap: {
+        to: '0x2222222222222222222222222222222222222222',
+        from: '0x1111111111111111111111111111111111111111',
+        data: '0x1234',
+        value: '0',
+        gasEstimate: '321000',
+      },
+    });
+    executeAerodromeGatewaySwapPlan.mockImplementation(async (plan, executor) => {
+      const tx = await executor.executeTransaction(plan.swap);
+      executorReceiptRef!.current = tx.receipt;
+      return {
+        signature: tx.signature,
+        status: tx.status,
+        transactions: [{ kind: 'swap', signature: tx.signature, status: tx.status }],
+      };
+    });
+  }
 
   it('fails closed when quote planning times out', async () => {
     process.env.AERODROME_GATEWAY_TIMEOUT_MS = '5';
@@ -215,6 +255,181 @@ describe('Aerodrome Gateway adapter', () => {
     expect(response).toMatchObject({ signature: '0xpending', status: 'SUBMITTED' });
     expect(executorReceipt).toBeUndefined();
     expect(getBlock).not.toHaveBeenCalled();
+  });
+
+  it('preserves FAILED status when reverted receipt has a failed block lookup (swap not broadcast)', async () => {
+    const sendTransaction = jest.fn().mockResolvedValueOnce({ hash: '0xapproval_fail' });
+    (Ethereum.getInstance as jest.Mock).mockResolvedValue({
+      provider: { getBlock: jest.fn().mockRejectedValue(new Error('block lookup failed')) },
+      getWallet: jest.fn().mockResolvedValue({ sendTransaction }),
+      prepareGasOptions: jest.fn().mockResolvedValue({ gasLimit: 321000 }),
+      handleTransactionExecution: jest.fn().mockResolvedValue({
+        transactionHash: '0xapproval_fail',
+        status: 0,
+        blockNumber: 888,
+        gasUsed: BigNumber.from(200000),
+        effectiveGasPrice: BigNumber.from(1_500_000_000),
+        logs: [{ address: '0xtoken', topics: ['0xtopic'], data: '0xdata' }],
+      }),
+    });
+    planAerodromeGatewaySwap.mockResolvedValue({
+      approval: {
+        to: '0xtoken',
+        from: '0x1111111111111111111111111111111111111111',
+        data: '0xapprove',
+        value: '0',
+        gasEstimate: '250000',
+      },
+      swap: {
+        to: '0x2222222222222222222222222222222222222222',
+        from: '0x1111111111111111111111111111111111111111',
+        data: '0x1234',
+        value: '0',
+        gasEstimate: '321000',
+      },
+    });
+    executeAerodromeGatewaySwapPlan.mockImplementation(async (plan, executor) => {
+      const approvalTx = await executor.executeTransaction(plan.approval);
+      if (approvalTx.status === 'FAILED') {
+        return {
+          signature: approvalTx.signature,
+          status: 'FAILED',
+          transactions: [{ kind: 'approval', signature: approvalTx.signature, status: approvalTx.status }],
+        };
+      }
+      const swapTx = await executor.executeTransaction(plan.swap);
+      return {
+        signature: swapTx.signature,
+        status: swapTx.status,
+        transactions: [
+          { kind: 'approval', signature: approvalTx.signature, status: approvalTx.status },
+          { kind: 'swap', signature: swapTx.signature, status: swapTx.status },
+        ],
+      };
+    });
+
+    const response = await executeAerodromeSwap('base', {
+      baseToken: 'WETH',
+      quoteToken: 'USDC',
+      amount: 1,
+      side: 'SELL',
+      walletAddress: '0x1111111111111111111111111111111111111111',
+    });
+
+    expect(response).toMatchObject({ signature: '0xapproval_fail', status: 'FAILED' });
+    expect(sendTransaction).toHaveBeenCalledTimes(1);
+    expect(response as Record<string, unknown>).not.toHaveProperty('receipt');
+    expect(response as Record<string, unknown>).not.toHaveProperty('data');
+    expect(response as Record<string, unknown>).not.toHaveProperty('executedAt');
+  });
+
+  it('returns SUBMITTED with hash when block lookup fails (timeout/network error)', async () => {
+    jest.useFakeTimers();
+    try {
+      setupBlockLookup(jest.fn().mockRejectedValue(new Error('network error')), '0xblockerror');
+      const response = await executeAerodromeSwap('base', {
+        baseToken: 'WETH',
+        quoteToken: 'USDC',
+        amount: 1,
+        side: 'SELL',
+        walletAddress: '0x1111111111111111111111111111111111111111',
+      });
+      expect(jest.getTimerCount()).toBe(0);
+      expect(response).toMatchObject({ signature: '0xblockerror', status: 'SUBMITTED' });
+      expect(executorReceiptRef!.current).toBeUndefined();
+      expect(response as Record<string, unknown>).not.toHaveProperty('receipt');
+      expect(response as Record<string, unknown>).not.toHaveProperty('data');
+      expect(response as Record<string, unknown>).not.toHaveProperty('executedAt');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('returns SUBMITTED with hash when block lookup returns null', async () => {
+    setupBlockLookup(jest.fn().mockResolvedValue(null), '0xnullblock');
+    const response = await executeAerodromeSwap('base', {
+      baseToken: 'WETH',
+      quoteToken: 'USDC',
+      amount: 1,
+      side: 'SELL',
+      walletAddress: '0x1111111111111111111111111111111111111111',
+    });
+    expect(response).toMatchObject({ signature: '0xnullblock', status: 'SUBMITTED' });
+    expect(executorReceiptRef!.current).toBeUndefined();
+    expect(response as Record<string, unknown>).not.toHaveProperty('receipt');
+    expect(response as Record<string, unknown>).not.toHaveProperty('data');
+    expect(response as Record<string, unknown>).not.toHaveProperty('executedAt');
+  });
+
+  it('returns SUBMITTED with hash when block has no timestamp', async () => {
+    setupBlockLookup(jest.fn().mockResolvedValue({}), '0xnotimestamp');
+    const response = await executeAerodromeSwap('base', {
+      baseToken: 'WETH',
+      quoteToken: 'USDC',
+      amount: 1,
+      side: 'SELL',
+      walletAddress: '0x1111111111111111111111111111111111111111',
+    });
+    expect(response).toMatchObject({ signature: '0xnotimestamp', status: 'SUBMITTED' });
+    expect(executorReceiptRef!.current).toBeUndefined();
+    expect(response as Record<string, unknown>).not.toHaveProperty('receipt');
+    expect(response as Record<string, unknown>).not.toHaveProperty('data');
+    expect(response as Record<string, unknown>).not.toHaveProperty('executedAt');
+  });
+
+  it('returns SUBMITTED when getBlock never resolves (timeout after BLOCK_LOOKUP_TIMEOUT_MS)', async () => {
+    jest.useFakeTimers();
+    try {
+      setupBlockLookup(jest.fn().mockReturnValue(new Promise(() => undefined)), '0xhanging');
+      const responsePromise = executeAerodromeSwap('base', {
+        baseToken: 'WETH',
+        quoteToken: 'USDC',
+        amount: 1,
+        side: 'SELL',
+        walletAddress: '0x1111111111111111111111111111111111111111',
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(jest.getTimerCount()).toBe(1);
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(jest.getTimerCount()).toBe(0);
+      const response = await responsePromise;
+      expect(response).toMatchObject({ signature: '0xhanging', status: 'SUBMITTED' });
+      expect(executorReceiptRef!.current).toBeUndefined();
+      expect(response as Record<string, unknown>).not.toHaveProperty('receipt');
+      expect(response as Record<string, unknown>).not.toHaveProperty('data');
+      expect(response as Record<string, unknown>).not.toHaveProperty('executedAt');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('clears block lookup timer when getBlock resolves before the deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      setupBlockLookup(
+        jest
+          .fn()
+          .mockImplementation(
+            () => new Promise((resolve) => setTimeout(() => resolve({ timestamp: 1_700_000_000 }), 200)),
+          ),
+        '0xearlyresolve',
+      );
+      const responsePromise = executeAerodromeSwap('base', {
+        baseToken: 'WETH',
+        quoteToken: 'USDC',
+        amount: 1,
+        side: 'SELL',
+        walletAddress: '0x1111111111111111111111111111111111111111',
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(jest.getTimerCount()).toBe(2);
+      await jest.advanceTimersByTimeAsync(200);
+      expect(jest.getTimerCount()).toBe(0);
+      const response = await responsePromise;
+      expect(response).toMatchObject({ signature: '0xearlyresolve', status: 'CONFIRMED' });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('fails closed when the planned sender wallet is unavailable', async () => {

@@ -8,6 +8,7 @@ const AERODROME_PACKAGE = 'hummingbot-aerodrome-gateway-connector/gateway-adapte
 const AERODROME_ROOT_PACKAGE = 'hummingbot-aerodrome-gateway-connector';
 const AERODROME_LIQUIDITY_PACKAGE = 'hummingbot-aerodrome-gateway-connector/liquidity';
 const DEFAULT_AERODROME_TIMEOUT_MS = 180_000;
+const BLOCK_LOOKUP_TIMEOUT_MS = 5_000;
 
 type AerodromeGatewayModule = {
   quoteAerodromeForGateway: (
@@ -268,6 +269,39 @@ async function withAerodromeTimeout<T>(operation: Promise<T>, label: string): Pr
   }
 }
 
+type BlockWithTimestamp = {
+  timestamp: number;
+};
+
+async function getBlockWithTimeout(
+  provider: { getBlock: (blockNumber: number) => Promise<unknown> },
+  blockNumber: number,
+  timeoutMs: number,
+): Promise<BlockWithTimestamp | null> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    const raw = await Promise.race([
+      provider.getBlock(blockNumber),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error('Block lookup timed out'));
+        }, timeoutMs);
+      }),
+    ]);
+    const block = raw as { timestamp?: number } | null;
+    if (block === null || block.timestamp === undefined || !Number.isFinite(block.timestamp)) {
+      return null;
+    }
+    return { timestamp: block.timestamp };
+  } catch {
+    return null;
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
 function aerodromeTimeoutMs(): number {
   const configured = Number(process.env.AERODROME_GATEWAY_TIMEOUT_MS);
   if (Number.isFinite(configured) && configured > 0) {
@@ -328,9 +362,12 @@ function createGatewayWalletExecutor(
         return result;
       }
 
-      const block = await ethereum.provider.getBlock(receipt.blockNumber);
-      if (block === null || block.timestamp === undefined || !Number.isFinite(block.timestamp)) {
-        throw httpErrors.internalServerError('Failed to fetch block timestamp for Aerodrome transaction receipt');
+      const block = await getBlockWithTimeout(ethereum.provider, receipt.blockNumber, BLOCK_LOOKUP_TIMEOUT_MS);
+      if (block === null) {
+        if (result.status === 'FAILED') {
+          return result;
+        }
+        return { ...result, status: 'SUBMITTED' };
       }
 
       return {
