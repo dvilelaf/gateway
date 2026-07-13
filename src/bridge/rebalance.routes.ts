@@ -10,6 +10,8 @@ import { FastifyPluginAsync } from 'fastify';
 
 import { Ethereum } from '../chains/ethereum/ethereum';
 import { Solana } from '../chains/solana/solana';
+import { Uniswap } from '../connectors/uniswap/uniswap';
+import { UniswapConfig } from '../connectors/uniswap/uniswap.config';
 import { ChainExecuteSwapResponseSchema } from '../schemas/chain-schema';
 import {
   LiveActionAuthorization,
@@ -63,7 +65,6 @@ const PROVIDER_TREASURY_WRAP_GAS_LIMIT = 90000;
 const ARBITRUM_WETH_ADDRESS = '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1';
 const UNISWAP_V3_SWAP_ROUTER_02_ARBITRUM = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
 const UNISWAP_WETH_USDC_ARBITRUM_FEE = 500;
-const CONSERVATIVE_ETH_USDC_FLOOR = 100;
 const CCTP_REGISTRY_VERSION = 'cctp-v2-evm-usdc-configured-2026-07-08';
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
@@ -754,7 +755,7 @@ function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance) {
     txTarget: built.txTarget,
     txValueHash: built.txValueHash,
     walletAddress: built.walletAddress,
-    quotedAt: built.quotedAt,
+    quotedAt: built.provider === PROVIDER_TREASURY_SAME_CHAIN_SWAP ? undefined : built.quotedAt,
     quotedProviderCostUsd: built.quotedProviderCostUsd,
     quotedGasCostUsd: built.quotedGasCostUsd,
     destinationAmount: built.destinationAmount,
@@ -1328,6 +1329,33 @@ export async function buildProviderTreasurySameChainSwap(
   if (amountUnits.lte(0)) {
     throw new Error('same-chain treasury swap amount must be positive');
   }
+
+  const slippagePct = UniswapConfig.config.slippagePct;
+  if (typeof slippagePct !== 'number' || !Number.isFinite(slippagePct) || slippagePct < 0 || slippagePct > 100) {
+    throw new Error('same-chain treasury swap Uniswap slippagePct must be a valid percentage between 0 and 100');
+  }
+
+  const uniswap = await Uniswap.getInstance('arbitrum');
+  const quotedAmountOut = await uniswap.quoteExactInputSingle(
+    ARBITRUM_WETH_ADDRESS,
+    ARBITRUM_USDC_ADDRESS,
+    UNISWAP_WETH_USDC_ARBITRUM_FEE,
+    amountUnits,
+  );
+  if (quotedAmountOut.isZero()) {
+    throw new Error('same-chain treasury swap Uniswap V3 quote is zero');
+  }
+
+  const slippageBps = Math.round(slippagePct * 100);
+  const minAmountUnits = quotedAmountOut.mul(10000 - slippageBps).div(10000);
+  if (minAmountUnits.isZero()) {
+    throw new Error('same-chain treasury swap minimum output is zero after slippage');
+  }
+
+  const minAmountFormatted = utils.formatUnits(minAmountUnits, USDC_DECIMALS);
+  const destinationAmountFormatted = utils.formatUnits(quotedAmountOut, USDC_DECIMALS);
+  const quotedAt = new Date().toISOString();
+
   const wrapTxCalldata = sourceAsset === 'ETH' ? wethInterface.encodeFunctionData('deposit') : undefined;
   const wrapTxValue = sourceAsset === 'ETH' ? amountUnits.toString() : undefined;
   const approvalTxCalldata = erc20ApprovalInterface.encodeFunctionData('approve', [
@@ -1337,7 +1365,7 @@ export async function buildProviderTreasurySameChainSwap(
   const txCalldata = uniswapV3SwapRouter02Interface.encodeFunctionData('exactInputSingle', [
     {
       amountIn: amountUnits,
-      amountOutMinimum: conservativeWethUsdcMinimumOut(amountUnits),
+      amountOutMinimum: minAmountUnits,
       fee: UNISWAP_WETH_USDC_ARBITRUM_FEE,
       recipient: walletAddress,
       sqrtPriceLimitX96: BigNumber.from(0),
@@ -1351,11 +1379,13 @@ export async function buildProviderTreasurySameChainSwap(
     approvalTxCalldata,
     approvalTxTarget: ARBITRUM_WETH_ADDRESS,
     destinationAddress,
+    destinationAmount: destinationAmountFormatted,
     destinationAsset: 'USDC',
     destinationNetwork: 'arbitrum',
     idempotencyKey: body.idempotencyKey,
-    minAmount: '0.000001',
+    minAmount: minAmountFormatted,
     provider: PROVIDER_TREASURY_SAME_CHAIN_SWAP,
+    quotedAt,
     sourceAsset,
     sourceChain: 'ethereum',
     sourceNetwork: 'arbitrum',
@@ -2894,7 +2924,6 @@ function rebalanceRequestFingerprint(built: BuiltProviderOwnedRebalance): string
         providerRouteId: built.providerRouteId,
         providerDestinationAmount: built.providerDestinationAmount,
         quoteId: built.quoteId,
-        quotedAt: built.quotedAt,
         quotedProviderCostUsd: built.quotedProviderCostUsd,
         quotedGasCostUsd: built.quotedGasCostUsd,
         quotedNativeGasAmount: built.quotedNativeGasAmount,
@@ -3045,13 +3074,6 @@ function normalizeSameChainSwapSourceAsset(value: string): 'ETH' | typeof ARBITR
 function sameChainDestinationIsArbitrumUsdc(value: string): boolean {
   const normalized = value.trim().toLowerCase();
   return normalized === 'usdc' || normalized === ARBITRUM_USDC_ADDRESS.toLowerCase();
-}
-
-function conservativeWethUsdcMinimumOut(amountUnits: BigNumber): BigNumber {
-  return amountUnits
-    .mul(CONSERVATIVE_ETH_USDC_FLOOR)
-    .mul(BigNumber.from(10).pow(USDC_DECIMALS))
-    .div(BigNumber.from(10).pow(18));
 }
 
 function mapSquidStatus(value: string): { providerStatus: string; status: string } {

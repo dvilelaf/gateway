@@ -5,7 +5,7 @@ import { Pair as V2Pair } from '@uniswap/v2-sdk';
 import { abi as IUniswapV3FactoryABI } from '@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Factory.sol/IUniswapV3Factory.json';
 import { abi as IUniswapV3PoolABI } from '@uniswap/v3-core/artifacts/contracts/interfaces/IUniswapV3Pool.sol/IUniswapV3Pool.json';
 import { FeeAmount, Pool as V3Pool } from '@uniswap/v3-sdk';
-import { Contract, constants } from 'ethers';
+import { BigNumber, Contract, constants } from 'ethers';
 import { getAddress } from 'ethers/lib/utils';
 import JSBI from 'jsbi';
 
@@ -15,6 +15,7 @@ import { logger } from '../../services/logger';
 import { AlphaRouterService, AlphaRouterQuoteResult } from './alpha-router';
 import { UniswapConfig } from './uniswap.config';
 import {
+  IQuoterV2ABI,
   IUniswapV2PairABI,
   IUniswapV2FactoryABI,
   IUniswapV2Router02ABI,
@@ -123,18 +124,7 @@ export class Uniswap {
       // Initialize Quoter with minimal ABI
       this.v3Quoter = new Contract(
         getUniswapV3QuoterV2ContractAddress(this.networkName),
-        [
-          {
-            inputs: [
-              { internalType: 'bytes', name: 'path', type: 'bytes' },
-              { internalType: 'uint256', name: 'amountIn', type: 'uint256' },
-            ],
-            name: 'quoteExactInput',
-            outputs: [{ internalType: 'uint256', name: 'amountOut', type: 'uint256' }],
-            stateMutability: 'nonpayable',
-            type: 'function',
-          },
-        ],
+        IQuoterV2ABI,
         this.ethereum.provider,
       );
 
@@ -584,6 +574,25 @@ export class Uniswap {
         `Insufficient NFT approval. Please approve the position NFT (${positionId}) for the Uniswap Position Manager (${operatorAddress})`,
       );
     }
+  }
+
+  /**
+   * Quote an exact-input single-pool swap via the on-chain V3 QuoterV2.
+   * Returns raw output amount as ethers BigNumber, or throws if the quote
+   * is unavailable or zero.
+   */
+  public async quoteExactInputSingle(
+    tokenIn: string,
+    tokenOut: string,
+    fee: number,
+    amountIn: BigNumber,
+  ): Promise<BigNumber> {
+    const result = await this.v3Quoter.callStatic.quoteExactInputSingle(tokenIn, tokenOut, fee, amountIn, 0);
+    const amountOut: BigNumber = result[0];
+    if (amountOut.isZero()) {
+      throw new Error('Uniswap V3 quote returned zero output');
+    }
+    return amountOut;
   }
 
   /**

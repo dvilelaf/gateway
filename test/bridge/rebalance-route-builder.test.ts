@@ -20,6 +20,28 @@ jest.mock('../../src/chains/solana/solana', () => ({
   },
 }));
 
+const mockQuoteExactInputSingle = jest.fn();
+
+jest.mock('../../src/connectors/uniswap/uniswap', () => ({
+  Uniswap: {
+    getInstance: jest.fn(async () => ({
+      quoteExactInputSingle: mockQuoteExactInputSingle,
+    })),
+  },
+}));
+
+jest.mock('../../src/connectors/uniswap/uniswap.config', () => ({
+  UniswapConfig: {
+    chain: 'ethereum',
+    networks: ['arbitrum'],
+    config: {
+      slippagePct: 2,
+      maximumHops: 4,
+      availableNetworks: [{ chain: 'ethereum', networks: ['arbitrum'] }],
+    },
+  },
+}));
+
 import {
   rebalanceRoutes,
   buildCctpBaseArbitrumUsdcTransfer,
@@ -2188,6 +2210,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
   });
 
   it('builds same-chain provider_treasury_same_chain_swap ETH to USDC with wrap, approval, and Uniswap calldata', async () => {
+    mockQuoteExactInputSingle.mockResolvedValueOnce(BigNumber.from('2625000000'));
     const built = await buildProviderOwnedRebalance(sameChainSwapRequest() as any);
     const wrap = new utils.Interface(['function deposit() payable']).decodeFunctionData(
       'deposit',
@@ -2215,8 +2238,31 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
     expect(params.fee).toBe(500);
     expect(params.recipient).toBe(utils.getAddress(WALLET));
     expect(params.amountIn.toString()).toBe('1250000000000000000');
-    expect(params.amountOutMinimum.toString()).toBe('125000000');
+    // 2625000000 USDC (6 decimals) with 2% slippage = 2572500000
+    expect(params.amountOutMinimum.toString()).toBe('2572500000');
     expect(params.sqrtPriceLimitX96.toString()).toBe('0');
+    expect(mockQuoteExactInputSingle).toHaveBeenCalledWith(
+      ARBITRUM_WETH,
+      TOKEN,
+      500,
+      BigNumber.from('1250000000000000000'),
+    );
+    expect(built.quotedAt).toBeDefined();
+    expect(typeof built.quotedAt).toBe('string');
+    expect(built.destinationAmount).toBe('2625.0');
+    expect(built.minAmount).toBe('2572.5');
+  });
+
+  it('rejects same-chain treasury swap when Uniswap quote returns zero', async () => {
+    mockQuoteExactInputSingle.mockResolvedValueOnce(BigNumber.from(0));
+    await expect(buildProviderOwnedRebalance(sameChainSwapRequest() as any)).rejects.toThrow(
+      /same-chain treasury swap Uniswap V3 quote is zero/,
+    );
+  });
+
+  it('rejects same-chain treasury swap when Uniswap quote throws', async () => {
+    mockQuoteExactInputSingle.mockRejectedValueOnce(new Error('pool not found'));
+    await expect(buildProviderOwnedRebalance(sameChainSwapRequest() as any)).rejects.toThrow(/pool not found/);
   });
 
   it.each([
@@ -2249,6 +2295,7 @@ describe('Hyperliquid Bridge2 treasury rebalance route', () => {
   });
 
   it('executes same-chain wrap, approval, and swap with idempotent hashes and treasury guard context', async () => {
+    mockQuoteExactInputSingle.mockResolvedValue(BigNumber.from('2625000000'));
     process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
     process.env.MARLIN_GATEWAY_PROVIDER_INTENT_TOKEN = 'gateway-token';
     const WRAP_SERIALIZED = '0x' + 'ab'.repeat(55);
