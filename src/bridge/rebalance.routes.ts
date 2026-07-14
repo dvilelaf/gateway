@@ -272,12 +272,28 @@ const TargetFundingBlockerResponseSchema = Type.Object({
   statusCode: Type.Literal(409),
 });
 
+const TargetPlanStageResponseSchema = Type.Object(
+  {
+    index: Type.Number(),
+    kind: Type.Union([Type.Literal('conversion'), Type.Literal('funding')]),
+    status: Type.String(),
+    sourceAmount: Type.Optional(Type.String()),
+    sourceAsset: Type.Optional(Type.String()),
+    destinationAmount: Type.Optional(Type.String()),
+    destinationAsset: Type.Optional(Type.String()),
+    transactionHash: Type.Optional(Type.String()),
+    error: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
 const BridgeRebalanceExecutionStatusSchema = Type.Object({
   idempotencyKey: Type.String(),
   status: Type.String(),
   stageIndex: Type.Optional(Type.Number()),
   stageCount: Type.Optional(Type.Number()),
   stageStatus: Type.Optional(Type.String()),
+  stages: Type.Optional(Type.Array(TargetPlanStageResponseSchema)),
   amount: Type.Optional(Type.String()),
   approvalTransactionHash: Type.Optional(Type.String()),
   burnTransactionHash: Type.Optional(Type.String()),
@@ -300,6 +316,7 @@ const BridgeRebalanceBuildResponseSchema = Type.Object({
   stageIndex: Type.Optional(Type.Number()),
   stageCount: Type.Optional(Type.Number()),
   stageStatus: Type.Optional(Type.String()),
+  stages: Type.Optional(Type.Array(TargetPlanStageResponseSchema)),
   provider: Type.String(),
   idempotencyKey: Type.String(),
   sourceChain: Type.Literal('ethereum'),
@@ -331,6 +348,7 @@ const BridgeRebalanceBuildResponseSchema = Type.Object({
 
 type BridgeRebalanceRequest = Static<typeof BridgeRebalanceRequestSchema>;
 type BridgeRebalanceStatus = Static<typeof BridgeRebalanceExecutionStatusSchema>;
+type TargetPlanStageResponse = Static<typeof TargetPlanStageResponseSchema>;
 type TargetFundingRequest = Static<typeof TargetFundingRequestSchema>;
 type HyperliquidBridge2RebalanceRequest = Static<typeof HyperliquidBridge2RebalanceRequestSchema>;
 type CctpBaseArbitrumRebalanceRequest = Static<typeof CctpBaseArbitrumRebalanceRequestSchema>;
@@ -543,15 +561,7 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
       if (!state) {
         return { idempotencyKey: request.params.idempotencyKey, status: 'not_found' };
       }
-      if (state.planVersion === 1 && state.stages && state.stages.length > 0) {
-        return {
-          ...state,
-          stageIndex: state.activeStageIndex,
-          stageCount: state.stages.length,
-          stageStatus: state.stages[state.activeStageIndex ?? 0]?.status,
-        };
-      }
-      return state;
+      return rebalanceStatusResponse(state);
     },
   );
 };
@@ -846,6 +856,71 @@ function rebalanceBuildResponse(built: BuiltProviderOwnedRebalance, state?: Dura
     response.stageIndex = state.activeStageIndex;
     response.stageCount = state.stages.length;
     response.stageStatus = state.stages[state.activeStageIndex ?? 0]?.status;
+    response.stages = state.stages.map(targetPlanStageResponse);
+  }
+  return response;
+}
+
+function rebalanceStatusResponse(state: DurableRebalanceState) {
+  return removeUndefinedFields({
+    idempotencyKey: state.idempotencyKey,
+    status: state.status,
+    stageIndex: state.planVersion === 1 && state.stages?.length ? state.activeStageIndex : undefined,
+    stageCount: state.planVersion === 1 && state.stages?.length ? state.stages.length : undefined,
+    stageStatus:
+      state.planVersion === 1 && state.stages?.length ? state.stages[state.activeStageIndex ?? 0]?.status : undefined,
+    stages: targetPlanStageResponses(state),
+    amount: state.amount,
+    approvalTransactionHash: state.approvalTransactionHash,
+    burnTransactionHash: state.burnTransactionHash,
+    destinationAddress: state.destinationAddress,
+    destinationAsset: state.destinationAsset,
+    destinationChain: state.destinationChain,
+    destinationNetwork: state.destinationNetwork,
+    destinationVenue: state.destinationVenue,
+    finalizeTransactionHash: state.finalizeTransactionHash,
+    provider: state.provider,
+    transactionHash: state.transactionHash,
+    wrapTransactionHash: state.wrapTransactionHash,
+    sourceChain: state.sourceChain,
+    sourceNetwork: state.sourceNetwork,
+    providerStatus: state.providerStatus,
+    providerError: state.providerError,
+  });
+}
+
+function targetPlanStageResponses(state: DurableRebalanceState): TargetPlanStageResponse[] | undefined {
+  if (state.planVersion !== 1 || !state.stages || state.stages.length === 0) {
+    return undefined;
+  }
+  return state.stages.map(targetPlanStageResponse);
+}
+
+function targetPlanStageResponse(stage: TargetPlanStage): TargetPlanStageResponse {
+  const response: TargetPlanStageResponse = {
+    index: stage.index,
+    kind: stage.kind,
+    status: stage.status,
+  };
+  const built = stage.builtRebalance;
+  if (built) {
+    response.sourceAmount = built.sourceAmount ?? built.amount;
+    if (built.sourceAsset !== undefined) {
+      response.sourceAsset = built.sourceAsset;
+    }
+    if (built.destinationAmount !== undefined) {
+      response.destinationAmount = built.destinationAmount;
+    }
+    if (built.destinationAsset !== undefined) {
+      response.destinationAsset = built.destinationAsset;
+    }
+  }
+  const transactionHash = stage.transactionHash ?? stage.approvalTransactionHash ?? stage.wrapTransactionHash;
+  if (transactionHash !== undefined) {
+    response.transactionHash = transactionHash;
+  }
+  if (stage.providerError !== undefined) {
+    response.error = redactProviderError(stage.providerError);
   }
   return response;
 }

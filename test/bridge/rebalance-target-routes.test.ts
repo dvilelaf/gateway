@@ -2354,6 +2354,79 @@ describe('provider-owned target funding routes', () => {
   });
 
   describe('two-stage target plan state', () => {
+    it('exposes neutral stage progress on target build and status without provider internals', async () => {
+      mockEthereumContexts({ arbitrum: { gas: '20000000000000000', usdc: '0' } });
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue({
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const buildResponse = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+
+      expect(buildResponse.statusCode).toBe(200);
+      expect(buildResponse.json().stages).toEqual([
+        {
+          destinationAmount: '6.0',
+          destinationAsset: 'USDC',
+          index: 0,
+          kind: 'conversion',
+          sourceAmount: '0.005',
+          sourceAsset: 'ETH',
+          status: 'built',
+        },
+        { index: 1, kind: 'funding', status: 'blocked_on_prior_stage' },
+      ]);
+
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.stages[0].approvalTransactionHash = '0xapproval';
+      persisted.stages[0].wrapTransactionHash = '0xwrap';
+      persisted.stages[0].providerError = 'token=stage-secret provider failure';
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const statusResponse = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+
+      expect(statusResponse.statusCode).toBe(200);
+      expect(statusResponse.json().stages).toEqual([
+        {
+          destinationAmount: '6.0',
+          destinationAsset: 'USDC',
+          error: 'token [redacted] provider failure',
+          index: 0,
+          kind: 'conversion',
+          sourceAmount: '0.005',
+          sourceAsset: 'ETH',
+          status: 'built',
+          transactionHash: '0xapproval',
+        },
+        { index: 1, kind: 'funding', status: 'blocked_on_prior_stage' },
+      ]);
+      expect(statusResponse.json().stages[0].provider).toBeUndefined();
+      expect(statusResponse.json().stages[0].providerError).toBeUndefined();
+      expect(statusResponse.json().stages[0].builtRebalance).toBeUndefined();
+
+      delete persisted.stages[0].approvalTransactionHash;
+      writeFileSync(statePath, JSON.stringify(persisted));
+      const wrapStatusResponse = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+      expect(wrapStatusResponse.json().stages[0].transactionHash).toBe('0xwrap');
+
+      persisted.stages[0].transactionHash = '0xstage0';
+      writeFileSync(statePath, JSON.stringify(persisted));
+      const transactionStatusResponse = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+      expect(transactionStatusResponse.json().stages[0].transactionHash).toBe('0xstage0');
+      await app.close();
+    });
+
     it('rejects a plan whose conversion stage uses the funding provider', async () => {
       mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
       const app = Fastify();
@@ -2690,6 +2763,7 @@ describe('provider-owned target funding routes', () => {
       expect(body.stageIndex).toBeUndefined();
       expect(body.stageCount).toBeUndefined();
       expect(body.stageStatus).toBeUndefined();
+      expect(body.stages).toBeUndefined();
 
       const statusResponse = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
       expect(statusResponse.statusCode).toBe(200);
@@ -2697,6 +2771,7 @@ describe('provider-owned target funding routes', () => {
       expect(statusBody.stageIndex).toBeUndefined();
       expect(statusBody.stageCount).toBeUndefined();
       expect(statusBody.stageStatus).toBeUndefined();
+      expect(statusBody.stages).toBeUndefined();
       await app.close();
     });
   });
