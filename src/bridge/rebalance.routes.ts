@@ -1038,10 +1038,22 @@ async function selectAndBuildTargetFunding(
     : undefined;
   const sourceAmount = utils.formatUnits(sourceBudgetUnits, USDC_DECIMALS);
 
+  const prioritizeDestinationUsdc =
+    destination.provider === SQUID_ROUTER_PROVIDER &&
+    destination.canonicalChain === 'ethereum' &&
+    destination.destinationAsset === 'ETH';
+  const crossChainSourceContexts = TARGET_FUNDING_EVM_USDC_SOURCES.filter(
+    (source) => source.network !== destination.canonicalNetwork,
+  );
   const sourceContexts =
     destination.provider === 'hyperliquid_bridge2'
       ? TARGET_FUNDING_EVM_USDC_SOURCES.filter((source) => source.network === 'arbitrum')
-      : TARGET_FUNDING_EVM_USDC_SOURCES.filter((source) => source.network !== destination.canonicalNetwork);
+      : prioritizeDestinationUsdc
+        ? [
+            ...TARGET_FUNDING_EVM_USDC_SOURCES.filter((source) => source.network === destination.canonicalNetwork),
+            ...crossChainSourceContexts,
+          ]
+        : crossChainSourceContexts;
   let providerError: unknown;
   let fundedSourceFound = false;
   let sourceBalanceUnavailable = false;
@@ -1089,7 +1101,10 @@ async function selectAndBuildTargetFunding(
     }
     if (sourceStatus.status === 'insufficient') {
       insufficientSourceFound = true;
-      if (source.network === 'arbitrum') {
+      if (
+        source.network === 'arbitrum' &&
+        !(prioritizeDestinationUsdc && source.network === destination.canonicalNetwork)
+      ) {
         try {
           const ethereum = await Ethereum.getInstance(source.network);
           const [nativeBalance, gasPrice] = await Promise.all([
@@ -1553,7 +1568,7 @@ async function executePersistedTargetFunding(idempotencyKey: string, providerInt
       providerError: execution.providerError,
       providerStatus: execution.providerStatus,
       status: execution.status,
-      transactionHash: execution.transactionHash || bestKnownTransactionHash(state),
+      transactionHash: execution.transactionHash || latest.transactionHash,
     };
     await saveRebalanceState(state);
     return { signature: execution.transactionHash, status: execution.responseStatus };
@@ -3114,7 +3129,7 @@ async function executeSingleTransactionRebalance(
   if (state.transactionHash) {
     const receipt = await ethereum.provider.getTransactionReceipt(state.transactionHash);
     if (receipt) {
-      const outcome = sourceReceiptOutcome(built.provider, receipt.status);
+      const outcome = sourceReceiptOutcome(built, receipt.status);
       return {
         approvalTransactionHash,
         responseStatus: outcome.responseStatus,
@@ -3132,7 +3147,7 @@ async function executeSingleTransactionRebalance(
     }
     const recoveredTx = await ethereum.provider.sendTransaction(state.signedTransaction);
     const recoveredReceipt = await ethereum.handleTransactionExecution(recoveredTx);
-    const outcome = sourceReceiptOutcome(built.provider, recoveredReceipt?.status);
+    const outcome = sourceReceiptOutcome(built, recoveredReceipt?.status);
     return {
       approvalTransactionHash,
       responseStatus: outcome.responseStatus,
@@ -3174,7 +3189,7 @@ async function executeSingleTransactionRebalance(
     throw error;
   }
   const receipt = await ethereum.handleTransactionExecution(txResponse);
-  const outcome = sourceReceiptOutcome(built.provider, receipt?.status);
+  const outcome = sourceReceiptOutcome(built, receipt?.status);
   return {
     approvalTransactionHash,
     responseStatus: outcome.responseStatus,
@@ -3246,16 +3261,23 @@ function isInsufficientFundsError(error: unknown): boolean {
 }
 
 function sourceReceiptOutcome(
-  provider: BuiltProviderOwnedRebalance['provider'],
+  built: BuiltProviderOwnedRebalance,
   receiptStatus: number | undefined,
 ): { responseStatus: -1 | 0 | 1; status: string } {
   if (receiptStatus === 0) {
     return { responseStatus: -1, status: 'failed' };
   }
-  if (receiptStatus === 1 && provider !== SQUID_ROUTER_PROVIDER && provider !== MAYAN_PROVIDER) {
+  const receiptSettlesDestination =
+    (built.provider !== SQUID_ROUTER_PROVIDER && built.provider !== MAYAN_PROVIDER) ||
+    sameChainSquidRoute(built.squidSourceChainId, built.squidDestinationChainId);
+  if (receiptStatus === 1 && receiptSettlesDestination) {
     return { responseStatus: 1, status: 'confirmed' };
   }
   return { responseStatus: 0, status: 'submitted' };
+}
+
+function sameChainSquidRoute(sourceChainId?: string, destinationChainId?: string): boolean {
+  return sourceChainId !== undefined && destinationChainId !== undefined && sourceChainId === destinationChainId;
 }
 
 async function prepareRecoverableEvmTransaction(
@@ -4041,7 +4063,8 @@ async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRe
         await saveRebalanceState(state);
         return state;
       }
-      if (receipt?.status === 1 && state.provider !== SQUID_ROUTER_PROVIDER) {
+      const sameChainSquid = sameChainSquidRoute(state.squidSourceChainId, state.squidDestinationChainId);
+      if (receipt?.status === 1 && (state.provider !== SQUID_ROUTER_PROVIDER || sameChainSquid)) {
         if (state.provider === MAYAN_PROVIDER) {
           if (state.status !== 'destination_pending') {
             state = { ...state, status: 'destination_pending' };
@@ -4087,6 +4110,9 @@ async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRe
     }
   }
   if (state.provider !== SQUID_ROUTER_PROVIDER) {
+    return state;
+  }
+  if (sameChainSquidRoute(state.squidSourceChainId, state.squidDestinationChainId)) {
     return state;
   }
   if (
