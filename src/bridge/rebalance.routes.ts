@@ -3023,9 +3023,11 @@ async function executeSingleTransactionRebalance(
 ): Promise<ProviderOwnedRebalanceExecution> {
   const ethereum = await Ethereum.getInstance(built.sourceNetwork);
   const wallet = await ethereum.getWallet(built.walletAddress);
-  const insufficientFundsRetry =
-    built.provider === SQUID_ROUTER_PROVIDER && state.status === SUBMISSION_INSUFFICIENT_FUNDS_STATUS;
-  if (insufficientFundsRetry) {
+  const retryableSubmission =
+    built.provider === SQUID_ROUTER_PROVIDER &&
+    (state.status === SUBMISSION_INSUFFICIENT_FUNDS_STATUS ||
+      (state.status === 'submission_ambiguous' && state.providerStatus === 'status_unavailable'));
+  if (retryableSubmission) {
     if (!(await canRetryInsufficientFundsSubmission(ethereum, state, built))) {
       return {
         approvalTransactionHash: state.approvalTransactionHash,
@@ -3061,7 +3063,7 @@ async function executeSingleTransactionRebalance(
     };
   }
   let approvalTransactionHash = state.approvalTransactionHash;
-  if (built.approvalTxCalldata && built.approvalTxTarget && !insufficientFundsRetry) {
+  if (built.approvalTxCalldata && built.approvalTxTarget && !retryableSubmission) {
     if (approvalTransactionHash) {
       const receipt = await ethereum.provider.getTransactionReceipt(approvalTransactionHash);
       if (receipt?.status === 0) {
@@ -3211,11 +3213,13 @@ async function canRetryInsufficientFundsSubmission(
       ethereum.provider.getTransactionCount(built.walletAddress, 'latest'),
       ethereum.provider.getTransactionCount(built.walletAddress, 'pending'),
     ]);
+    const allowAdvancedPersistedNonce =
+      state.status === 'submission_ambiguous' && state.providerStatus === 'status_unavailable';
     return (
       transaction === null &&
       receipt === null &&
-      latestNonce === signedTransaction.nonce &&
-      pendingNonce === signedTransaction.nonce
+      latestNonce === pendingNonce &&
+      (allowAdvancedPersistedNonce ? latestNonce >= signedTransaction.nonce : latestNonce === signedTransaction.nonce)
     );
   } catch {
     return false;

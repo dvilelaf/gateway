@@ -1035,83 +1035,95 @@ describe('provider-owned target funding routes', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('re-signs a proven-absent Squid main transaction with a fresh nonce while retaining approval', async () => {
-    const signer = new Wallet(`0x${'88'.repeat(32)}`);
-    (deriveMarlinDefaultWalletMaterial as jest.Mock).mockReturnValue({
-      address: signer.address,
-      privateKey: 'not-used',
-      storageChain: 'ethereum',
-    });
-    const persistedNonce = 7;
-    const signedTransaction = await signer.signTransaction({
-      chainId: 42161,
-      data: '0x1234',
-      gasLimit: 90000,
-      gasPrice: 10,
-      nonce: persistedNonce,
-      to: '0x00000000000000000000000000000000000000F0',
-      value: 0,
-    });
-    const signTransaction = jest.spyOn(signer, 'signTransaction');
-    const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
-    const getTransaction = jest.fn(async () => null);
-    const getTransactionReceipt = jest.fn(async (hash: string) => (hash === '0xapproval' ? { status: 1 } : null));
-    const getTransactionCount = jest
-      .fn()
-      .mockResolvedValueOnce(persistedNonce)
-      .mockResolvedValueOnce(persistedNonce)
-      .mockResolvedValueOnce(persistedNonce + 1);
-    mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
-      {
+  it.each([
+    { label: 'insufficient funds', proofNonce: 7, providerStatus: undefined, status: 'submission_insufficient_funds' },
+    {
+      label: 'legacy status-unavailable ambiguity',
+      proofNonce: 8,
+      providerStatus: 'status_unavailable',
+      status: 'submission_ambiguous',
+    },
+  ])(
+    're-signs a proven-absent Squid main transaction with a fresh nonce while retaining approval for $label',
+    async ({ proofNonce, providerStatus, status }) => {
+      const signer = new Wallet(`0x${'88'.repeat(32)}`);
+      (deriveMarlinDefaultWalletMaterial as jest.Mock).mockReturnValue({
+        address: signer.address,
+        privateKey: 'not-used',
+        storageChain: 'ethereum',
+      });
+      const persistedNonce = 7;
+      const signedTransaction = await signer.signTransaction({
         chainId: 42161,
-        getWallet: jest.fn(async () => signer),
-        handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
-        prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, gasPrice: BigNumber.from(10) })),
-        provider: {
-          getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
-          getTransaction,
-          getTransactionCount,
-          getTransactionReceipt,
-          sendTransaction,
+        data: '0x1234',
+        gasLimit: 90000,
+        gasPrice: 10,
+        nonce: persistedNonce,
+        to: '0x00000000000000000000000000000000000000F0',
+        value: 0,
+      });
+      const signTransaction = jest.spyOn(signer, 'signTransaction');
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+      const getTransaction = jest.fn(async () => null);
+      const getTransactionReceipt = jest.fn(async (hash: string) => (hash === '0xapproval' ? { status: 1 } : null));
+      const getTransactionCount = jest
+        .fn()
+        .mockResolvedValueOnce(proofNonce)
+        .mockResolvedValueOnce(proofNonce)
+        .mockResolvedValueOnce(proofNonce + 1);
+      mockEthereumContexts(
+        { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+        {
+          chainId: 42161,
+          getWallet: jest.fn(async () => signer),
+          handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+          prepareGasOptions: jest.fn(async () => ({ gasLimit: 90000, gasPrice: BigNumber.from(10) })),
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransaction,
+            getTransactionCount,
+            getTransactionReceipt,
+            sendTransaction,
+          },
         },
-      },
-    );
-    mockSquidRoute();
-    const app = Fastify();
-    await app.register(rebalanceRoutes, { prefix: '/bridge' });
-    await app.inject({
-      method: 'POST',
-      url: '/bridge/rebalance/targets',
-      payload: targetRequest({ destinationAddress: signer.address }),
-    });
-    const statePath = path.join(stateRoot, 'target-funding-1.json');
-    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
-    persisted.approvalSignedTransaction = '0xapproval-signed';
-    persisted.approvalTransactionHash = '0xapproval';
-    persisted.providerError = 'insufficient funds';
-    persisted.signedTransaction = signedTransaction;
-    persisted.status = 'submission_insufficient_funds';
-    persisted.transactionHash = utils.keccak256(signedTransaction);
-    writeFileSync(statePath, JSON.stringify(persisted));
+      );
+      mockSquidRoute();
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+      await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({ destinationAddress: signer.address }),
+      });
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.approvalSignedTransaction = '0xapproval-signed';
+      persisted.approvalTransactionHash = '0xapproval';
+      persisted.providerError = 'insufficient funds';
+      persisted.signedTransaction = signedTransaction;
+      persisted.providerStatus = providerStatus;
+      persisted.status = status;
+      persisted.transactionHash = utils.keccak256(signedTransaction);
+      writeFileSync(statePath, JSON.stringify(persisted));
 
-    const retried = await app.inject({
-      method: 'POST',
-      url: '/bridge/rebalance/targets/target-funding-1/execute',
-      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
-    });
-    const finalState = JSON.parse(readFileSync(statePath, 'utf8'));
+      const retried = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets/target-funding-1/execute',
+        headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+      });
+      const finalState = JSON.parse(readFileSync(statePath, 'utf8'));
 
-    expect(retried.statusCode).toBe(200);
-    expect(signTransaction).toHaveBeenCalledTimes(1);
-    expect(sendTransaction).toHaveBeenCalledTimes(1);
-    expect(sendTransaction).not.toHaveBeenCalledWith(signedTransaction);
-    expect(utils.parseTransaction(sendTransaction.mock.calls[0][0]).nonce).toBe(persistedNonce + 1);
-    expect(finalState.approvalSignedTransaction).toBe('0xapproval-signed');
-    expect(finalState.approvalTransactionHash).toBe('0xapproval');
-    expect(finalState.transactionHash).toBe(utils.keccak256(sendTransaction.mock.calls[0][0]));
-    expect(finalState.transactionHash).not.toBe(persisted.transactionHash);
-  });
+      expect(retried.statusCode).toBe(200);
+      expect(signTransaction).toHaveBeenCalledTimes(1);
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+      expect(sendTransaction).not.toHaveBeenCalledWith(signedTransaction);
+      expect(utils.parseTransaction(sendTransaction.mock.calls[0][0]).nonce).toBe(proofNonce + 1);
+      expect(finalState.approvalSignedTransaction).toBe('0xapproval-signed');
+      expect(finalState.approvalTransactionHash).toBe('0xapproval');
+      expect(finalState.transactionHash).toBe(utils.keccak256(sendTransaction.mock.calls[0][0]));
+      expect(finalState.transactionHash).not.toBe(persisted.transactionHash);
+    },
+  );
 
   it.each([
     {
@@ -1143,6 +1155,21 @@ describe('provider-owned target funding routes', () => {
       counts: [7, 8],
     },
     {
+      label: 'lower nonce',
+      signedTransaction: undefined,
+      transaction: null,
+      receipt: null,
+      counts: [6, 6],
+    },
+    {
+      approvalConfirmed: true,
+      label: 'advanced nonce for insufficient funds',
+      signedTransaction: undefined,
+      transaction: null,
+      receipt: null,
+      counts: [8, 8],
+    },
+    {
       label: 'RPC error',
       signedTransaction: undefined,
       transaction: null,
@@ -1152,7 +1179,14 @@ describe('provider-owned target funding routes', () => {
     },
   ])(
     'refuses retry when Squid insufficient-funds proof has $label',
-    async ({ signedTransaction: signedTransactionOverride, transaction, receipt, counts, rpcError }) => {
+    async ({
+      approvalConfirmed,
+      signedTransaction: signedTransactionOverride,
+      transaction,
+      receipt,
+      counts,
+      rpcError,
+    }) => {
       const signer = new Wallet(`0x${'99'.repeat(32)}`);
       (deriveMarlinDefaultWalletMaterial as jest.Mock).mockReturnValue({
         address: signer.address,
@@ -1171,14 +1205,16 @@ describe('provider-owned target funding routes', () => {
           value: 0,
         }));
       const signTransaction = jest.spyOn(signer, 'signTransaction');
-      const sendTransaction = jest.fn();
+      const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
       const getTransaction = jest.fn(async () => {
         if (rpcError) {
           throw new Error(rpcError);
         }
         return transaction;
       });
-      const getTransactionReceipt = jest.fn(async () => receipt);
+      const getTransactionReceipt = jest.fn(async (hash: string) =>
+        hash === '0xapproval' && approvalConfirmed ? { status: 1 } : receipt,
+      );
       const getTransactionCount = jest.fn();
       counts.forEach((count) => getTransactionCount.mockResolvedValueOnce(count));
       mockEthereumContexts(
