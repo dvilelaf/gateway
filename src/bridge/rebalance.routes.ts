@@ -3221,8 +3221,29 @@ async function canRetryInsufficientFundsSubmission(
   state: DurableRebalanceState,
   built: BuiltProviderOwnedRebalance,
 ): Promise<boolean> {
-  if (!state.signedTransaction || !state.transactionHash) {
+  const proof = await inspectPersistedSquidSubmission(ethereum, state, built);
+  if (!proof) {
     return false;
+  }
+  const allowAdvancedPersistedNonce =
+    state.status === 'submission_ambiguous' && state.providerStatus === 'status_unavailable';
+  return (
+    proof.transaction === null &&
+    proof.receipt === null &&
+    proof.latestNonce === proof.pendingNonce &&
+    (allowAdvancedPersistedNonce
+      ? proof.latestNonce >= proof.signedTransaction.nonce!
+      : proof.latestNonce === proof.signedTransaction.nonce)
+  );
+}
+
+async function inspectPersistedSquidSubmission(
+  ethereum: Ethereum,
+  state: DurableRebalanceState,
+  built: BuiltProviderOwnedRebalance,
+) {
+  if (!state.signedTransaction || !state.transactionHash) {
+    return undefined;
   }
   try {
     const signedTransaction = utils.parseTransaction(state.signedTransaction);
@@ -3238,7 +3259,7 @@ async function canRetryInsufficientFundsSubmission(
       utils.keccak256(signedTransaction.data) !== built.txCalldataHash ||
       transactionValueHash(signedTransaction.value.toString()) !== built.txValueHash
     ) {
-      return false;
+      return undefined;
     }
     const [transaction, receipt, latestNonce, pendingNonce] = await Promise.all([
       ethereum.provider.getTransaction(state.transactionHash),
@@ -3246,16 +3267,9 @@ async function canRetryInsufficientFundsSubmission(
       ethereum.provider.getTransactionCount(built.walletAddress, 'latest'),
       ethereum.provider.getTransactionCount(built.walletAddress, 'pending'),
     ]);
-    const allowAdvancedPersistedNonce =
-      state.status === 'submission_ambiguous' && state.providerStatus === 'status_unavailable';
-    return (
-      transaction === null &&
-      receipt === null &&
-      latestNonce === pendingNonce &&
-      (allowAdvancedPersistedNonce ? latestNonce >= signedTransaction.nonce : latestNonce === signedTransaction.nonce)
-    );
+    return { latestNonce, pendingNonce, receipt, signedTransaction, transaction };
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -4055,8 +4069,11 @@ function assertCctpDestinationAuthorization(
 
 async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRebalanceState | undefined> {
   let state = await readRebalanceState(idempotencyKey);
+  if (!state || state.status === 'confirmed' || state.status === 'failed') {
+    return state;
+  }
+  state = await reconcileStatusOnly(state);
   if (
-    !state ||
     state.status === 'confirmed' ||
     state.status === 'failed' ||
     state.status === SUBMISSION_INSUFFICIENT_FUNDS_STATUS
@@ -4162,6 +4179,87 @@ async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRe
     await saveRebalanceState(refreshed);
     return refreshed;
   }
+}
+
+async function reconcileStatusOnly(state: DurableRebalanceState): Promise<DurableRebalanceState> {
+  const activeConversion =
+    state.planVersion === 1 && state.activeStageIndex === 0 && state.stages?.[0]?.kind === 'conversion'
+      ? state.stages[0]
+      : undefined;
+  if (activeConversion?.builtRebalance && activeConversion.transactionHash) {
+    try {
+      const ethereum = await Ethereum.getInstance(activeConversion.builtRebalance.sourceNetwork);
+      const receipt = await ethereum.provider.getTransactionReceipt(activeConversion.transactionHash);
+      const stageError = activeConversion.providerError ?? state.providerError;
+      if (receipt?.status === 0) {
+        const stages = [...state.stages!];
+        stages[0] = { ...activeConversion, status: 'failed' };
+        const failed = removeUndefinedFields({
+          ...state,
+          providerError: state.providerError ?? activeConversion.providerError,
+          stages,
+          status: 'failed',
+        });
+        await saveRebalanceState(failed);
+        return failed;
+      }
+      if (receipt?.status === 1 && stageError && !state.stages?.[1]?.builtRebalance) {
+        const stages = [...state.stages!];
+        stages[0] = { ...activeConversion, status: 'confirmed' };
+        const failed = removeUndefinedFields({
+          ...state,
+          providerError: state.providerError ?? activeConversion.providerError,
+          stages,
+          status: 'failed',
+        });
+        await saveRebalanceState(failed);
+        return failed;
+      }
+    } catch {
+      // An uncertain status read must not change the durable outcome.
+    }
+  }
+
+  const isRecoverableSquidSubmission =
+    state.provider === SQUID_ROUTER_PROVIDER &&
+    (state.status === SUBMISSION_INSUFFICIENT_FUNDS_STATUS ||
+      (state.status === 'submission_ambiguous' && state.providerStatus === 'status_unavailable'));
+  if (!isRecoverableSquidSubmission) {
+    return state;
+  }
+  const activeStage = state.planVersion === 1 ? state.stages?.[state.activeStageIndex ?? 0] : undefined;
+  const built = activeStage?.builtRebalance ?? state.builtRebalance;
+  if (!built) {
+    return state;
+  }
+  try {
+    const ethereum = await Ethereum.getInstance(built.sourceNetwork);
+    const proof = await inspectPersistedSquidSubmission(
+      ethereum,
+      activeStage
+        ? {
+            ...state,
+            signedTransaction: activeStage.signedTransaction ?? state.signedTransaction,
+            transactionHash: activeStage.transactionHash ?? state.transactionHash,
+          }
+        : state,
+      built,
+    );
+    if (
+      proof &&
+      proof.transaction === null &&
+      proof.receipt === null &&
+      proof.latestNonce === proof.pendingNonce &&
+      proof.latestNonce > proof.signedTransaction.nonce!
+    ) {
+      const failed = { ...state, status: 'failed' };
+      await saveRebalanceState(failed);
+      return failed;
+    }
+  } catch {
+    // An uncertain status read must not change the durable outcome.
+  }
+  return state;
 }
 
 async function loadOrCreateRebalanceState(

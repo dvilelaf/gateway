@@ -1566,6 +1566,69 @@ describe('provider-owned target funding routes', () => {
     },
   );
 
+  it.each([
+    {
+      label: 'ambiguous status-unavailable submission',
+      providerStatus: 'status_unavailable',
+      status: 'submission_ambiguous',
+    },
+    {
+      label: 'insufficient-funds submission',
+      providerStatus: undefined,
+      status: 'submission_insufficient_funds',
+    },
+  ])(
+    'marks a $label failed on GET only after the signed nonce is strictly superseded',
+    async ({ providerStatus, status }) => {
+      const { app, sendTransaction, statePath } = await prepareSquidStatusRefresh({
+        latestNonce: 8,
+        providerStatus,
+        status,
+        signedNonce: 7,
+      });
+
+      const refreshed = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+
+      expect(refreshed.json().status).toBe('failed');
+      expect(persisted.status).toBe('failed');
+      expect(sendTransaction).not.toHaveBeenCalled();
+      await app.close();
+    },
+  );
+
+  it.each([
+    {
+      label: 'ambiguous status-unavailable submission',
+      providerStatus: 'status_unavailable',
+      status: 'submission_ambiguous',
+    },
+    {
+      label: 'insufficient-funds submission',
+      providerStatus: undefined,
+      status: 'submission_insufficient_funds',
+    },
+  ])(
+    'keeps a $label recoverable when latest and pending nonce equal the signed nonce',
+    async ({ providerStatus, status }) => {
+      const { app, sendTransaction, statePath } = await prepareSquidStatusRefresh({
+        latestNonce: 7,
+        providerStatus,
+        status,
+        signedNonce: 7,
+        statusUnavailable: true,
+      });
+
+      const refreshed = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+
+      expect(refreshed.json().status).toBe(status);
+      expect(persisted.status).toBe(status);
+      expect(sendTransaction).not.toHaveBeenCalled();
+      await app.close();
+    },
+  );
+
   it('marks a reverted Squid source receipt failed without polling destination status', async () => {
     const signer = new Wallet(`0x${'55'.repeat(32)}`);
     const fetchMock = mockSquidRouteAndStatus('SUCCESS');
@@ -3085,6 +3148,85 @@ describe('provider-owned target funding routes', () => {
       await app.close();
     });
 
+    it.each([
+      { receiptStatus: 0, expectedStageStatus: 'failed' },
+      { receiptStatus: 1, expectedStageStatus: 'confirmed' },
+    ])(
+      'reconciles an active conversion from its persisted stage receipt ($receiptStatus) without broadcasting on GET',
+      async ({ receiptStatus, expectedStageStatus }) => {
+        const sendTransaction = jest.fn();
+        const stageTransactionHash = `0x${'12'.repeat(32)}`;
+        const getTransactionReceipt = jest.fn(async (hash: string) => {
+          expect(hash).toBe(stageTransactionHash);
+          return { status: receiptStatus };
+        });
+        mockEthereumContexts(
+          { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+          {
+            chainId: 42161,
+            provider: {
+              getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+              getTransactionReceipt,
+              sendTransaction,
+            },
+          },
+        );
+        (Uniswap.getInstance as jest.Mock).mockResolvedValue({
+          quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+          quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+        });
+        const app = Fastify();
+        await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+        const buildResponse = await app.inject({
+          method: 'POST',
+          url: '/bridge/rebalance/targets',
+          payload: targetRequest({
+            destinationAddress: ARBITRUM_WALLET,
+            destinationChain: 'hyperliquid',
+            destinationNetwork: 'mainnet',
+          }),
+        });
+        expect(buildResponse.statusCode).toBe(200);
+
+        const statePath = path.join(stateRoot, 'target-funding-1.json');
+        const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+        const downstreamError = 'target funding stage-1 build failed';
+        persisted.activeStageIndex = 0;
+        persisted.providerError = undefined;
+        persisted.status = 'submission_pending';
+        persisted.transactionHash = stageTransactionHash;
+        persisted.stages[0] = {
+          ...persisted.stages[0],
+          providerError: downstreamError,
+          signedTransaction: '0xstage-signed-transaction',
+          status: 'submission_ambiguous',
+          transactionHash: stageTransactionHash,
+        };
+        persisted.stages[1] = { ...persisted.stages[1], status: 'blocked_on_prior_stage' };
+        writeFileSync(statePath, JSON.stringify(persisted));
+
+        const refreshed = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+        const finalState = JSON.parse(readFileSync(statePath, 'utf8'));
+
+        expect(refreshed.statusCode).toBe(200);
+        expect(refreshed.json()).toMatchObject({
+          providerError: downstreamError,
+          stageStatus: expectedStageStatus,
+          status: 'failed',
+          stages: [
+            expect.objectContaining({ error: downstreamError, status: expectedStageStatus }),
+            expect.objectContaining({ status: 'blocked_on_prior_stage' }),
+          ],
+        });
+        expect(finalState.status).toBe('failed');
+        expect(finalState.stages[0].status).toBe(expectedStageStatus);
+        expect(finalState.stages[1].status).toBe('blocked_on_prior_stage');
+        expect(sendTransaction).not.toHaveBeenCalled();
+        await app.close();
+      },
+    );
+
     it('rejects a plan whose conversion stage uses the funding provider', async () => {
       mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
       const app = Fastify();
@@ -3949,6 +4091,89 @@ function targetRequest(overrides: Record<string, unknown> = {}) {
     mode: 'mainnet',
     ...overrides,
   };
+}
+
+async function prepareSquidStatusRefresh({
+  latestNonce,
+  providerStatus,
+  signedNonce,
+  status,
+  statusUnavailable = false,
+}: {
+  latestNonce: number;
+  providerStatus?: string;
+  signedNonce: number;
+  status: string;
+  statusUnavailable?: boolean;
+}) {
+  const signer = new Wallet(`0x${'ab'.repeat(32)}`);
+  (deriveMarlinDefaultWalletMaterial as jest.Mock).mockImplementation(
+    (_mnemonic: string, policy: { walletRef: string }) => {
+      if (policy.walletRef === 'arbitrum:mainnet:evm_gateway') {
+        return {
+          address: signer.address,
+          privateKey: signer.privateKey,
+          storageChain: 'ethereum',
+        };
+      }
+      return {
+        address: CANONICAL_WALLETS[policy.walletRef],
+        privateKey: 'not-used',
+        storageChain: policy.walletRef.startsWith('solana:') ? 'solana' : 'ethereum',
+      };
+    },
+  );
+  const sendTransaction = jest.fn();
+  const getTransaction = jest.fn(async () => null);
+  const getTransactionReceipt = jest.fn(async () => null);
+  const getTransactionCount = jest.fn(async () => latestNonce);
+  const fetchMock = jest.fn(async (_url: unknown, options: Record<string, any>) => {
+    if (options.method === 'GET' && statusUnavailable) {
+      throw new Error('status unavailable');
+    }
+    return squidRouteResponse('6000000');
+  });
+  global.fetch = fetchMock as any;
+  mockEthereumContexts(
+    { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
+    {
+      chainId: 42161,
+      provider: {
+        getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+        getTransaction,
+        getTransactionCount,
+        getTransactionReceipt,
+        sendTransaction,
+      },
+    },
+  );
+  const app = Fastify();
+  await app.register(rebalanceRoutes, { prefix: '/bridge' });
+  const buildResponse = await app.inject({
+    method: 'POST',
+    url: '/bridge/rebalance/targets',
+    payload: targetRequest(),
+  });
+  expect(buildResponse.statusCode).toBe(200);
+
+  const statePath = path.join(process.env.MARLIN_REBALANCE_STATE_ROOT!, 'target-funding-1.json');
+  const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+  const signedTransaction = await signer.signTransaction({
+    chainId: 42161,
+    data: persisted.builtRebalance.txCalldata,
+    gasLimit: persisted.builtRebalance.gasLimit,
+    gasPrice: 10,
+    nonce: signedNonce,
+    to: persisted.builtRebalance.txTarget,
+    value: BigNumber.from(persisted.builtRebalance.txValue ?? 0),
+  });
+  persisted.providerStatus = providerStatus;
+  persisted.signedTransaction = signedTransaction;
+  persisted.status = status;
+  persisted.transactionHash = utils.keccak256(signedTransaction);
+  writeFileSync(statePath, JSON.stringify(persisted));
+
+  return { app, sendTransaction, statePath };
 }
 
 function mockEthereumContexts(
