@@ -86,6 +86,7 @@ const ETH_CONVERSION_TOTAL_RAW_GAS_SQUID =
   SQUID_ROUTER_APPROVE_GAS_LIMIT +
   SQUID_ROUTER_GAS_LIMIT;
 const CCTP_REGISTRY_VERSION = 'cctp-v2-evm-usdc-configured-2026-07-08';
+const SUBMISSION_INSUFFICIENT_FUNDS_STATUS = 'submission_insufficient_funds';
 const RAW_TRANSACTION_PAYLOAD_FIELDS = [
   'txTarget',
   'txCalldata',
@@ -515,9 +516,10 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
         });
         try {
           const execution = await executeProviderOwnedRebalance(built, liveActionAuthorization, existing);
+          const latest = (await readRebalanceState(request.body.idempotencyKey)) ?? existing;
           const status = execution.status;
           await saveRebalanceState({
-            ...existing,
+            ...latest,
             approvalTransactionHash: execution.approvalTransactionHash,
             burnTransactionHash: execution.burnTransactionHash,
             cctpAttestation: execution.cctpAttestation,
@@ -528,8 +530,8 @@ export const rebalanceRoutes: FastifyPluginAsync = async (fastify) => {
             providerError: execution.providerError,
             providerStatus: execution.providerStatus,
             status,
-            transactionHash: execution.transactionHash || bestKnownTransactionHash(existing),
-            wrapTransactionHash: execution.wrapTransactionHash ?? existing.wrapTransactionHash,
+            transactionHash: execution.transactionHash || bestKnownTransactionHash(latest),
+            wrapTransactionHash: execution.wrapTransactionHash ?? latest.wrapTransactionHash,
           });
           return { signature: execution.transactionHash, status: execution.responseStatus };
         } catch (error: any) {
@@ -3021,8 +3023,45 @@ async function executeSingleTransactionRebalance(
 ): Promise<ProviderOwnedRebalanceExecution> {
   const ethereum = await Ethereum.getInstance(built.sourceNetwork);
   const wallet = await ethereum.getWallet(built.walletAddress);
+  const insufficientFundsRetry =
+    built.provider === SQUID_ROUTER_PROVIDER && state.status === SUBMISSION_INSUFFICIENT_FUNDS_STATUS;
+  if (insufficientFundsRetry) {
+    if (!(await canRetryInsufficientFundsSubmission(ethereum, state, built))) {
+      return {
+        approvalTransactionHash: state.approvalTransactionHash,
+        providerError: state.providerError,
+        responseStatus: 0,
+        status: state.status,
+        transactionHash: state.transactionHash ?? '',
+      };
+    }
+    if (built.approvalTxCalldata && built.approvalTxTarget) {
+      if (!state.approvalTransactionHash) {
+        return insufficientFundsPendingExecution(state);
+      }
+      const approvalReceipt = await ethereum.provider.getTransactionReceipt(state.approvalTransactionHash);
+      if (approvalReceipt?.status === 0) {
+        return {
+          approvalTransactionHash: state.approvalTransactionHash,
+          responseStatus: -1,
+          status: 'failed',
+          transactionHash: state.transactionHash ?? '',
+        };
+      }
+      if (approvalReceipt?.status !== 1) {
+        return insufficientFundsPendingExecution(state);
+      }
+    }
+    state = {
+      ...state,
+      providerError: undefined,
+      signedTransaction: undefined,
+      status: 'built',
+      transactionHash: undefined,
+    };
+  }
   let approvalTransactionHash = state.approvalTransactionHash;
-  if (built.approvalTxCalldata && built.approvalTxTarget) {
+  if (built.approvalTxCalldata && built.approvalTxTarget && !insufficientFundsRetry) {
     if (approvalTransactionHash) {
       const receipt = await ethereum.provider.getTransactionReceipt(approvalTransactionHash);
       if (receipt?.status === 0) {
@@ -3119,7 +3158,19 @@ async function executeSingleTransactionRebalance(
     },
     beforeSubmission ? () => beforeSubmission(built) : undefined,
   );
-  const txResponse = await ethereum.provider.sendTransaction(state.signedTransaction as string);
+  let txResponse;
+  try {
+    txResponse = await ethereum.provider.sendTransaction(state.signedTransaction as string);
+  } catch (error) {
+    if (built.provider === SQUID_ROUTER_PROVIDER && isInsufficientFundsError(error)) {
+      await saveRebalanceState({
+        ...state,
+        providerError: redactProviderError(error),
+        status: SUBMISSION_INSUFFICIENT_FUNDS_STATUS,
+      });
+    }
+    throw error;
+  }
   const receipt = await ethereum.handleTransactionExecution(txResponse);
   const outcome = sourceReceiptOutcome(built.provider, receipt?.status);
   return {
@@ -3128,6 +3179,66 @@ async function executeSingleTransactionRebalance(
     status: outcome.status,
     transactionHash: txResponse.hash,
   };
+}
+
+async function canRetryInsufficientFundsSubmission(
+  ethereum: Ethereum,
+  state: DurableRebalanceState,
+  built: BuiltProviderOwnedRebalance,
+): Promise<boolean> {
+  if (!state.signedTransaction || !state.transactionHash) {
+    return false;
+  }
+  try {
+    const signedTransaction = utils.parseTransaction(state.signedTransaction);
+    if (
+      signedTransaction.nonce === undefined ||
+      signedTransaction.chainId !== ethereum.chainId ||
+      !addressesEqual(state.walletAddress, built.walletAddress) ||
+      utils.keccak256(state.signedTransaction) !== state.transactionHash ||
+      !signedTransaction.from ||
+      !addressesEqual(signedTransaction.from, built.walletAddress) ||
+      !signedTransaction.to ||
+      !addressesEqual(signedTransaction.to, built.txTarget) ||
+      utils.keccak256(signedTransaction.data) !== built.txCalldataHash ||
+      transactionValueHash(signedTransaction.value.toString()) !== built.txValueHash
+    ) {
+      return false;
+    }
+    const [transaction, receipt, latestNonce, pendingNonce] = await Promise.all([
+      ethereum.provider.getTransaction(state.transactionHash),
+      ethereum.provider.getTransactionReceipt(state.transactionHash),
+      ethereum.provider.getTransactionCount(built.walletAddress, 'latest'),
+      ethereum.provider.getTransactionCount(built.walletAddress, 'pending'),
+    ]);
+    return (
+      transaction === null &&
+      receipt === null &&
+      latestNonce === signedTransaction.nonce &&
+      pendingNonce === signedTransaction.nonce
+    );
+  } catch {
+    return false;
+  }
+}
+
+function insufficientFundsPendingExecution(state: DurableRebalanceState): ProviderOwnedRebalanceExecution {
+  return {
+    approvalTransactionHash: state.approvalTransactionHash,
+    providerError: state.providerError,
+    responseStatus: 0,
+    status: state.status,
+    transactionHash: state.transactionHash ?? '',
+  };
+}
+
+function isInsufficientFundsError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'INSUFFICIENT_FUNDS'
+  );
 }
 
 function sourceReceiptOutcome(
@@ -3900,7 +4011,12 @@ function assertCctpDestinationAuthorization(
 
 async function refreshRebalanceStatus(idempotencyKey: string): Promise<DurableRebalanceState | undefined> {
   let state = await readRebalanceState(idempotencyKey);
-  if (!state || state.status === 'confirmed' || state.status === 'failed') {
+  if (
+    !state ||
+    state.status === 'confirmed' ||
+    state.status === 'failed' ||
+    state.status === SUBMISSION_INSUFFICIENT_FUNDS_STATUS
+  ) {
     return state;
   }
   if (
@@ -4431,6 +4547,9 @@ function isCctpProvider(provider: string): boolean {
 }
 
 function recoverableRebalanceErrorStatus(state: DurableRebalanceState): string {
+  if (state.status === SUBMISSION_INSUFFICIENT_FUNDS_STATUS) {
+    return state.status;
+  }
   if (isRebalanceSubmissionInDoubt(state.status)) {
     return state.status.replace(/_pending$/, '_ambiguous');
   }
