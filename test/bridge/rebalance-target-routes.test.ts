@@ -524,6 +524,22 @@ describe('provider-owned target funding routes', () => {
     expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
   });
 
+  it('reports verified insufficiency when another source balance is unavailable', async () => {
+    const ethereum = mockEthereumContexts({ arbitrum: { gas: '0', usdc: '1000000' } });
+    ethereum.mainnet.getERC20BalanceByAddress.mockRejectedValue(new Error('RPC unavailable'));
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest(),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().message).toBe('insufficient_source_or_gas');
+  });
+
   it('rechecks the persisted source and blocks execute before any side effect when gas disappears', async () => {
     const sendTransaction = jest.fn();
     const ethereum = mockEthereumContexts(

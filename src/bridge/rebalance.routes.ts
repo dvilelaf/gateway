@@ -1043,6 +1043,7 @@ async function selectAndBuildTargetFunding(
   let providerError: unknown;
   let fundedSourceFound = false;
   let sourceBalanceUnavailable = false;
+  let insufficientSourceFound = false;
   for (const sourceContext of sourceContexts) {
     const source: TargetFundingSource = {
       ...sourceContext,
@@ -1085,6 +1086,7 @@ async function selectAndBuildTargetFunding(
       continue;
     }
     if (sourceStatus.status === 'insufficient') {
+      insufficientSourceFound = true;
       if (source.network === 'arbitrum') {
         try {
           const ethereum = await Ethereum.getInstance(source.network);
@@ -1281,7 +1283,7 @@ async function selectAndBuildTargetFunding(
     }
   }
   if (!fundedSourceFound) {
-    if (sourceBalanceUnavailable) {
+    if (sourceBalanceUnavailable && !insufficientSourceFound) {
       throw new Error('target funding source balance unavailable');
     }
     throw new TargetFundingBlockedError();
