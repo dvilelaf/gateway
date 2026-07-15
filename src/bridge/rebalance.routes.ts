@@ -52,7 +52,7 @@ const CCTP_USDC_PROVIDER_INTENT_SOURCE = 'cctp_usdc_rebalance';
 const SQUID_ROUTER_PROVIDER = 'squid_router';
 const SQUID_ROUTER_PROVIDER_INTENT_SOURCE = 'squid_router_rebalance';
 const SQUID_ROUTER_MAINNET_URL = 'https://v2.api.squidrouter.com';
-const SQUID_ROUTER_GAS_LIMIT = 450000;
+const SQUID_ROUTER_GAS_LIMIT = 2000000;
 const SQUID_ROUTER_APPROVE_GAS_LIMIT = 90000;
 const SQUID_NATIVE_TOKEN_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 const SQUID_NATIVE_ASSET_DECIMALS = 18;
@@ -815,6 +815,7 @@ type SquidRouteQuoteResponse = {
 
 type SquidTransactionRequest = {
   data?: unknown;
+  gasLimit?: unknown;
   target?: unknown;
   to?: unknown;
   value?: unknown;
@@ -2518,6 +2519,7 @@ export async function buildSquidRouterRebalance(
     sourceAsset,
   );
   const transactionRequest = quote.route?.transactionRequest ?? quote.transactionRequest;
+  const gasLimit = requireSquidGasLimit(transactionRequest?.gasLimit);
   const txTarget = requireAddress(transactionRequest?.target ?? transactionRequest?.to, 'Squid transaction target');
   const txCalldata = requireHex(transactionRequest?.data, 'Squid transaction calldata');
   const txValue = normalizeTransactionValue(transactionRequest?.value ?? '0');
@@ -2545,6 +2547,7 @@ export async function buildSquidRouterRebalance(
     quotedAt: new Date().toISOString(),
     quotedProviderCostUsd: providerCostUsd,
     quotedGasCostUsd: gasCostUsd,
+    gasLimit,
     sourceAsset,
     sourceChain: 'ethereum',
     sourceNetwork: body.sourceNetwork,
@@ -2622,6 +2625,21 @@ async function fetchSquidRouteStatus(
 
 function squidApiUrl(route: string): URL {
   return new URL(route, (process.env.SQUID_API_BASE_URL ?? SQUID_ROUTER_MAINNET_URL).trim());
+}
+
+function requireSquidGasLimit(value: unknown): number {
+  let gasLimit: number;
+  if (typeof value === 'number') {
+    gasLimit = value;
+  } else if (typeof value === 'string' && /^[0-9]+$/.test(value)) {
+    gasLimit = Number(value);
+  } else {
+    throw new Error('Squid transaction gasLimit invalid');
+  }
+  if (!Number.isSafeInteger(gasLimit) || gasLimit <= 0 || gasLimit > SQUID_ROUTER_GAS_LIMIT) {
+    throw new Error('Squid transaction gasLimit invalid');
+  }
+  return gasLimit;
 }
 
 function squidHeaders(): Record<string, string> {
@@ -2882,7 +2900,7 @@ async function executeProviderOwnedRebalance(
       built,
       liveActionAuthorization,
       state,
-      SQUID_ROUTER_GAS_LIMIT,
+      requireSquidGasLimit(built.gasLimit),
       SQUID_ROUTER_PROVIDER_INTENT_SOURCE,
     );
   }

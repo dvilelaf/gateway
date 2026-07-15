@@ -147,7 +147,7 @@ describe('provider-owned target funding routes', () => {
   });
 
   it('builds Hyperliquid funding from fresh canonical Arbitrum USDC and persists the immutable selection', async () => {
-    const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+    const ethereum = mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
 
@@ -213,7 +213,7 @@ describe('provider-owned target funding routes', () => {
   it('builds target funding when MARLIN_MNEMONIC is wrapped in matching quotes', async () => {
     process.env.MARLIN_MNEMONIC =
       '"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"';
-    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
 
@@ -250,8 +250,8 @@ describe('provider-owned target funding routes', () => {
     'uses Squid for canonical $destinationChain/$destinationNetwork funding',
     async ({ destinationAddress, destinationAsset, destinationChain, destinationNetwork, squidDestinationChain }) => {
       mockEthereumContexts({
-        arbitrum: { gas: '1000000000000000', usdc: '9000000' },
-        base: { gas: '1000000000000000', usdc: '9000000' },
+        arbitrum: { gas: '3000000000000000', usdc: '9000000' },
+        base: { gas: '3000000000000000', usdc: '9000000' },
       });
       const fetchMock = mockSquidRoute();
       const app = Fastify();
@@ -292,9 +292,101 @@ describe('provider-owned target funding routes', () => {
     },
   );
 
+  it('persists and executes the provider gasLimit returned by Squid', async () => {
+    const signer = new Wallet(`0x${'33'.repeat(32)}`);
+    const prepareGasOptions = jest.fn(async (_gasPrice: unknown, gasLimit: number) => ({
+      gasLimit,
+      gasPrice: BigNumber.from(10),
+    }));
+    const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
+    mockEthereumContexts(
+      { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
+      {
+        chainId: 42161,
+        getWallet: jest.fn(async () => signer),
+        handleTransactionExecution: jest.fn(async () => ({ status: 1 })),
+        prepareGasOptions,
+        provider: {
+          getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+          getTransactionCount: jest.fn(async () => 1),
+          getTransactionReceipt: jest.fn(async () => ({ status: 1 })),
+          sendTransaction,
+        },
+      },
+    );
+    mockSquidRoute('6000000', '994800');
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const build = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest(),
+    });
+    const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+
+    expect(build.statusCode).toBe(200);
+    expect(persisted.builtRebalance.gasLimit).toBe(994800);
+
+    const execute = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets/target-funding-1/execute',
+      headers: { 'x-marlin-gateway-provider-intent-token': 'gateway-token' },
+    });
+
+    expect(execute.statusCode).toBe(200);
+    expect(prepareGasOptions.mock.calls.map((call) => call[1])).toEqual([90000, 994800]);
+    await app.close();
+  });
+
+  it('uses the conservative Squid maximum for source gas reserve before quote', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '2507999999999999', usdc: '9000000' } });
+    const fetchMock = mockSquidRoute('6000000', '994800');
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest(),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toContain('insufficient_source_or_gas');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['zero', '0'],
+    ['fractional', '994800.5'],
+    ['above the maximum', '2000001'],
+    ['unsafe', '9007199254740992'],
+    ['boolean', true],
+    ['hexadecimal string', '0xf2df0'],
+    ['exponent string', '9.948e5'],
+  ])('fails closed when a newly built Squid route has %s gasLimit', async (_label, gasLimit) => {
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '9000000' } });
+    mockSquidRoute('6000000', gasLimit);
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest(),
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('Squid transaction gasLimit invalid');
+    expect(() => readFileSync(path.join(stateRoot, 'target-funding-1.json'))).toThrow();
+    await app.close();
+  });
+
   it('falls back to Arbitrum USDC for Base native ETH when same-network USDC is insufficient', async () => {
     mockEthereumContexts({
-      arbitrum: { gas: '1000000000000000', usdc: '9000000' },
+      arbitrum: { gas: '3000000000000000', usdc: '9000000' },
       base: { gas: '0', usdc: '0' },
     });
     const fetchMock = mockSquidRoute('56000000000000000');
@@ -337,7 +429,7 @@ describe('provider-owned target funding routes', () => {
   it('falls back cross-chain without converting Arbitrum ETH when preferred USDC is insufficient', async () => {
     mockEthereumContexts({
       arbitrum: { gas: '20000000000000000', usdc: '0' },
-      base: { gas: '1000000000000000', usdc: '9000000' },
+      base: { gas: '3000000000000000', usdc: '9000000' },
     });
     (Uniswap.getInstance as jest.Mock).mockResolvedValue({
       quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
@@ -367,8 +459,8 @@ describe('provider-owned target funding routes', () => {
     'funds canonical Arbitrum native ETH from a same-network USDC source via Squid (%s)',
     async (destinationNetwork) => {
       mockEthereumContexts({
-        arbitrum: { gas: '1000000000000000', usdc: '9000000' },
-        base: { gas: '1000000000000000', usdc: '9000000' },
+        arbitrum: { gas: '3000000000000000', usdc: '9000000' },
+        base: { gas: '3000000000000000', usdc: '9000000' },
       });
       const fetchMock = mockSquidRoute('56000000000000000');
       const app = Fastify();
@@ -421,7 +513,7 @@ describe('provider-owned target funding routes', () => {
   it('confirms same-chain Squid from a successful receipt without destination status polling', async () => {
     const getTransactionReceipt = jest.fn().mockResolvedValue({ status: 1 });
     mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
       {
         chainId: 42161,
         provider: {
@@ -464,7 +556,7 @@ describe('provider-owned target funding routes', () => {
   it('does not confirm same-chain Squid from provider status without a successful main receipt', async () => {
     const getTransactionReceipt = jest.fn().mockResolvedValue(null);
     mockEthereumContexts(
-      { base: { gas: '1000000000000000', usdc: '9000000' } },
+      { base: { gas: '3000000000000000', usdc: '9000000' } },
       { provider: { getGasPrice: jest.fn(async () => BigNumber.from('1000000000')), getTransactionReceipt } },
     );
     const fetchMock = mockSquidRouteAndStatus('SUCCESS');
@@ -492,8 +584,8 @@ describe('provider-owned target funding routes', () => {
 
   it('rejects an Arbitrum native ETH target that is not the canonical mnemonic-derived wallet', async () => {
     const ethereum = mockEthereumContexts({
-      arbitrum: { gas: '1000000000000000', usdc: '9000000' },
-      base: { gas: '1000000000000000', usdc: '9000000' },
+      arbitrum: { gas: '3000000000000000', usdc: '9000000' },
+      base: { gas: '3000000000000000', usdc: '9000000' },
     });
     const fetchMock = jest.fn();
     global.fetch = fetchMock as any;
@@ -522,7 +614,7 @@ describe('provider-owned target funding routes', () => {
   });
 
   it('rejects destination asset ETH for a non-Base network', async () => {
-    const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    const ethereum = mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '9000000' } });
     const fetchMock = jest.fn();
     global.fetch = fetchMock as any;
     const app = Fastify();
@@ -549,8 +641,8 @@ describe('provider-owned target funding routes', () => {
 
   it('inverse-quotes realistic USDC input for a 0.01 Base WETH target', async () => {
     mockEthereumContexts({
-      arbitrum: { gas: '1000000000000000', usdc: '100000000' },
-      base: { gas: '1000000000000000', usdc: '100000000' },
+      arbitrum: { gas: '3000000000000000', usdc: '100000000' },
+      base: { gas: '3000000000000000', usdc: '100000000' },
     });
     const fetchMock = mockSquidWethRoute();
     const app = Fastify();
@@ -591,7 +683,7 @@ describe('provider-owned target funding routes', () => {
   });
 
   it('provisions the selected mnemonic source wallet before provider quote and persistence', async () => {
-    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '9000000' } });
     const fetchMock = jest.fn();
     global.fetch = fetchMock as any;
     (ensureMarlinWalletExists as jest.Mock).mockRejectedValueOnce(new Error('wallet provisioning failed'));
@@ -617,7 +709,7 @@ describe('provider-owned target funding routes', () => {
   });
 
   it('rejects an unsupported spend asset before wallet, balance, quote, or persistence side effects', async () => {
-    const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    const ethereum = mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '9000000' } });
     const fetchMock = jest.fn();
     global.fetch = fetchMock as any;
     const app = Fastify();
@@ -644,8 +736,8 @@ describe('provider-owned target funding routes', () => {
 
   it('falls through to a later funded canonical EVM treasury context', async () => {
     mockEthereumContexts({
-      arbitrum: { gas: '1000000000000000', usdc: '0' },
-      base: { gas: '1000000000000000', usdc: '9000000' },
+      arbitrum: { gas: '3000000000000000', usdc: '0' },
+      base: { gas: '3000000000000000', usdc: '9000000' },
     });
     const fetchMock = mockSquidRoute();
     const app = Fastify();
@@ -706,7 +798,7 @@ describe('provider-owned target funding routes', () => {
   });
 
   it('does not report verified insufficiency when fresh balance evidence is unavailable', async () => {
-    const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+    const ethereum = mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
     ethereum.arbitrum.getERC20BalanceByAddress.mockRejectedValue(new Error('RPC unavailable'));
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -746,7 +838,7 @@ describe('provider-owned target funding routes', () => {
   it('rechecks the persisted source and blocks execute before any side effect when gas disappears', async () => {
     const sendTransaction = jest.fn();
     const ethereum = mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '6000000' } },
       { getWallet: jest.fn(async () => ({ sendTransaction })) },
     );
     const app = Fastify();
@@ -776,7 +868,7 @@ describe('provider-owned target funding routes', () => {
 
   it('rejects persisted Bridge2 selection with tampered native gas bound via fingerprint mismatch', async () => {
     const ethereum = mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '6000000' } },
       { getWallet: jest.fn() },
     );
     const app = Fastify();
@@ -812,7 +904,7 @@ describe('provider-owned target funding routes', () => {
 
   it('rejects persisted Bridge2 selection with tampered destination amount', async () => {
     const ethereum = mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '6000000' } },
       { getWallet: jest.fn() },
     );
     const app = Fastify();
@@ -881,7 +973,7 @@ describe('provider-owned target funding routes', () => {
     const signer = new Wallet(`0x${'77'.repeat(32)}`);
     const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
     const ethereum = mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '6000000' } },
       {
         chainId: 42161,
         getWallet: jest.fn(async () => signer),
@@ -923,7 +1015,7 @@ describe('provider-owned target funding routes', () => {
   it('rejects a modified persisted provider selection before any side effect', async () => {
     const sendTransaction = jest.fn();
     const ethereum = mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '6000000' } },
       { getWallet: jest.fn(async () => ({ sendTransaction })) },
     );
     const app = Fastify();
@@ -958,7 +1050,7 @@ describe('provider-owned target funding routes', () => {
     const signer = new Wallet(`0x${'33'.repeat(32)}`);
     const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
     mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
       {
         chainId: 42161,
         getWallet: jest.fn(async () => signer),
@@ -1046,7 +1138,7 @@ describe('provider-owned target funding routes', () => {
       .mockImplementation(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
     const getTransactionReceipt = jest.fn().mockResolvedValue(null);
     const ethereum = mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
       {
         chainId: 42161,
         getWallet: jest.fn(async () => signer),
@@ -1106,7 +1198,7 @@ describe('provider-owned target funding routes', () => {
     const getTransactionReceipt = jest.fn().mockResolvedValue(null);
     const sendTransaction = jest.fn();
     mockEthereumContexts(
-      { base: { gas: '1000000000000000', usdc: '9000000' } },
+      { base: { gas: '3000000000000000', usdc: '9000000' } },
       {
         chainId: 8453,
         getWallet: jest.fn(async () => signer),
@@ -1163,7 +1255,7 @@ describe('provider-owned target funding routes', () => {
     );
     global.fetch = fetchMock as any;
     mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
       {
         chainId: 42161,
         getWallet: jest.fn(async () => signer),
@@ -1234,7 +1326,7 @@ describe('provider-owned target funding routes', () => {
         .mockResolvedValueOnce(proofNonce)
         .mockResolvedValueOnce(proofNonce + 1);
       mockEthereumContexts(
-        { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+        { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
         {
           chainId: 42161,
           getWallet: jest.fn(async () => signer),
@@ -1380,7 +1472,7 @@ describe('provider-owned target funding routes', () => {
       const getTransactionCount = jest.fn();
       counts.forEach((count) => getTransactionCount.mockResolvedValueOnce(count));
       mockEthereumContexts(
-        { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+        { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
         {
           chainId: 42161,
           getWallet: jest.fn(async () => signer),
@@ -1443,7 +1535,7 @@ describe('provider-owned target funding routes', () => {
       const signer = new Wallet(`0x${'44'.repeat(32)}`);
       const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
       mockEthereumContexts(
-        { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+        { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
         {
           chainId: 42161,
           getWallet: jest.fn(async () => signer),
@@ -1478,7 +1570,7 @@ describe('provider-owned target funding routes', () => {
     const signer = new Wallet(`0x${'55'.repeat(32)}`);
     const fetchMock = mockSquidRouteAndStatus('SUCCESS');
     mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
       {
         chainId: 42161,
         getWallet: jest.fn(async () => signer),
@@ -1511,7 +1603,7 @@ describe('provider-owned target funding routes', () => {
     const signer = new Wallet(`0x${'66'.repeat(32)}`);
     const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
     const ethereum = mockEthereumContexts(
-      { arbitrum: { gas: '1000000000000000', usdc: '9000000' } },
+      { arbitrum: { gas: '3000000000000000', usdc: '9000000' } },
       {
         chainId: 42161,
         getWallet: jest.fn(async () => signer),
@@ -1568,7 +1660,7 @@ describe('provider-owned target funding routes', () => {
       const sendTransaction = jest.fn(async (serialized: string) => ({ hash: utils.keccak256(serialized) }));
       const getTransactionReceipt = jest.fn().mockResolvedValue({ status: receiptStatus });
       mockEthereumContexts(
-        { arbitrum: { gas: '1000000000000000', usdc: '6000000' } },
+        { arbitrum: { gas: '3000000000000000', usdc: '6000000' } },
         {
           chainId: 42161,
           getWallet: jest.fn(async () => signer),
@@ -1612,7 +1704,7 @@ describe('provider-owned target funding routes', () => {
   );
 
   it('rejects caller-supplied provider, source, and wallet authority fields', async () => {
-    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
 
@@ -1637,7 +1729,7 @@ describe('provider-owned target funding routes', () => {
   });
 
   it('rejects second selection with same idempotency key but different targetNotionalEur', async () => {
-    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '9000000' } });
     const fetchMock = mockSquidRoute('9000000');
     const app = Fastify();
     await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -1658,7 +1750,7 @@ describe('provider-owned target funding routes', () => {
   });
 
   it('rejects second selection with same idempotency key but different destinationAmount', async () => {
-    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '100000000' } });
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '100000000' } });
     let fetchCount = 0;
     const fetchMock = jest.fn(async (_url: unknown, options: Record<string, any>) => {
       fetchCount += 1;
@@ -1760,7 +1852,7 @@ describe('provider-owned target funding routes', () => {
   ])(
     'validates Squid cost inputs: $name',
     async ({ feeCosts, gasCosts, expectedStatus, expectedBody, expectedProviderCost, expectedGasCost }) => {
-      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+      mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '9000000' } });
       const fetchMock = jest.fn(async () => ({
         headers: { get: () => 'squid-request-1' },
         json: async () => ({
@@ -1773,7 +1865,12 @@ describe('provider-owned target funding routes', () => {
             id: 'squid-route-1',
             quoteId: 'squid-quote-1',
             requestId: 'squid-request-1',
-            transactionRequest: { data: '0x1234', target: '0x00000000000000000000000000000000000000F0', value: '0' },
+            transactionRequest: {
+              data: '0x1234',
+              gasLimit: '994800',
+              target: '0x00000000000000000000000000000000000000F0',
+              value: '0',
+            },
           },
         }),
         ok: true,
@@ -1797,7 +1894,7 @@ describe('provider-owned target funding routes', () => {
   );
 
   it('forward-quotes a 100 EUR WETH target without destinationAmount using at most 100 USDC source budget', async () => {
-    mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '100000000' } });
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '100000000' } });
     const fetchMock = jest.fn(async (_url: unknown, options: Record<string, any>) => {
       const body = JSON.parse(options.body);
       const fromAmount = BigNumber.from(body.fromAmount);
@@ -1813,7 +1910,12 @@ describe('provider-owned target funding routes', () => {
             id: 'squid-route-1',
             quoteId: 'squid-quote-1',
             requestId: 'squid-request-1',
-            transactionRequest: { data: '0x1234', target: '0x00000000000000000000000000000000000000F0', value: '0' },
+            transactionRequest: {
+              data: '0x1234',
+              gasLimit: '994800',
+              target: '0x00000000000000000000000000000000000000F0',
+              value: '0',
+            },
           },
         }),
         ok: true,
@@ -2034,7 +2136,7 @@ describe('provider-owned target funding routes', () => {
     });
 
     it('preserves direct USDC funding when USDC balance is sufficient (existing path unchanged)', async () => {
-      const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
       const uniswapMock = {
         quoteExactOutputSingle: jest.fn(),
         quoteExactInputSingle: jest.fn(),
@@ -2107,7 +2209,7 @@ describe('provider-owned target funding routes', () => {
         expect(body.sourceAsset).toBe('USDC');
         expect(body.destinationAsset).toBe('USDC');
         expect(body.quotedNativeGasAsset).toBe('ETH');
-        const expectedGasWei = BigNumber.from('1000000000').mul(1170000).mul(12).div(10);
+        const expectedGasWei = BigNumber.from('1000000000').mul(2720000).mul(12).div(10);
         expect(utils.parseEther(body.quotedNativeGasAmount).eq(expectedGasWei)).toBe(true);
         expect(body.stageIndex).toBe(0);
         expect(body.stageCount).toBe(2);
@@ -2168,7 +2270,7 @@ describe('provider-owned target funding routes', () => {
     });
 
     it('preserves direct Squid USDC funding when USDC balance is sufficient (existing path unchanged)', async () => {
-      const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
+      const ethereum = mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '9000000' } });
       const fetchMock = mockSquidRoute();
       const app = Fastify();
       await app.register(rebalanceRoutes, { prefix: '/bridge' });
@@ -2984,7 +3086,7 @@ describe('provider-owned target funding routes', () => {
     });
 
     it('rejects a plan whose conversion stage uses the funding provider', async () => {
-      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
       const app = Fastify();
       await app.register(rebalanceRoutes, { prefix: '/bridge' });
       const buildResponse = await app.inject({
@@ -3150,7 +3252,7 @@ describe('provider-owned target funding routes', () => {
     });
 
     it('rejects plan with invalid version on reload', async () => {
-      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
       const app = Fastify();
       await app.register(rebalanceRoutes, { prefix: '/bridge' });
       await app.inject({
@@ -3184,7 +3286,7 @@ describe('provider-owned target funding routes', () => {
     });
 
     it('rejects plan with invalid stage order', async () => {
-      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
       const app = Fastify();
       await app.register(rebalanceRoutes, { prefix: '/bridge' });
       await app.inject({
@@ -3221,7 +3323,7 @@ describe('provider-owned target funding routes', () => {
     });
 
     it('rejects plan with more than two stages', async () => {
-      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
       const app = Fastify();
       await app.register(rebalanceRoutes, { prefix: '/bridge' });
       await app.inject({
@@ -3259,7 +3361,7 @@ describe('provider-owned target funding routes', () => {
     });
 
     it('rejects plan with tampered stage build fingerprint', async () => {
-      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
       const app = Fastify();
       await app.register(rebalanceRoutes, { prefix: '/bridge' });
       await app.inject({
@@ -3302,7 +3404,7 @@ describe('provider-owned target funding routes', () => {
     });
 
     it('does not add stage projection fields for a direct funded target without plan fields', async () => {
-      mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '6000000' } });
+      mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '6000000' } });
       const app = Fastify();
       await app.register(rebalanceRoutes, { prefix: '/bridge' });
       const buildResponse = await app.inject({
@@ -3871,7 +3973,8 @@ function mockEthereumContexts(
   return contexts;
 }
 
-function mockSquidRoute(toAmount = '6000000') {
+function mockSquidRoute(toAmount = '6000000', gasLimit?: unknown) {
+  const providerGasLimit = arguments.length >= 2 ? gasLimit : '994800';
   const fetchMock = jest.fn(async (_url: unknown, _options: Record<string, any>) => ({
     headers: { get: () => 'squid-request-1' },
     json: async () => ({
@@ -3886,6 +3989,7 @@ function mockSquidRoute(toAmount = '6000000') {
         requestId: 'squid-request-1',
         transactionRequest: {
           data: '0x1234',
+          gasLimit: providerGasLimit,
           target: '0x00000000000000000000000000000000000000F0',
           value: '0',
         },
@@ -3917,7 +4021,7 @@ function mockSquidRouteAndStatus(status: string) {
   return fetchMock;
 }
 
-function squidRouteResponse(toAmount: string) {
+function squidRouteResponse(toAmount: string, gasLimit: unknown = '994800') {
   return {
     headers: { get: () => 'squid-request-1' },
     json: async () => ({
@@ -3932,6 +4036,7 @@ function squidRouteResponse(toAmount: string) {
         requestId: 'squid-request-1',
         transactionRequest: {
           data: '0x1234',
+          gasLimit,
           target: '0x00000000000000000000000000000000000000F0',
           value: '0',
         },
