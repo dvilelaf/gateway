@@ -321,6 +321,92 @@ describe('provider-owned target funding routes', () => {
     });
   });
 
+  it.each(['arbitrum', 'arbitrum-mainnet'])(
+    'funds canonical Arbitrum native ETH from an existing Base USDC source via Squid (%s)',
+    async (destinationNetwork) => {
+      mockEthereumContexts({
+        arbitrum: { gas: '1000000000000000', usdc: '9000000' },
+        base: { gas: '1000000000000000', usdc: '9000000' },
+      });
+      const fetchMock = mockSquidRoute('56000000000000000');
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationAsset: 'ETH',
+          destinationChain: 'ethereum',
+          destinationNetwork,
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        destinationAddress: utils.getAddress(ARBITRUM_WALLET),
+        destinationAmount: '0.056',
+        destinationAsset: 'ETH',
+        destinationChain: 'ethereum',
+        destinationNetwork: 'arbitrum',
+        provider: 'squid_router',
+        sourceAsset: BASE_USDC,
+        sourceNetwork: 'base',
+        walletAddress: utils.getAddress(BASE_WALLET),
+      });
+      const squidPayload = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(squidPayload).toMatchObject({
+        fromAddress: utils.getAddress(BASE_WALLET),
+        fromAmount: '6000000',
+        fromChain: '8453',
+        fromToken: BASE_USDC,
+        toAddress: utils.getAddress(ARBITRUM_WALLET),
+        toChain: '42161',
+        toToken: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
+      });
+      expect(ensureMarlinWalletExists).toHaveBeenCalledWith({
+        address: utils.getAddress(BASE_WALLET),
+        chain: 'ethereum',
+        network: 'base',
+        walletRef: 'base:mainnet:evm_gateway',
+      });
+      expect(ensureMarlinWalletExists).not.toHaveBeenCalledWith(expect.objectContaining({ network: 'arbitrum' }));
+      await app.close();
+    },
+  );
+
+  it('rejects an Arbitrum native ETH target that is not the canonical mnemonic-derived wallet', async () => {
+    const ethereum = mockEthereumContexts({
+      arbitrum: { gas: '1000000000000000', usdc: '9000000' },
+      base: { gas: '1000000000000000', usdc: '9000000' },
+    });
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as any;
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAddress: BASE_WALLET,
+        destinationAsset: 'ETH',
+        destinationChain: 'ethereum',
+        destinationNetwork: 'arbitrum',
+      }),
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain('destinationAddress does not match the canonical MARLIN_MNEMONIC wallet');
+    expect(ensureMarlinWalletExists).not.toHaveBeenCalled();
+    expect(Ethereum.getInstance).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ethereum.arbitrum.getWallet).not.toHaveBeenCalled();
+    expect(() => readFileSync(path.join(stateRoot, 'target-funding-1.json'))).toThrow();
+    await app.close();
+  });
+
   it('rejects destination asset ETH for a non-Base network', async () => {
     const ethereum = mockEthereumContexts({ arbitrum: { gas: '1000000000000000', usdc: '9000000' } });
     const fetchMock = jest.fn();

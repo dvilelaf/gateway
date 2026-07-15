@@ -2134,6 +2134,18 @@ function resolveTargetFundingDestination(body: TargetFundingRequest): TargetFund
       provider: SQUID_ROUTER_PROVIDER,
     };
   }
+  if (chain === 'ethereum' && ['arbitrum', 'arbitrum-mainnet'].includes(network) && asset === 'ETH') {
+    return {
+      canonicalChain: 'ethereum',
+      canonicalNetwork: 'arbitrum',
+      destinationAsset: 'ETH',
+      destinationAssetAddress: SQUID_NATIVE_TOKEN_ADDRESS,
+      destinationAssetDecimals: SQUID_NATIVE_ASSET_DECIMALS,
+      destinationChain: 'ethereum',
+      destinationNetwork: 'arbitrum',
+      provider: SQUID_ROUTER_PROVIDER,
+    };
+  }
   if (chain === 'solana' && ['mainnet-beta', 'solana-mainnet-beta', 'solana'].includes(network) && asset === 'USDC') {
     return {
       canonicalChain: 'solana',
