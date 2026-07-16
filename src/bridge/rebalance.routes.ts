@@ -888,7 +888,7 @@ function rebalanceStatusResponse(state: DurableRebalanceState) {
     sourceChain: state.sourceChain,
     sourceNetwork: state.sourceNetwork,
     providerStatus: state.providerStatus,
-    providerError: state.providerError,
+    providerError: state.providerError === undefined ? undefined : redactProviderError(state.providerError),
   });
 }
 
@@ -4349,7 +4349,14 @@ async function saveRebalanceState(state: DurableRebalanceState): Promise<void> {
   mkdirSync(dir, { recursive: true });
   const filePath = rebalanceStatePath(state.idempotencyKey);
   const tmpPath = `${filePath}.tmp`;
-  const persisted = removeUndefinedFields(state);
+  const persisted = removeUndefinedFields({
+    ...state,
+    providerError: state.providerError === undefined ? undefined : redactProviderError(state.providerError),
+    stages: (state.stages as TargetPlanStage[] | undefined)?.map((stage) => ({
+      ...stage,
+      providerError: stage.providerError === undefined ? undefined : redactProviderError(stage.providerError),
+    })),
+  });
   writeFileSync(tmpPath, `${JSON.stringify(persisted, null, 2)}\n`, { mode: 0o600 });
   const tmpFd = openSync(tmpPath, 'r');
   try {

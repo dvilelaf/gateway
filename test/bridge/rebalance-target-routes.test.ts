@@ -3148,6 +3148,76 @@ describe('provider-owned target funding routes', () => {
       await app.close();
     });
 
+    it('redacts root and stage provider errors before persistence and status without broadcasting', async () => {
+      const sendTransaction = jest.fn();
+      const stageTransactionHash = `0x${'34'.repeat(32)}`;
+      const getTransactionReceipt = jest.fn(async (hash: string) => {
+        expect(hash).toBe(stageTransactionHash);
+        return { status: 0 };
+      });
+      mockEthereumContexts(
+        { arbitrum: { gas: '20000000000000000', usdc: '0' } },
+        {
+          chainId: 42161,
+          provider: {
+            getGasPrice: jest.fn(async () => BigNumber.from('1000000000')),
+            getTransactionReceipt,
+            sendTransaction,
+          },
+        },
+      );
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue({
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+        quoteExactInputSingle: jest.fn(async () => utils.parseUnits('6', 6)),
+      });
+      const app = Fastify();
+      await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+      const buildResponse = await app.inject({
+        method: 'POST',
+        url: '/bridge/rebalance/targets',
+        payload: targetRequest({
+          destinationAddress: ARBITRUM_WALLET,
+          destinationChain: 'hyperliquid',
+          destinationNetwork: 'mainnet',
+        }),
+      });
+      expect(buildResponse.statusCode).toBe(200);
+
+      const statePath = path.join(stateRoot, 'target-funding-1.json');
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+      persisted.activeStageIndex = 0;
+      persisted.status = 'submission_pending';
+      persisted.providerError = 'token=root-provider-token privateKey=root-provider-key';
+      persisted.stages[0] = {
+        ...persisted.stages[0],
+        providerError: 'token=stage-provider-token privateKey=stage-private-key',
+        status: 'submission_ambiguous',
+        transactionHash: stageTransactionHash,
+      };
+      writeFileSync(statePath, JSON.stringify(persisted));
+
+      const statusResponse = await app.inject({ method: 'GET', url: '/bridge/rebalance/target-funding-1' });
+      const finalState = JSON.parse(readFileSync(statePath, 'utf8'));
+      const statusBody = statusResponse.json();
+
+      expect(statusResponse.statusCode).toBe(200);
+      expect(finalState.providerError).toBe('token [redacted] privateKey [redacted]');
+      expect(finalState.stages[0].providerError).toBe('token [redacted] privateKey [redacted]');
+      expect(JSON.stringify(finalState)).not.toContain('root-provider-token');
+      expect(JSON.stringify(finalState)).not.toContain('root-provider-key');
+      expect(JSON.stringify(finalState)).not.toContain('stage-provider-token');
+      expect(JSON.stringify(finalState)).not.toContain('stage-private-key');
+      expect(statusBody.providerError).toBe('token [redacted] privateKey [redacted]');
+      expect(statusBody.providerError).not.toContain('root-provider-token');
+      expect(statusBody.providerError).not.toContain('root-provider-key');
+      expect(statusBody.stages[0].error).toBe('token [redacted] privateKey [redacted]');
+      expect(statusBody.stages[0].error).not.toContain('stage-provider-token');
+      expect(statusBody.stages[0].error).not.toContain('stage-private-key');
+      expect(sendTransaction).not.toHaveBeenCalled();
+      await app.close();
+    });
+
     it.each([
       { receiptStatus: 0, expectedStageStatus: 'failed' },
       { receiptStatus: 1, expectedStageStatus: 'confirmed' },
