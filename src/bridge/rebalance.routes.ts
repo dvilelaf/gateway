@@ -4483,7 +4483,11 @@ function redactProviderError(error: unknown): string {
   return raw
     .replace(/0x[a-fA-F0-9]{80,}/g, '[redacted-hex]')
     .replace(
-      /([?&](?:api_?key|token|signature|attestation|password|passphrase|access[_-]?token|seed(?:[_-]phrase)?|mnemonic|private[_-]?key)=)[^&\s]+/gi,
+      /("(?:api[-_]?key|token|signature|attestation|password|passphrase|access[\s_-]?token|seed[\s_-]?phrase|mnemonic|private[\s_-]?key|secret|wallet_?file|bearer|client[-_]?secret|api[-_]?secret)"\s*:\s*)"((?:\\.|[^"\\])*)"/gi,
+      '$1"[redacted]"',
+    )
+    .replace(
+      /([?&](?:api_?key|token|signature|attestation|password|passphrase|access[_-]?token|seed(?:[_-]phrase)?|mnemonic|private[_-]?key|client[_-]?secret|api[_-]?secret)=)[^&\s]+/gi,
       '$1[redacted]',
     )
     .replace(
@@ -4491,7 +4495,7 @@ function redactProviderError(error: unknown): string {
       '$1 [redacted]',
     )
     .replace(
-      /\b(token|api[-_]?key|signature|attestation|secret|wallet_?file|bearer)\b[:=\s]+[^\s&]+/gi,
+      /\b(token|api[-_]?key|signature|attestation|secret|wallet_?file|bearer|client[-_]?secret|api[-_]?secret)\b[:=\s]+[^\s&]+/gi,
       '$1 [redacted]',
     )
     .slice(0, 300);

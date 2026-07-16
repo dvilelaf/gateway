@@ -3191,13 +3191,15 @@ describe('provider-owned target funding routes', () => {
       persisted.providerError =
         'token=root-provider-token privateKey=root-provider-key, mnemonic=root-mnemonic-one root-mnemonic-two; ' +
         'password=root-password-one root-password-two, passphrase=root-passphrase-one root-passphrase-two, ' +
-        'access_token=root-access-one root-access-two';
+        'access_token=root-access-one root-access-two, ' +
+        '{"token":"root-json-token","client_secret":"root-client-secret","api_secret":"root-api-secret"}';
       persisted.stages[0] = {
         ...persisted.stages[0],
         providerError:
           'token=stage-provider-token privateKey=stage-private-key, mnemonic=stage-mnemonic-one stage-mnemonic-two; ' +
           'password=stage-password-one stage-password-two, passphrase=stage-passphrase-one stage-passphrase-two, ' +
-          'access-token=stage-access-one stage-access-two',
+          'access-token=stage-access-one stage-access-two, ' +
+          '{"api-key":"stage-json-api-key","client-secret":"stage-client-secret","api-secret":"stage-api-secret"}',
         status: 'submission_ambiguous',
         transactionHash: stageTransactionHash,
       };
@@ -3209,20 +3211,24 @@ describe('provider-owned target funding routes', () => {
 
       expect(statusResponse.statusCode).toBe(200);
       expect(finalState.providerError).toBe(
-        'token [redacted] privateKey [redacted], mnemonic [redacted]; password [redacted], passphrase [redacted], access_token [redacted]',
+        'token [redacted] privateKey [redacted], mnemonic [redacted]; password [redacted], passphrase [redacted], ' +
+          'access_token [redacted], {"token":"[redacted]","client_secret":"[redacted]","api_secret":"[redacted]"}',
       );
       expect(finalState.stages[0].providerError).toBe(
-        'token [redacted] privateKey [redacted], mnemonic [redacted]; password [redacted], passphrase [redacted], access-token [redacted]',
+        'token [redacted] privateKey [redacted], mnemonic [redacted]; password [redacted], passphrase [redacted], ' +
+          'access-token [redacted] {"api-key":"[redacted]","client-secret":"[redacted]","api-secret":"[redacted]"}',
       );
       expect(JSON.stringify(finalState)).not.toContain('root-provider-token');
       expect(JSON.stringify(finalState)).not.toContain('root-provider-key');
       expect(JSON.stringify(finalState)).not.toContain('stage-provider-token');
       expect(JSON.stringify(finalState)).not.toContain('stage-private-key');
       expect(statusBody.providerError).toBe(
-        'token [redacted] privateKey [redacted], mnemonic [redacted]; password [redacted], passphrase [redacted], access_token [redacted]',
+        'token [redacted] privateKey [redacted], mnemonic [redacted]; password [redacted], passphrase [redacted], ' +
+          'access_token [redacted], {"token":"[redacted]","client_secret":"[redacted]","api_secret":"[redacted]"}',
       );
       expect(statusBody.stages[0].error).toBe(
-        'token [redacted] privateKey [redacted], mnemonic [redacted]; password [redacted], passphrase [redacted], access-token [redacted]',
+        'token [redacted] privateKey [redacted], mnemonic [redacted]; password [redacted], passphrase [redacted], ' +
+          'access-token [redacted] {"api-key":"[redacted]","client-secret":"[redacted]","api-secret":"[redacted]"}',
       );
       for (const secretWord of [
         'root-mnemonic-one',
@@ -3233,6 +3239,9 @@ describe('provider-owned target funding routes', () => {
         'root-passphrase-two',
         'root-access-one',
         'root-access-two',
+        'root-json-token',
+        'root-client-secret',
+        'root-api-secret',
         'stage-mnemonic-one',
         'stage-mnemonic-two',
         'stage-password-one',
@@ -3241,6 +3250,9 @@ describe('provider-owned target funding routes', () => {
         'stage-passphrase-two',
         'stage-access-one',
         'stage-access-two',
+        'stage-json-api-key',
+        'stage-client-secret',
+        'stage-api-secret',
       ]) {
         expect(JSON.stringify(finalState)).not.toContain(secretWord);
         expect(JSON.stringify(statusBody)).not.toContain(secretWord);
