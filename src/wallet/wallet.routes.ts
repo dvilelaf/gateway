@@ -2,6 +2,7 @@ import sensible from '@fastify/sensible';
 import { FastifyPluginAsync } from 'fastify';
 
 import { getWalletsRoute } from './routes/getWallets';
+import { marlinCowApproveRoute } from './routes/marlinCowApprove';
 import { marlinCowSignTypedDataRoute } from './routes/marlinCowSignTypedData';
 import { setMarlinDefaultRoute } from './routes/setMarlinDefault';
 
@@ -11,6 +12,7 @@ export const walletRoutes: FastifyPluginAsync = async (fastify) => {
 
   await fastify.register(getWalletsRoute);
   await fastify.register(setMarlinDefaultRoute);
+  await fastify.register(marlinCowApproveRoute);
   await fastify.register(marlinCowSignTypedDataRoute);
 };
 

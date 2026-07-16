@@ -16,6 +16,9 @@ export interface MainnetMutationGuardInput {
   expectedGas?: unknown;
   expectedNotional?: unknown;
   expectedSlippageBps?: unknown;
+  expectedAmountAtomic?: unknown;
+  expectedSpenderAddress?: unknown;
+  expectedTokenAddress?: unknown;
   expectedWalletAddress?: unknown;
   internalProviderIntentSource?: string;
   liveActionAuthorization?: LiveActionAuthorization;
@@ -36,6 +39,7 @@ export interface LiveActionAuthorization {
   bridge_tx_calldata_hash?: unknown;
   bridge_tx_target?: unknown;
   bridge_tx_value?: unknown;
+  amount_atomic?: unknown;
   connector_id?: unknown;
   destination_address?: unknown;
   destination_network?: unknown;
@@ -45,11 +49,13 @@ export interface LiveActionAuthorization {
   network?: unknown;
   notional?: unknown;
   signature?: unknown;
+  spender_address?: unknown;
   signing_type?: unknown;
   slippage_bps?: unknown;
   source?: unknown;
   scope?: unknown;
   status?: unknown;
+  token_address?: unknown;
   payload_hash?: unknown;
   version?: unknown;
   wallet_address?: unknown;
@@ -73,6 +79,13 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
   if (isMarlinProviderIntentSwapAuthorization(input)) {
     return;
   }
+  const cowApprovalRejection = marlinProviderIntentCowApprovalRejectionReason(input);
+  if (cowApprovalRejection === '') {
+    if (isMarlinRuntimeProfile()) {
+      return;
+    }
+    throw new Error('Marlin provider intent CoW approval requires MARLIN_RUNTIME_PROFILE=marlin');
+  }
   if (isMarlinProviderTreasuryAuthorization(input)) {
     return;
   }
@@ -80,6 +93,9 @@ export function assertMainnetMutationAllowed(input: MainnetMutationGuardInput): 
     const swapRejection = marlinProviderIntentSwapRejectionReason(input);
     if (swapRejection) {
       throw new Error(`Marlin provider intent swap rejected at mainnet guard: ${swapRejection}`);
+    }
+    if (cowApprovalRejection) {
+      throw new Error(`Marlin provider intent CoW approval rejected at mainnet guard: ${cowApprovalRejection}`);
     }
     throw new Error(
       `direct mainnet mutation disabled for ${input.chain}/${input.network}/${input.operation} in Marlin runtime; ` +
@@ -160,6 +176,40 @@ function isMarlinRuntimeProfile(): boolean {
 
 function isMarlinProviderIntentSwapAuthorization(input: MainnetMutationGuardInput): boolean {
   return marlinProviderIntentSwapRejectionReason(input) === '';
+}
+
+function marlinProviderIntentCowApprovalRejectionReason(input: MainnetMutationGuardInput): string | null {
+  const authorization = input.liveActionAuthorization;
+  const marlinCowApprovalIntent =
+    authorization?.source === 'marlin' &&
+    authorization?.scope === 'provider_intent' &&
+    authorization?.action === 'cowswap_approve';
+  if (!marlinCowApprovalIntent) {
+    return null;
+  }
+  const requiredGuardContextPresent = [
+    input.expectedConnectorId,
+    input.expectedWalletAddress,
+    input.expectedTokenAddress,
+    input.expectedSpenderAddress,
+    input.expectedAmountAtomic,
+  ].every((value) => value !== undefined && value !== null && String(value).trim() !== '');
+  if (!requiredGuardContextPresent) {
+    return null;
+  }
+  const matches = [
+    authorizationMatches(input.network, authorization?.network),
+    authorizationMatches(input.expectedConnectorId, authorization?.connector_id),
+    authorizationMatches(input.expectedWalletAddress, authorization?.wallet_address),
+    authorizationMatches(input.expectedTokenAddress, authorization?.token_address),
+    authorizationMatches(input.expectedSpenderAddress, authorization?.spender_address),
+    String(input.expectedAmountAtomic).trim() === String(authorization?.amount_atomic ?? '').trim(),
+    input.chain === 'ethereum' &&
+      input.network === 'base' &&
+      input.operation === 'ethereum_transaction' &&
+      input.internalProviderIntentSource === 'cowswap_approve',
+  ];
+  return matches.every(Boolean) ? '' : 'approval authorization context does not match the Ethereum transaction';
 }
 
 function marlinProviderIntentSwapRejectionReason(input: MainnetMutationGuardInput): string | null {

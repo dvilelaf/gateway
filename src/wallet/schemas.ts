@@ -71,10 +71,35 @@ export const MarlinCowSignTypedDataResponseSchema = Type.Object({
   signature: Type.String(),
 });
 
+export const MarlinCowApproveRequestSchema = Type.Object({
+  chain: Type.Literal('ethereum'),
+  network: Type.Literal('base'),
+  address: WalletAddressSchema,
+  walletRef: Type.Literal('base:mainnet:evm_gateway'),
+  tokenAddress: Type.String({ pattern: '^0x[0-9a-fA-F]{40}$' }),
+  amountAtomic: Type.String({ pattern: '^[1-9][0-9]*$' }),
+  spender: Type.String({ pattern: '^0x[0-9a-fA-F]{40}$' }),
+  liveActionAuthorization: Type.Any(),
+});
+
+export const MarlinCowApproveResponseSchema = Type.Object({
+  signature: Type.String(),
+  status: Type.Number(),
+  data: Type.Object({
+    tokenAddress: Type.String(),
+    spender: Type.String(),
+    amountAtomic: Type.String(),
+    nonce: Type.Number(),
+    fee: Type.String(),
+  }),
+});
+
 // Export TypeScript types
 export type GetWalletsQuery = Static<typeof GetWalletsQuerySchema>;
 export type SetMarlinDefaultWalletRequest = Static<typeof SetMarlinDefaultWalletRequestSchema>;
 export type SetMarlinDefaultWalletResponse = Static<typeof SetMarlinDefaultWalletResponseSchema>;
 export type MarlinCowSignTypedDataRequest = Static<typeof MarlinCowSignTypedDataRequestSchema>;
 export type MarlinCowSignTypedDataResponse = Static<typeof MarlinCowSignTypedDataResponseSchema>;
+export type MarlinCowApproveRequest = Static<typeof MarlinCowApproveRequestSchema>;
+export type MarlinCowApproveResponse = Static<typeof MarlinCowApproveResponseSchema>;
 export type GetWalletResponse = Static<typeof GetWalletResponseSchema>;

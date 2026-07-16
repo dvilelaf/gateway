@@ -767,11 +767,26 @@ export class Ethereum {
     spender: string,
     amount: BigNumber,
     liveActionAuthorization?: LiveActionAuthorization,
+    internalProviderIntentSource?: string,
+    guardContext: Partial<MainnetMutationGuardInput> = {},
   ): Promise<providers.TransactionResponse> {
     logger.info(`Approving ${amount.toString()} tokens for spender ${spender}`);
 
     // Prepare gas options for approval transaction
-    const gasOptions = await this.prepareGasOptions(undefined, undefined, liveActionAuthorization);
+    const boundGuardContext: Partial<MainnetMutationGuardInput> = {
+      ...guardContext,
+      expectedAmountAtomic: amount.toString(),
+      expectedSpenderAddress: spender,
+      expectedTokenAddress: contract.address,
+      expectedWalletAddress: wallet.address,
+    };
+    const gasOptions = await this.prepareGasOptions(
+      undefined,
+      undefined,
+      liveActionAuthorization,
+      internalProviderIntentSource,
+      boundGuardContext,
+    );
     const params: any = {
       ...gasOptions,
       nonce: await this.provider.getTransactionCount(wallet.address),

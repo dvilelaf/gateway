@@ -2,11 +2,24 @@ import { createHmac } from 'crypto';
 import { readFileSync } from 'fs';
 import path from 'path';
 
+import { BigNumber } from 'ethers';
+
+import { Ethereum } from '../../src/chains/ethereum/ethereum';
 import {
   BridgeExecutionExpectation,
   assertBridgeExecutionAllowed,
   assertMainnetMutationAllowed,
 } from '../../src/services/runtime-guard';
+
+jest.mock('../../src/services/logger', () => ({
+  logger: {
+    debug: jest.fn(),
+    error: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+  },
+  redactUrl: (url: string) => url,
+}));
 
 const ROOT = path.resolve(__dirname, '../..');
 
@@ -250,6 +263,109 @@ describe('runtime guard', () => {
         expectedWalletAddress: '0x00000000000000000000000000000000000000aa',
       }),
     ).not.toThrow();
+  });
+
+  it('allows only exact Marlin provider-intent CoW approval authorization', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+    const authorization = {
+      action: 'cowswap_approve',
+      connector_id: 'cowswap',
+      network: 'base',
+      scope: 'provider_intent',
+      source: 'marlin',
+      wallet_address: '0x00000000000000000000000000000000000000aa',
+      token_address: '0x00000000000000000000000000000000000000bb',
+      spender_address: '0xC92E8bdf79f0507f65a392b0ab4667716BFE0110',
+      amount_atomic: '1000000',
+    };
+    const input = {
+      chain: 'ethereum',
+      expectedAmountAtomic: '1000000',
+      expectedConnectorId: 'cowswap',
+      expectedSpenderAddress: '0xc92e8bdf79f0507f65a392b0ab4667716bfe0110',
+      expectedTokenAddress: '0x00000000000000000000000000000000000000BB',
+      expectedWalletAddress: '0x00000000000000000000000000000000000000AA',
+      internalProviderIntentSource: 'cowswap_approve',
+      liveActionAuthorization: authorization,
+      network: 'base',
+      operation: 'ethereum_transaction',
+    } as any;
+
+    expect(() => assertMainnetMutationAllowed(input)).not.toThrow();
+
+    for (const profile of [undefined, 'paper']) {
+      if (profile === undefined) {
+        delete process.env.MARLIN_RUNTIME_PROFILE;
+      } else {
+        process.env.MARLIN_RUNTIME_PROFILE = profile;
+      }
+      expect(() => assertMainnetMutationAllowed(input)).toThrow(/requires MARLIN_RUNTIME_PROFILE=marlin/);
+    }
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    for (const mismatch of [
+      { expectedTokenAddress: '0x00000000000000000000000000000000000000cc' },
+      { expectedSpenderAddress: '0x00000000000000000000000000000000000000dd' },
+      { expectedAmountAtomic: '1000001' },
+      { expectedWalletAddress: '0x00000000000000000000000000000000000000ee' },
+      { internalProviderIntentSource: 'cowswap_approve_wrong' },
+    ]) {
+      expect(() => assertMainnetMutationAllowed({ ...input, ...mismatch })).toThrow();
+    }
+  });
+
+  it('keeps generic Ethereum approval mutations blocked in Marlin runtime', () => {
+    delete process.env.GATEWAY_LIVE_ETHEREUM_TRANSACTION_ENABLED;
+    process.env.MARLIN_RUNTIME_PROFILE = 'marlin';
+
+    expect(() =>
+      assertMainnetMutationAllowed({
+        chain: 'ethereum',
+        network: 'base',
+        operation: 'ethereum_transaction',
+      }),
+    ).toThrow(/direct mainnet mutation disabled/);
+  });
+
+  it('binds Ethereum approval guard context to the actual approval arguments', async () => {
+    const ethereum = Object.create(Ethereum.prototype) as Ethereum;
+    const wallet = { address: '0x00000000000000000000000000000000000000aa' } as any;
+    const tokenAddress = '0x00000000000000000000000000000000000000bb';
+    const spender = '0x00000000000000000000000000000000000000cc';
+    const amount = BigNumber.from('1000000');
+    const authorization = { action: 'cowswap_approve' };
+    const transaction = { hash: '0xaaa', nonce: 7 };
+    const contract = {
+      address: tokenAddress,
+      approve: jest.fn().mockResolvedValue(transaction),
+    } as any;
+    const prepareGasOptions = jest.spyOn(ethereum, 'prepareGasOptions').mockResolvedValue({});
+    ethereum.provider = {
+      getTransactionCount: jest.fn().mockResolvedValue(7),
+    } as any;
+
+    try {
+      await ethereum.approveERC20(contract, wallet, spender, amount, authorization, 'cowswap_approve', {
+        expectedAmountAtomic: 'tampered-amount',
+        expectedConnectorId: 'cowswap',
+        expectedSpenderAddress: '0x00000000000000000000000000000000000000dd',
+        expectedTokenAddress: '0x00000000000000000000000000000000000000ee',
+        expectedWalletAddress: '0x00000000000000000000000000000000000000ff',
+      });
+
+      expect(prepareGasOptions).toHaveBeenCalledWith(undefined, undefined, authorization, 'cowswap_approve', {
+        expectedAmountAtomic: '1000000',
+        expectedConnectorId: 'cowswap',
+        expectedSpenderAddress: spender,
+        expectedTokenAddress: tokenAddress,
+        expectedWalletAddress: wallet.address,
+      });
+      expect(contract.approve).toHaveBeenCalledTimes(1);
+      expect(contract.approve).toHaveBeenCalledWith(spender, amount, { nonce: 7 });
+    } finally {
+      prepareGasOptions.mockRestore();
+    }
   });
 
   it('does not let Marlin provider-intent swap authorization bypass other operations', () => {
