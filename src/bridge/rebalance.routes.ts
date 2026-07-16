@@ -4482,9 +4482,16 @@ function redactProviderError(error: unknown): string {
         : JSON.stringify(error ?? 'unknown provider error');
   return raw
     .replace(/0x[a-fA-F0-9]{80,}/g, '[redacted-hex]')
-    .replace(/([?&](?:api_?key|token|signature|attestation)=)[^&\s]+/gi, '$1[redacted]')
     .replace(
-      /\b(token|api[-_]?key|signature|attestation|secret|mnemonic|private_?key|wallet_?file|bearer)\b[:=\s]+[^\s&]+/gi,
+      /([?&](?:api_?key|token|signature|attestation|password|passphrase|access[_-]?token|seed(?:[_-]phrase)?|mnemonic|private[_-]?key)=)[^&\s]+/gi,
+      '$1[redacted]',
+    )
+    .replace(
+      /\b(mnemonic|seed(?:[\s_-]?phrase)?|private[\s_-]?key|password|passphrase|access[\s_-]?token)\b(?:\s*[:=]\s*|\s+)[^,;&\r\n]*(?=[,;&\r\n]|$)/gi,
+      '$1 [redacted]',
+    )
+    .replace(
+      /\b(token|api[-_]?key|signature|attestation|secret|wallet_?file|bearer)\b[:=\s]+[^\s&]+/gi,
       '$1 [redacted]',
     )
     .slice(0, 300);
