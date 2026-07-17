@@ -398,4 +398,48 @@ describe('extractBalanceChangesAndFee', () => {
       expect(result.fee).toBe(0.00001);
     });
   });
+
+  describe('confirmed swap amounts', () => {
+    it('reports gross native SOL output separately from its transaction fee', async () => {
+      jest.spyOn(solana, 'extractBalanceChangesAndFee').mockResolvedValue({
+        balanceChanges: [-1, 0.013617026],
+        fee: 0.000006355,
+        executedAt: '2026-07-17T13:39:51Z',
+      });
+
+      const result = await solana.handleConfirmation(
+        'test-sig',
+        true,
+        {},
+        USDC_MINT,
+        WSOL_MINT,
+        buildOwnerPubkey().toBase58(),
+      );
+
+      expect(result.data?.amountIn).toBe(1);
+      expect(result.data?.amountOut).toBeCloseTo(0.013623381, 9);
+      expect(result.data?.fee).toBe(0.000006355);
+    });
+
+    it('excludes the transaction fee from native SOL swap input', async () => {
+      jest.spyOn(solana, 'extractBalanceChangesAndFee').mockResolvedValue({
+        balanceChanges: [-1.000006355, 10],
+        fee: 0.000006355,
+        executedAt: '2026-07-17T13:39:51Z',
+      });
+
+      const result = await solana.handleConfirmation(
+        'test-sig',
+        true,
+        {},
+        WSOL_MINT,
+        USDC_MINT,
+        buildOwnerPubkey().toBase58(),
+      );
+
+      expect(result.data?.amountIn).toBeCloseTo(1, 9);
+      expect(result.data?.amountOut).toBe(10);
+      expect(result.data?.fee).toBe(0.000006355);
+    });
+  });
 });

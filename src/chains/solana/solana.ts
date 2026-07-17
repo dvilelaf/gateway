@@ -2049,8 +2049,9 @@ export class Solana {
       const outputTokenBalanceChange = balanceChanges[1];
 
       // Calculate actual amounts swapped
-      const amountIn = Math.abs(inputTokenBalanceChange);
-      const amountOut = Math.abs(outputTokenBalanceChange);
+      const nativeMint = NATIVE_MINT.toBase58();
+      const amountIn = Math.abs(inputTokenBalanceChange) - (tokenIn === nativeMint ? fee : 0);
+      const amountOut = Math.abs(outputTokenBalanceChange) + (tokenOut === nativeMint ? fee : 0);
 
       // For AMM/CLMM swaps with side information
       let baseTokenBalanceChange: number | undefined;
