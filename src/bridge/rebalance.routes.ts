@@ -950,7 +950,9 @@ async function loadOrBuildTargetFunding(body: TargetFundingRequest): Promise<Bui
       throw new Error('idempotency key already used for a different rebalance request');
     }
     assertPersistedTargetFundingIntegrity(existing);
-    return existing.builtRebalance;
+    if (!isPreExecutionTargetFundingState(existing)) {
+      return existing.builtRebalance;
+    }
   }
 
   const built = await selectAndBuildTargetFunding(body, destination, canonicalDestinationAddress, maxCostBps);
@@ -4363,6 +4365,31 @@ function rebalanceHasSideEffect(state: DurableRebalanceState): boolean {
       state.transactionHash ||
       state.wrapTransactionHash,
   );
+}
+
+function isPreExecutionTargetFundingState(state: DurableRebalanceState): boolean {
+  if (state.status !== 'built' || rebalanceHasSideEffect(state)) {
+    return false;
+  }
+  if (state.signedTransaction || state.approvalSignedTransaction || state.wrapSignedTransaction) {
+    return false;
+  }
+  const stages = state.stages as TargetPlanStage[] | undefined;
+  if (
+    stages?.some(
+      (stage) =>
+        !['built', 'blocked_on_prior_stage'].includes(stage.status) ||
+        stage.signedTransaction ||
+        stage.approvalSignedTransaction ||
+        stage.wrapSignedTransaction ||
+        stage.transactionHash ||
+        stage.approvalTransactionHash ||
+        stage.wrapTransactionHash,
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 async function readRebalanceState(idempotencyKey: string): Promise<DurableRebalanceState | undefined> {

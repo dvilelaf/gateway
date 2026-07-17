@@ -1895,6 +1895,129 @@ describe('provider-owned target funding routes', () => {
     expect(fetchCount).toBe(callsAfterFirst);
   });
 
+  it('refreshes an identical pre-execution target build but never rebuilds a submitted target', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '9000000' } });
+    let quoteNumber = 0;
+    const fetchMock = jest.fn(async (_url: unknown, _options: Record<string, any>) => {
+      quoteNumber += 1;
+      return {
+        headers: { get: () => 'squid-request-1' },
+        json: async () => ({
+          route: {
+            estimate: {
+              toAmount: '6000000',
+              feeCosts: [{ amountUsd: '3.50' }],
+              gasCosts: [{ amountUsd: '2.10' }],
+            },
+            id: `squid-route-${quoteNumber}`,
+            quoteId: `squid-quote-${quoteNumber}`,
+            requestId: `squid-request-${quoteNumber}`,
+            transactionRequest: {
+              data: quoteNumber === 1 ? '0x1234' : '0xabcd',
+              gasLimit: '994800',
+              target: '0x00000000000000000000000000000000000000F0',
+              value: '0',
+            },
+          },
+        }),
+        ok: true,
+        status: 200,
+      };
+    });
+    global.fetch = fetchMock as any;
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest(),
+    });
+    expect(first.statusCode).toBe(200);
+
+    const staleQuotedAt = '2000-01-01T00:00:00.000Z';
+    const statePath = path.join(stateRoot, 'target-funding-1.json');
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    persisted.quotedAt = staleQuotedAt;
+    persisted.builtRebalance.quotedAt = staleQuotedAt;
+    writeFileSync(statePath, JSON.stringify(persisted));
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest(),
+    });
+
+    expect(second.statusCode).toBe(200);
+    expect(second.json().quotedAt).not.toBe(staleQuotedAt);
+    expect(second.json().quoteId).toBe('squid-quote-2');
+    expect(second.json().txCalldataHash).not.toBe(first.json().txCalldataHash);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const refreshed = JSON.parse(readFileSync(statePath, 'utf8'));
+    refreshed.status = 'submitted';
+    refreshed.transactionHash = `0x${'11'.repeat(32)}`;
+    writeFileSync(statePath, JSON.stringify(refreshed));
+
+    const postSideEffectRetry = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest(),
+    });
+
+    expect(postSideEffectRetry.statusCode).toBe(200);
+    expect(postSideEffectRetry.json().quoteId).toBe(second.json().quoteId);
+    expect(postSideEffectRetry.json().txCalldataHash).toBe(second.json().txCalldataHash);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await app.close();
+  });
+
+  it.each([
+    {
+      name: 'root signed transaction',
+      plan: false,
+      mutate: (state: any) => (state.signedTransaction = '0xsigned'),
+    },
+    {
+      name: 'stage transaction hash',
+      plan: true,
+      mutate: (state: any) => (state.stages[0].transactionHash = `0x${'22'.repeat(32)}`),
+    },
+    {
+      name: 'hashless ambiguous status',
+      plan: false,
+      mutate: (state: any) => (state.status = 'submission_ambiguous'),
+    },
+  ])('does not rebuild an identical target with $name', async ({ plan, mutate }) => {
+    mockEthereumContexts({
+      arbitrum: { gas: plan ? '20000000000000000' : '3000000000000000', usdc: plan ? '0' : '9000000' },
+    });
+    const fetchMock = mockSquidRoute();
+    const quoteExactInputSingle = jest.fn(async () => utils.parseUnits('6', 6));
+    if (plan) {
+      (Uniswap.getInstance as jest.Mock).mockResolvedValue({
+        quoteExactInputSingle,
+        quoteExactOutputSingle: jest.fn(async () => utils.parseEther('0.005')),
+      });
+    }
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+    const first = await app.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload: targetRequest() });
+    expect(first.statusCode).toBe(200);
+
+    const statePath = path.join(stateRoot, 'target-funding-1.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    mutate(state);
+    writeFileSync(statePath, JSON.stringify(state));
+    const providerBuildCalls = plan ? quoteExactInputSingle.mock.calls.length : fetchMock.mock.calls.length;
+
+    const retry = await app.inject({ method: 'POST', url: '/bridge/rebalance/targets', payload: targetRequest() });
+
+    expect(retry.statusCode).toBe(200);
+    expect(plan ? quoteExactInputSingle.mock.calls.length : fetchMock.mock.calls.length).toBe(providerBuildCalls);
+    await app.close();
+  });
+
   it.each([
     {
       name: 'missing feeCosts array',
