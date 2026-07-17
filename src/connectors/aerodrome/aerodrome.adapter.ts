@@ -369,6 +369,7 @@ function createGatewayWalletExecutor(
         }
         return { ...result, status: 'SUBMITTED' };
       }
+      const l1Fee = await transactionL1Fee(ethereum.provider, receipt.transactionHash);
 
       return {
         ...result,
@@ -376,6 +377,7 @@ function createGatewayWalletExecutor(
           status: receipt.status,
           gasUsed: receipt.gasUsed.toString(),
           effectiveGasPrice: receipt.effectiveGasPrice.toString(),
+          ...(l1Fee === undefined ? {} : { l1Fee }),
           blockTimestamp: block.timestamp,
           logs: receipt.logs.map((log) => ({
             address: log.address,
@@ -386,6 +388,24 @@ function createGatewayWalletExecutor(
       };
     },
   };
+}
+
+async function transactionL1Fee(
+  provider: { send?: (method: string, params: unknown[]) => Promise<unknown> },
+  transactionHash: string,
+): Promise<string | undefined> {
+  if (typeof provider.send !== 'function') {
+    return undefined;
+  }
+  try {
+    const raw = (await provider.send('eth_getTransactionReceipt', [transactionHash])) as { l1Fee?: unknown } | null;
+    if (raw !== null && typeof raw.l1Fee === 'string' && /^0x[0-9a-f]+$/i.test(raw.l1Fee)) {
+      return raw.l1Fee;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 function expectedSlippageBps(value: unknown): number | undefined {

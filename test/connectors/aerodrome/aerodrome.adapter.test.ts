@@ -125,7 +125,10 @@ describe('Aerodrome Gateway adapter', () => {
     const sendTransaction = jest.fn().mockResolvedValue({ hash: '0xabc' });
     let executorReceipt: unknown;
     const ethereum = {
-      provider: { getBlock: jest.fn().mockResolvedValue({ timestamp: 1_700_000_000 }) },
+      provider: {
+        getBlock: jest.fn().mockResolvedValue({ timestamp: 1_700_000_000 }),
+        send: jest.fn().mockResolvedValue({ l1Fee: '0x64' }),
+      },
       getWallet: jest.fn().mockResolvedValue({ sendTransaction }),
       prepareGasOptions: jest.fn().mockResolvedValue({ gasLimit: 321000 }),
       handleTransactionExecution: jest.fn().mockResolvedValue({
@@ -209,6 +212,7 @@ describe('Aerodrome Gateway adapter', () => {
       status: 1,
       gasUsed: '200000',
       effectiveGasPrice: '1500000000',
+      l1Fee: '0x64',
       blockTimestamp: 1_700_000_000,
       logs: [{ address: '0xtoken', topics: ['0xtopic'], data: '0xdata' }],
     });
