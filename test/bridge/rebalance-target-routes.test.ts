@@ -210,6 +210,33 @@ describe('provider-owned target funding routes', () => {
     expect(decodedTransfer[0]).toBe(utils.getAddress(BRIDGE2));
   });
 
+  it('floors treasury amounts to USDC precision before building Hyperliquid funding', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '10000000' } });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        idempotencyKey: 'target-funding-precision',
+        targetNotionalEur: '9.0375285',
+        destinationAmount: '9.0375285',
+        destinationAddress: ARBITRUM_WALLET,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+      }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      amount: '9.037528',
+      destinationAmount: '9.037528',
+      sourceAmount: '9.037528',
+    });
+    await app.close();
+  });
+
   it('builds target funding when MARLIN_MNEMONIC is wrapped in matching quotes', async () => {
     process.env.MARLIN_MNEMONIC =
       '"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"';

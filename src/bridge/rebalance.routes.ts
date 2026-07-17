@@ -1029,13 +1029,19 @@ async function selectAndBuildTargetFunding(
     }
     return built;
   }
-  const sourceBudgetUnits = utils.parseUnits(body.targetNotionalEur, USDC_DECIMALS);
+  const sourceBudgetUnits = utils.parseUnits(
+    truncateDecimalPrecision(body.targetNotionalEur, USDC_DECIMALS),
+    USDC_DECIMALS,
+  );
   if (sourceBudgetUnits.lte(0)) {
     throw new Error('target funding notional must be positive');
   }
   const hasDestinationAmount = body.destinationAmount !== undefined;
   const destinationAmountUnits = hasDestinationAmount
-    ? utils.parseUnits(body.destinationAmount, destination.destinationAssetDecimals)
+    ? utils.parseUnits(
+        truncateDecimalPrecision(body.destinationAmount!, destination.destinationAssetDecimals),
+        destination.destinationAssetDecimals,
+      )
     : undefined;
   const sourceAmount = utils.formatUnits(sourceBudgetUnits, USDC_DECIMALS);
 
@@ -1307,6 +1313,15 @@ async function selectAndBuildTargetFunding(
     throw new TargetFundingBlockedError();
   }
   throw providerError instanceof Error ? providerError : new Error('provider target funding route unavailable');
+}
+
+function truncateDecimalPrecision(value: string, decimals: number): string {
+  const text = value.trim();
+  const match = /^([+-]?\d+)(?:\.(\d+))?$/.exec(text);
+  if (!match || !match[2] || match[2].length <= decimals) {
+    return text;
+  }
+  return decimals === 0 ? match[1] : `${match[1]}.${match[2].slice(0, decimals)}`;
 }
 
 async function buildInverseQuotedSquidTargetFunding(
