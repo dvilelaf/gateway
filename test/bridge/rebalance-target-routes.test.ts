@@ -210,6 +210,34 @@ describe('provider-owned target funding routes', () => {
     expect(decodedTransfer[0]).toBe(utils.getAddress(BRIDGE2));
   });
 
+  it('builds a partial Hyperliquid deposit when funded gas and USDC exceed Bridge2 minimum', async () => {
+    mockEthereumContexts({ arbitrum: { gas: '500329011155410', usdc: '7192707' } });
+    const app = Fastify();
+    await app.register(rebalanceRoutes, { prefix: '/bridge' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/bridge/rebalance/targets',
+      payload: targetRequest({
+        destinationAddress: ARBITRUM_WALLET,
+        destinationChain: 'hyperliquid',
+        destinationNetwork: 'mainnet',
+        targetNotionalEur: '9.10719810',
+      }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      destinationAmount: '7.192707',
+      provider: 'hyperliquid_bridge2',
+      sourceAmount: '7.192707',
+      sourceNetwork: 'arbitrum',
+    });
+    const persisted = JSON.parse(readFileSync(path.join(stateRoot, 'target-funding-1.json'), 'utf8'));
+    expect(persisted.builtRebalance.amount).toBe('7.192707');
+    await app.close();
+  });
+
   it('floors treasury amounts to USDC precision before building Hyperliquid funding', async () => {
     mockEthereumContexts({ arbitrum: { gas: '3000000000000000', usdc: '10000000' } });
     const app = Fastify();

@@ -1106,7 +1106,17 @@ async function selectAndBuildTargetFunding(
       sourceBalanceUnavailable = true;
       continue;
     }
-    if (sourceStatus.status === 'insufficient') {
+    const partialHyperliquidAmount =
+      sourceStatus.status === 'insufficient' &&
+      destination.provider === 'hyperliquid_bridge2' &&
+      sourceStatus.availableToken !== undefined &&
+      sourceStatus.availableNative?.gte(sourceStatus.requiredGas!) &&
+      sourceStatus.availableToken.gte(utils.parseUnits(HYPERLIQUID_BRIDGE2_MIN_USDC, USDC_DECIMALS))
+        ? sourceStatus.availableToken
+        : undefined;
+    if (partialHyperliquidAmount !== undefined) {
+      candidateSourceAmountUnits = partialHyperliquidAmount;
+    } else if (sourceStatus.status === 'insufficient') {
       insufficientSourceFound = true;
       if (
         source.network === 'arbitrum' &&
@@ -1231,7 +1241,7 @@ async function selectAndBuildTargetFunding(
       await provisionTargetFundingSourceWallet(source);
     }
     if (destination.provider === 'hyperliquid_bridge2') {
-      const bridgeAmount = utils.formatUnits(sourceBudgetUnits, USDC_DECIMALS);
+      const bridgeAmount = utils.formatUnits(candidateSourceAmountUnits, USDC_DECIMALS);
       const built = await buildHyperliquidBridge2Transfer({
         amount: bridgeAmount,
         destinationAddress,
@@ -1392,6 +1402,8 @@ async function buildInverseQuotedSquidTargetFunding(
 
 type TargetFundingSourceStatusResult = {
   status: 'funded' | 'insufficient' | 'unavailable';
+  availableNative?: BigNumber;
+  availableToken?: BigNumber;
   requiredGas?: BigNumber;
   quotedAt?: string;
 };
@@ -1414,9 +1426,11 @@ async function targetFundingSourceStatus(
       .mul(TARGET_FUNDING_GAS_BUFFER_NUMERATOR)
       .div(TARGET_FUNDING_GAS_BUFFER_DENOMINATOR);
     const quotedAt = new Date().toISOString();
-    return BigNumber.from(tokenBalance.value).gte(amountUnits) && BigNumber.from(nativeBalance.value).gte(requiredGas)
-      ? { status: 'funded', requiredGas, quotedAt }
-      : { status: 'insufficient', requiredGas, quotedAt };
+    const availableNative = BigNumber.from(nativeBalance.value);
+    const availableToken = BigNumber.from(tokenBalance.value);
+    return availableToken.gte(amountUnits) && availableNative.gte(requiredGas)
+      ? { status: 'funded', availableNative, availableToken, requiredGas, quotedAt }
+      : { status: 'insufficient', availableNative, availableToken, requiredGas, quotedAt };
   } catch {
     return { status: 'unavailable' };
   }
