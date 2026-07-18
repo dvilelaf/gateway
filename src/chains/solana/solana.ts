@@ -32,19 +32,15 @@ import fse from 'fs-extra';
 // TODO: Replace with Fastify httpErrors
 const SIMULATION_ERROR_MESSAGE = 'Transaction simulation failed: ';
 
-import { HeliusService } from '../../rpc/helius-service';
 import { createRateLimitAwareSolanaConnection } from '../../rpc/rpc-connection-interceptor';
-import { RPCProvider } from '../../rpc/rpc-provider-base';
 import { ConfigManagerCertPassphrase } from '../../services/config-manager-cert-passphrase';
-import { ConfigManagerV2 } from '../../services/config-manager-v2';
 import { httpErrors } from '../../services/error-handler';
-import { logger, redactUrl } from '../../services/logger';
+import { logger } from '../../services/logger';
 import { assertMainnetMutationAllowed } from '../../services/runtime-guard';
 import type { LiveActionAuthorization, MainnetMutationGuardInput } from '../../services/runtime-guard';
 import { TokenService } from '../../services/token-service';
 import { getSafeWalletFilePath, isHardwareWallet as isHardwareWalletUtil } from '../../wallet/utils';
 
-import { PriorityFeeResult, SolanaPriorityFees } from './solana-priority-fees';
 import { SolanaNetworkConfig, getSolanaNetworkConfig, getSolanaChainConfig } from './solana.config';
 
 // Constants used for fee calculations
@@ -56,7 +52,6 @@ interface TokenAccount {
   parsedAccount: any;
   value: any;
 }
-
 enum TransactionResponseStatusCode {
   FAILED = -1,
   UNCONFIRMED = 0,
@@ -69,7 +64,6 @@ export class Solana {
   public nativeTokenSymbol: string;
 
   public config: SolanaNetworkConfig;
-  private rpcProviderService?: RPCProvider;
 
   private static _instances: { [name: string]: Solana };
 
@@ -78,73 +72,10 @@ export class Solana {
     this.config = getSolanaNetworkConfig(network);
     this.nativeTokenSymbol = this.config.nativeCurrencySymbol;
 
-    // Get rpcProvider from chain config
-    const chainConfig = getSolanaChainConfig();
-    const rpcProvider = chainConfig.rpcProvider || 'url';
-
-    // Initialize RPC connection based on provider
-    if (rpcProvider === 'helius') {
-      this.initializeHeliusProvider();
-    } else {
-      // Default: use nodeURL
-      this.connection = createRateLimitAwareSolanaConnection(
-        new Connection(this.config.nodeURL, {
-          commitment: 'confirmed',
-        }),
-        this.config.nodeURL,
-      );
-    }
-  }
-
-  /**
-   * Initialize Helius RPC provider
-   */
-  private initializeHeliusProvider() {
-    try {
-      // Load Helius config from apiKeys.yml
-      const configManager = ConfigManagerV2.getInstance();
-      const apiKey = configManager.get('apiKeys.helius') || '';
-
-      // Validate API key
-      if (!apiKey || apiKey.trim() === '' || apiKey.includes('YOUR_')) {
-        logger.warn(`⚠️ Helius provider selected but no valid API key configured`);
-        logger.info(`Using standard RPC from nodeURL: ${redactUrl(this.config.nodeURL)}`);
-        this.connection = createRateLimitAwareSolanaConnection(
-          new Connection(this.config.nodeURL, {
-            commitment: 'confirmed',
-          }),
-          this.config.nodeURL,
-        );
-        return;
-      }
-
-      // Create HeliusService instance
-      this.rpcProviderService = new HeliusService(
-        { apiKey },
-        { chain: 'solana', network: this.network, chainId: this.config.chainID },
-      );
-
-      // Use Helius HTTP URL for connection
-      const rpcUrl = this.rpcProviderService.getHttpUrl();
-      logger.info(`Initializing Solana connector for network: ${this.network}, RPC URL: ${redactUrl(rpcUrl)}`);
-      logger.info(`✅ Helius API key configured (length: ${apiKey.length} chars)`);
-
-      this.connection = createRateLimitAwareSolanaConnection(
-        new Connection(rpcUrl, {
-          commitment: 'confirmed',
-        }),
-        rpcUrl,
-      );
-    } catch (error: any) {
-      // If Helius config not found (e.g., in tests), fallback to standard RPC
-      logger.warn(`Failed to initialize Helius provider: ${error.message}, falling back to standard RPC`);
-      this.connection = createRateLimitAwareSolanaConnection(
-        new Connection(this.config.nodeURL, {
-          commitment: 'confirmed',
-        }),
-        this.config.nodeURL,
-      );
-    }
+    this.connection = createRateLimitAwareSolanaConnection(
+      new Connection(this.config.nodeURL, { commitment: 'confirmed' }),
+      this.config.nodeURL,
+    );
   }
 
   public static async getInstance(network: string): Promise<Solana> {
@@ -153,24 +84,10 @@ export class Solana {
     }
     if (!Solana._instances[network]) {
       const instance = new Solana(network);
-      // Add to instances BEFORE init() to prevent creating duplicate instances
-      // during initialization (e.g., when trackPools calls connector getInstance)
+      // Store the instance before init can recursively request the same network.
       Solana._instances[network] = instance;
-      await instance.init();
     }
     return Solana._instances[network];
-  }
-
-  private async init(): Promise<void> {
-    try {
-      // Initialize RPC provider service if configured
-      if (this.rpcProviderService) {
-        await this.rpcProviderService.initialize();
-      }
-    } catch (e) {
-      logger.error(`Failed to initialize ${this.network}: ${e}`);
-      throw e;
-    }
   }
 
   /**
@@ -292,13 +209,6 @@ export class Solana {
       logger.error(`Error checking hardware wallet status: ${error.message}`);
       return false;
     }
-  }
-
-  /**
-   * Get the RPC provider service if initialized
-   */
-  public getRpcProviderService(): RPCProvider | null {
-    return this.rpcProviderService || null;
   }
 
   /**
@@ -451,7 +361,7 @@ export class Solana {
           // Check if we have this token in the wallet
           if (mintToAccount.has(tokenBySymbol.address)) {
             const { parsedAccount } = mintToAccount.get(tokenBySymbol.address);
-            // Use pre-calculated uiAmount from RPC for efficiency (Helius optimization)
+            // Prefer the parsed amount supplied by the configured RPC.
             const uiAmount =
               parsedAccount.uiAmount ?? Number(parsedAccount.amount) / Math.pow(10, tokenBySymbol.decimals);
             balances[tokenBySymbol.symbol] = uiAmount;
@@ -479,7 +389,7 @@ export class Solana {
               if (token) {
                 // Token is in our list
                 foundTokens.add(token.symbol);
-                // Use pre-calculated uiAmount from RPC for efficiency (Helius optimization)
+                // Prefer the parsed amount supplied by the configured RPC.
                 const uiAmount = parsedAccount.uiAmount ?? Number(parsedAccount.amount) / Math.pow(10, token.decimals);
                 balances[token.symbol] = uiAmount;
                 logger.debug(`Found balance for ${token.symbol} (${mintAddress}): ${uiAmount}`);
@@ -513,7 +423,7 @@ export class Solana {
         // Check if we have this token in the wallet
         if (mintToAccount.has(token.address)) {
           const { parsedAccount } = mintToAccount.get(token.address);
-          // Use pre-calculated uiAmount from RPC for efficiency (Helius optimization)
+          // Prefer the parsed amount supplied by the configured RPC.
           const uiAmount = parsedAccount.uiAmount ?? Number(parsedAccount.amount) / Math.pow(10, token.decimals);
           balances[token.symbol] = uiAmount;
           logger.debug(`Found balance for ${token.symbol} (${token.address}): ${uiAmount}`);
@@ -538,7 +448,7 @@ export class Solana {
           const mintInfo = await getMint(this.connection, parsedAccount.mint);
           decimals = mintInfo.decimals;
 
-          // Use pre-calculated uiAmount from RPC for efficiency (Helius optimization)
+          // Prefer the parsed amount supplied by the configured RPC.
           balance = parsedAccount.uiAmount ?? Number(parsedAccount.amount) / Math.pow(10, decimals);
         } else {
           // Try to get decimals anyway for the display
@@ -751,7 +661,7 @@ export class Solana {
 
   /**
    * Fetch all token accounts for a public key
-   * Always uses base64 encoding for reliability across all RPC providers (Helius, standard RPC)
+   * Always uses base64 encoding for reliable token-account parsing.
    */
   private async fetchTokenAccounts(publicKey: PublicKey): Promise<Map<string, TokenAccount>> {
     const tokenAccountsMap = new Map<string, TokenAccount>();
@@ -1007,7 +917,7 @@ export class Solana {
   private getTokenBalance(tokenAccount: TokenAccount | undefined, decimals: number): number {
     if (!tokenAccount) return 0;
 
-    // Use pre-calculated uiAmount from RPC for efficiency (Helius optimization)
+    // Prefer the parsed amount supplied by the configured RPC.
     return tokenAccount.parsedAccount.uiAmount ?? Number(tokenAccount.parsedAccount.amount) / Math.pow(10, decimals);
   }
 
@@ -1022,7 +932,7 @@ export class Solana {
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Mint info timeout')), 1000)),
       ]);
 
-      // Use pre-calculated uiAmount from RPC for efficiency (Helius optimization)
+      // Prefer the parsed amount supplied by the configured RPC.
       return (
         tokenAccount.parsedAccount.uiAmount ??
         Number(tokenAccount.parsedAccount.amount) / Math.pow(10, mintInfo.decimals)
@@ -1030,7 +940,7 @@ export class Solana {
     } catch (error) {
       // Use default 9 decimals if mint info fails
       logger.debug(`Failed to get mint info for ${mintAddress}, using default decimals`);
-      // Use pre-calculated uiAmount from RPC for efficiency (Helius optimization)
+      // Prefer the parsed amount supplied by the configured RPC.
       return tokenAccount.parsedAccount.uiAmount ?? Number(tokenAccount.parsedAccount.amount) / Math.pow(10, 9);
     }
   }
@@ -1138,20 +1048,9 @@ export class Solana {
     };
   }
 
-  /**
-   * Estimate priority fee per compute unit
-   * Uses config's priorityFeeLevel and caches result for 10 seconds
-   */
+  /** Estimate the configured minimum priority fee per compute unit. */
   async estimateGasPrice(): Promise<number> {
-    return await SolanaPriorityFees.estimatePriorityFee(this.config, this.network);
-  }
-
-  /**
-   * Estimate priority fee with detailed results including raw Helius estimate
-   * Uses config's priorityFeeLevel and caches result for 10 seconds
-   */
-  async estimateGasPriceDetailed(): Promise<PriorityFeeResult> {
-    return await SolanaPriorityFees.estimatePriorityFeeDetailed(this.config, this.network);
+    return this.config.minPriorityFeePerCU || 0.1;
   }
 
   public async confirmTransaction(
@@ -1159,13 +1058,6 @@ export class Solana {
     timeout: number = 3000,
   ): Promise<{ confirmed: boolean; txData?: any }> {
     try {
-      // Use RPC provider WebSocket monitoring if available for real-time confirmation
-      if (this.rpcProviderService?.supportsTransactionMonitoring()) {
-        logger.info(`Using WebSocket monitoring for transaction ${signature}`);
-        return await this.rpcProviderService.monitorTransaction(signature, timeout);
-      }
-
-      // Fallback to polling-based confirmation
       logger.info(`Using polling-based confirmation for transaction ${signature}`);
       const confirmationPromise = (async () => {
         // Use getTransaction instead of getSignatureStatuses for more reliability
@@ -1534,55 +1426,6 @@ export class Solana {
   }
 
   /**
-   * Confirm transaction via WebSocket monitoring
-   */
-  private async _confirmViaWebSocket(signature: string): Promise<{ confirmed: boolean; txData: any } | null> {
-    if (!this.rpcProviderService?.supportsTransactionMonitoring()) {
-      return null;
-    }
-
-    try {
-      const wsTimeout = this.config.confirmRetryInterval * this.config.confirmRetryCount * 1000;
-      logger.info(`🚀 Sent transaction ${signature}, monitoring via WebSocket (${wsTimeout / 1000}s timeout)...`);
-      const confirmationResult = await this.rpcProviderService.monitorTransaction(signature, wsTimeout);
-
-      if (confirmationResult.confirmed) {
-        logger.info(`✅ Transaction ${signature} confirmed via WebSocket`);
-        const txData = await this._fetchTransactionWithRetry(signature);
-        if (!txData) {
-          logger.warn(`Transaction ${signature} confirmed but data not available`);
-        }
-        return { confirmed: true, txData };
-      } else {
-        logger.warn(`❌ Transaction ${signature} not confirmed via WebSocket within timeout`);
-        // WebSocket timed out - do a final check to see if transaction landed on-chain
-        // It could have succeeded, failed, or still be pending
-        const txData = await this._fetchTransactionWithRetry(signature, 2, 500);
-        if (txData) {
-          // Transaction is on-chain - check if it succeeded or failed
-          const failed = txData.meta?.err !== null;
-          if (failed) {
-            const { parseSolanaError } = await import('./solana-error-parser');
-            const errorStr = JSON.stringify(txData.meta?.err);
-            const parsed = parseSolanaError(errorStr);
-            logger.error(
-              `❌ Transaction ${signature} failed on-chain: ${parsed.type} - ${parsed.message} (code: ${parsed.errorCodeHex || 'unknown'})`,
-            );
-          } else {
-            logger.info(`✅ Transaction ${signature} confirmed on-chain (missed WebSocket notification)`);
-          }
-          return { confirmed: !failed, txData };
-        }
-        // Transaction not found on-chain yet - return as pending
-        return { confirmed: false, txData: null };
-      }
-    } catch (wsError: any) {
-      logger.warn(`WebSocket monitoring failed: ${wsError.message}, falling back to polling`);
-      return null;
-    }
-  }
-
-  /**
    * Confirm transaction via REST polling
    */
   private async _confirmViaPolling(
@@ -1655,12 +1498,6 @@ export class Solana {
         skipPreflight: true,
         maxRetries: 0,
       });
-
-      // Try WebSocket first, fall back to polling
-      const wsResult = await this._confirmViaWebSocket(signature);
-      if (wsResult !== null) {
-        return { ...wsResult, signature };
-      }
 
       const pollingResult = await this._confirmViaPolling(signature, lastValidBlockHeight);
       return { ...pollingResult, signature };
@@ -2178,26 +2015,5 @@ export class Solana {
   public unwrapSOL(walletPubkey: PublicKey, tokenProgram: PublicKey = TOKEN_PROGRAM_ID): TransactionInstruction {
     const wsolAccount = getAssociatedTokenAddressSync(NATIVE_MINT, walletPubkey, false, tokenProgram);
     return createCloseAccountInstruction(wsolAccount, walletPubkey, walletPubkey, [], tokenProgram);
-  }
-
-  /**
-   * Clean up resources including WebSocket connections
-   */
-  public disconnect(): void {
-    if (this.rpcProviderService) {
-      this.rpcProviderService.disconnect();
-      logger.info(`${this.rpcProviderService.getProviderName()} disconnected and cleaned up`);
-    }
-  }
-
-  /**
-   * Static method to clean up all instances
-   */
-  public static disconnectAll(): void {
-    if (Solana._instances) {
-      for (const instance of Object.values(Solana._instances)) {
-        instance.disconnect();
-      }
-    }
   }
 }

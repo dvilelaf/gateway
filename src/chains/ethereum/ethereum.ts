@@ -3,12 +3,10 @@ import { BigNumber, Contract, ContractTransaction, providers, utils, Wallet, eth
 import { getAddress } from 'ethers/lib/utils';
 import fse from 'fs-extra';
 
-import { InfuraService } from '../../rpc/infura-service';
 import { createRateLimitAwareEthereumProvider } from '../../rpc/rpc-connection-interceptor';
 import { TokenValue, tokenValueToString } from '../../services/base';
 import { ConfigManagerCertPassphrase } from '../../services/config-manager-cert-passphrase';
-import { ConfigManagerV2 } from '../../services/config-manager-v2';
-import { logger, redactUrl } from '../../services/logger';
+import { logger } from '../../services/logger';
 import { assertMainnetMutationAllowed } from '../../services/runtime-guard';
 import type { LiveActionAuthorization, MainnetMutationGuardInput } from '../../services/runtime-guard';
 import { TokenService } from '../../services/token-service';
@@ -43,7 +41,6 @@ export class Ethereum {
   public priorityFee?: number | null;
   public baseFeeMultiplier: number;
   private _initialized: boolean = false;
-  private infuraService?: InfuraService;
   private etherscanService?: EtherscanService;
 
   private static lastGasPriceEstimate: {
@@ -99,19 +96,7 @@ export class Ethereum {
       }
     }
 
-    // Get rpcProvider from chain config
-    const rpcProvider = chainConfig.rpcProvider || 'url';
-
-    // Initialize RPC connection based on provider
-    if (rpcProvider === 'infura') {
-      this.initializeInfuraProvider();
-    } else {
-      // Default: use nodeURL with rate limit detection
-      this.provider = createRateLimitAwareEthereumProvider(
-        new providers.StaticJsonRpcProvider(this.rpcUrl),
-        this.rpcUrl,
-      );
-    }
+    this.provider = createRateLimitAwareEthereumProvider(new providers.StaticJsonRpcProvider(this.rpcUrl), this.rpcUrl);
   }
 
   public static async getInstance(network: string): Promise<Ethereum> {
@@ -415,48 +400,6 @@ export class Ethereum {
   }
 
   /**
-   * Initialize Infura provider with configuration
-   */
-  private initializeInfuraProvider(): void {
-    try {
-      const configManager = ConfigManagerV2.getInstance();
-      const providerConfig = {
-        apiKey: configManager.get('apiKeys.infura') || '',
-      };
-
-      // Validate API key
-      if (!providerConfig.apiKey || providerConfig.apiKey.trim() === '' || providerConfig.apiKey.includes('YOUR_')) {
-        logger.warn(`⚠️ Infura provider selected but no valid API key configured`);
-        logger.info(`Using standard RPC from nodeURL: ${redactUrl(this.rpcUrl)}`);
-        this.provider = createRateLimitAwareEthereumProvider(
-          new providers.StaticJsonRpcProvider(this.rpcUrl),
-          this.rpcUrl,
-        );
-        return;
-      }
-
-      // Create InfuraService instance
-      this.infuraService = new InfuraService(providerConfig, {
-        chain: 'ethereum',
-        network: this.network,
-        chainId: this.chainId,
-      });
-
-      logger.info(`✅ Infura API key configured (length: ${providerConfig.apiKey.length} chars)`);
-
-      // Use Infura provider
-      this.provider = this.infuraService.getProvider() as providers.StaticJsonRpcProvider;
-    } catch (error: any) {
-      logger.warn(`Failed to initialize Infura provider: ${error.message}`);
-      logger.info(`Using standard RPC from nodeURL: ${redactUrl(this.rpcUrl)}`);
-      this.provider = createRateLimitAwareEthereumProvider(
-        new providers.StaticJsonRpcProvider(this.rpcUrl),
-        this.rpcUrl,
-      );
-    }
-  }
-
-  /**
    * Initialize the Ethereum connector
    */
   public async init(): Promise<void> {
@@ -607,13 +550,6 @@ export class Ethereum {
     } catch (err) {
       return null;
     }
-  }
-
-  /**
-   * Get the InfuraService instance if initialized
-   */
-  public getInfuraService(): InfuraService | null {
-    return this.infuraService || null;
   }
 
   /**

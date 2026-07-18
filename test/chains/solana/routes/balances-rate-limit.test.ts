@@ -148,8 +148,8 @@ describe('Solana Balances Route - Rate Limit Handling', () => {
     it('should provide actionable error message for mainnet-beta', async () => {
       const error429 = new Error(
         'Solana RPC rate limit exceeded. Your current RPC endpoint (https://api.mainnet-beta.solana.com) has reached its rate limit. ' +
-          'Please configure a different RPC endpoint with higher rate limits, or use a managed provider like Helius. ' +
-          "To fix: Update 'nodeURL' in conf/chains/solana/mainnet-beta.yml or configure Helius in conf/rpc/helius.yml",
+          'Please configure a different RPC endpoint with higher rate limits. ' +
+          "To fix: Update 'nodeURL' in conf/chains/solana/mainnet-beta.yml",
       );
       (error429 as any).statusCode = 429;
       (error429 as any).name = 'TooManyRequestsError';
@@ -168,14 +168,13 @@ describe('Solana Balances Route - Rate Limit Handling', () => {
 
       const body = JSON.parse(response.body);
       expect(body.message).toContain('mainnet-beta.yml');
-      expect(body.message).toContain('Helius');
       expect(body.message).toContain('nodeURL');
     });
 
     it('should provide actionable error message for devnet', async () => {
       const error429 = new Error(
         'Solana RPC rate limit exceeded. Your current RPC endpoint (https://api.devnet.solana.com) has reached its rate limit. ' +
-          "To fix: Update 'nodeURL' in conf/chains/solana/devnet.yml or configure Helius in conf/rpc/helius.yml",
+          "To fix: Update 'nodeURL' in conf/chains/solana/devnet.yml",
       );
       (error429 as any).statusCode = 429;
       (error429 as any).name = 'TooManyRequestsError';

@@ -10,13 +10,13 @@ export async function estimateGasSolana(network: string): Promise<EstimateGasRes
   try {
     const solana = await Solana.getInstance(network);
 
-    const feeResult = await solana.estimateGasPriceDetailed();
+    const feePerComputeUnit = await solana.estimateGasPrice();
 
     // Get default compute units from config (typically 200000)
     const defaultComputeUnits = solana.config.defaultComputeUnits;
 
     // Calculate total priority fee in lamports
-    const totalPriorityFeeInLamports = feeResult.feePerComputeUnit * defaultComputeUnits;
+    const totalPriorityFeeInLamports = feePerComputeUnit * defaultComputeUnits;
 
     // Add base fee (5000 lamports per signature)
     const baseFeeInLamports = 5000;
@@ -26,14 +26,12 @@ export async function estimateGasSolana(network: string): Promise<EstimateGasRes
     const totalFeeInSol = totalFeeInLamports / 1e9;
 
     return {
-      feePerComputeUnit: feeResult.feePerComputeUnit,
+      feePerComputeUnit,
       denomination: 'lamports',
       computeUnits: defaultComputeUnits,
       feeAsset: solana.nativeTokenSymbol,
       fee: totalFeeInSol,
       timestamp: Date.now(),
-      priorityFeeLevel: feeResult.priorityFeeLevel,
-      priorityFeePerCUEstimate: feeResult.priorityFeePerCUEstimate ?? undefined,
     };
   } catch (error) {
     logger.error(`Error estimating gas for network ${network}: ${error.message}`);
@@ -81,8 +79,7 @@ export const estimateGasRoute: FastifyPluginAsync = async (fastify) => {
     '/estimate-gas',
     {
       schema: {
-        description:
-          'Estimate priority fees for Solana transactions. Optionally pass addresses (program IDs, pools) for Helius-specific fee estimation.',
+        description: 'Estimate the configured minimum priority fee for Solana transactions.',
         tags: ['/chain/solana'],
         querystring: SolanaEstimateGasRequest,
         response: {

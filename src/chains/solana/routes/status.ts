@@ -4,26 +4,12 @@ import { StatusRequestType, StatusResponseType, StatusResponseSchema } from '../
 import { logger } from '../../../services/logger';
 import { SolanaStatusRequest } from '../schemas';
 import { Solana } from '../solana';
-import { getSolanaChainConfig } from '../solana.config';
 
 export async function getSolanaStatus(fastify: FastifyInstance, network: string): Promise<StatusResponseType> {
   try {
     const solana = await Solana.getInstance(network);
-    const chainConfig = getSolanaChainConfig();
     const chain = 'solana';
-    const rpcProvider = chainConfig.rpcProvider || 'url';
-
-    // Get the actual RPC URL based on provider
-    let rpcUrl = solana.config.nodeURL; // Default to nodeURL
-    const rpcProviderService = solana.getRpcProviderService();
-    if (rpcProviderService) {
-      try {
-        rpcUrl = rpcProviderService.getHttpUrl();
-      } catch (error) {
-        // If provider URL generation fails, fall back to nodeURL
-        logger.warn(`Failed to get RPC provider URL, using nodeURL: ${error.message}`);
-      }
-    }
+    const rpcUrl = solana.config.nodeURL;
 
     const nativeCurrency = solana.config.nativeCurrencySymbol;
     const swapProvider = solana.config.swapProvider || '';
@@ -33,7 +19,7 @@ export async function getSolanaStatus(fastify: FastifyInstance, network: string)
       chain,
       network,
       rpcUrl,
-      rpcProvider,
+      rpcProvider: 'url',
       currentBlockNumber,
       nativeCurrency,
       swapProvider,

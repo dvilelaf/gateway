@@ -133,13 +133,11 @@ export const mockHttpsOptions = {
 export const mockSolanaChainConfig = {
   defaultNetwork: 'mainnet-beta',
   defaultWallet: 'test-wallet',
-  rpcProvider: 'url',
 };
 
 export const mockEthereumChainConfig = {
   defaultNetwork: 'mainnet',
   defaultWallet: 'test-wallet',
-  rpcProvider: 'url',
 };
 
 // Setup all common mocks

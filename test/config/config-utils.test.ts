@@ -16,7 +16,6 @@ const mockSolanaChainConfig = {
     defaultNetwork: 'mainnet-beta',
     defaultNetworks: ['mainnet-beta'],
     defaultWallet: '82SggYRE2Vo4jN4a2pk3aQ4SET4ctafZJGbowmCqyHx5',
-    rpcProvider: 'helius',
   },
 };
 
@@ -108,7 +107,6 @@ describe('Config Utils - Chain-Network Merge', () => {
       // Should contain chain-level fields
       expect(config).toHaveProperty('defaultNetwork', 'mainnet-beta');
       expect(config).toHaveProperty('defaultWallet', '82SggYRE2Vo4jN4a2pk3aQ4SET4ctafZJGbowmCqyHx5');
-      expect(config).toHaveProperty('rpcProvider', 'helius');
 
       // Should contain network-level fields
       expect(config).toHaveProperty('chainID', 101);
@@ -147,7 +145,6 @@ describe('Config Utils - Chain-Network Merge', () => {
 
       expect(config).toHaveProperty('defaultNetwork', 'mainnet-beta');
       expect(config).toHaveProperty('defaultWallet');
-      expect(config).toHaveProperty('rpcProvider');
 
       // Should NOT have network-level fields
       expect(config).not.toHaveProperty('chainID');
@@ -201,12 +198,6 @@ describe('Config Utils - Chain-Network Merge', () => {
       updateConfig(fastify, 'solana-mainnet-beta.defaultNetwork', 'devnet');
 
       expect(mockSetFn).toHaveBeenCalledWith('solana.defaultNetwork', 'devnet');
-    });
-
-    it('should route rpcProvider update from solana-mainnet-beta to solana namespace', () => {
-      updateConfig(fastify, 'solana-mainnet-beta.rpcProvider', 'alchemy');
-
-      expect(mockSetFn).toHaveBeenCalledWith('solana.rpcProvider', 'alchemy');
     });
 
     it('should route defaultWallet update from ethereum-mainnet to ethereum namespace', () => {

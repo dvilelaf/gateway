@@ -41,7 +41,7 @@ export const redactUrl = (url: string): string => {
   // Redact query parameter API keys (e.g., ?api-key=XXX, ?apiKey=XXX, ?apikey=XXX)
   redacted = redacted.replace(/([?&]api[-_]?key=)[^&]+/gi, '$1***');
 
-  // Redact Infura-style path API keys (e.g., /v3/API_KEY)
+  // Redact path-based API keys (e.g., /v3/API_KEY)
   // Match 32 characters of alphanumeric after /v3/
   redacted = redacted.replace(/(\/v3\/)([a-zA-Z0-9]{32})($|\/|\?)/gi, '$1***$3');
 

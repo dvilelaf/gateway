@@ -18,7 +18,6 @@ jest.mock('../../../src/services/config-manager-v2', () => ({
       get: jest.fn((key: string) => {
         if (key === 'solana.defaultNetwork') return 'mainnet-beta';
         if (key === 'solana.defaultWallet') return 'test-wallet';
-        if (key === 'solana.rpcProvider') return 'url';
         if (key === 'solana-mainnet-beta.nodeURL') return 'https://api.mainnet-beta.solana.com';
         if (key === 'solana-mainnet-beta.nativeCurrencySymbol') return 'SOL';
         if (key === 'solana-mainnet-beta.defaultComputeUnits') return 200000;
@@ -43,11 +42,6 @@ describe('Solana Rate Limit Error Propagation', () => {
 
     solana = await Solana.getInstance('mainnet-beta');
     mockConnection = solana.connection as jest.Mocked<Connection>;
-
-    // Mock heliusService to avoid WebSocket checks
-    (solana as any).heliusService = {
-      isWebSocketConnected: jest.fn().mockReturnValue(false),
-    };
 
     // Mock prepareTx to return the transaction as-is
     jest.spyOn(solana as any, 'prepareTx').mockImplementation((tx: any) => {
@@ -81,6 +75,9 @@ describe('Solana Rate Limit Error Propagation', () => {
 
       // Mock SOL balance to succeed
       mockConnection.getBalance = jest.fn().mockResolvedValue(1000000000);
+
+      // Keep this test independent of the local token-list fixture.
+      jest.spyOn(solana, 'getTokenList').mockResolvedValue([]);
 
       // Mock token accounts to fail with 429
       mockConnection.getTokenAccountsByOwner = jest.fn().mockRejectedValue(error429);

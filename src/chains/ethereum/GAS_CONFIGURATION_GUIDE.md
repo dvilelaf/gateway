@@ -32,7 +32,6 @@ Etherscan API key is configured once for all networks in `conf/chains/ethereum/e
 ```yaml
 defaultNetwork: mainnet
 defaultWallet: default_wallet
-rpcProvider: standard
 
 # Note: Etherscan API key is configured in conf/apiKeys.yml
 ```

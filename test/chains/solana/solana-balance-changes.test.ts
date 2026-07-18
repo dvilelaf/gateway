@@ -16,7 +16,6 @@ jest.mock('../../../src/services/config-manager-v2', () => ({
       get: jest.fn((key: string) => {
         if (key === 'solana.defaultNetwork') return 'mainnet-beta';
         if (key === 'solana.defaultWallet') return 'test-wallet';
-        if (key === 'solana.rpcProvider') return 'url';
         if (key === 'solana-mainnet-beta.nodeURL') return 'https://api.mainnet-beta.solana.com';
         if (key === 'solana-mainnet-beta.nativeCurrencySymbol') return 'SOL';
         if (key === 'solana-mainnet-beta.defaultComputeUnits') return 200000;
@@ -79,7 +78,6 @@ describe('extractBalanceChangesAndFee', () => {
   beforeEach(async () => {
     (Solana as any)._instances = {};
     solana = await Solana.getInstance('mainnet-beta');
-    (solana as any).rpcProviderService = undefined;
   });
 
   afterEach(() => {

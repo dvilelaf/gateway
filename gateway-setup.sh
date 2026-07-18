@@ -130,7 +130,7 @@ ask_config_choices () {
   fi
 
   # Ask about apiKeys.yml (default to Yes for first-time setup)
-  if prompt_yes_no "  - apiKeys.yml (API keys for Helius, Infura, etc.)?" "Y"; then
+  if prompt_yes_no "  - apiKeys.yml (API keys for external services)?" "Y"; then
     UPDATE_APIKEYS="Y"
     PLANNED_UPDATES="${PLANNED_UPDATES}apiKeys.yml, "
   else
@@ -212,32 +212,13 @@ copy_configs () {
     # Store original defaultWallet values before copying
     ORIG_SOLANA_WALLET=""
     ORIG_ETH_WALLET=""
-    # Store original rpcProvider values if they have corresponding API keys
-    ORIG_SOLANA_RPC_PROVIDER=""
-    ORIG_ETH_RPC_PROVIDER=""
 
     if [ -f "$HOST_CONF_PATH/chains/solana.yml" ]; then
       ORIG_SOLANA_WALLET=$(grep "^defaultWallet:" "$HOST_CONF_PATH/chains/solana.yml" | cut -d' ' -f2- | tr -d "'\"")
-      # Check for rpcProvider with valid API key
-      SOLANA_RPC=$(grep "^rpcProvider:" "$HOST_CONF_PATH/chains/solana.yml" | cut -d' ' -f2- | tr -d "'\"")
-      if [ -n "$SOLANA_RPC" ] && [ "$SOLANA_RPC" != "url" ] && [ -f "$HOST_CONF_PATH/apiKeys.yml" ]; then
-        API_KEY=$(grep "^${SOLANA_RPC}:" "$HOST_CONF_PATH/apiKeys.yml" 2>/dev/null | cut -d"'" -f2)
-        if [ -n "$API_KEY" ]; then
-          ORIG_SOLANA_RPC_PROVIDER="$SOLANA_RPC"
-        fi
-      fi
     fi
 
     if [ -f "$HOST_CONF_PATH/chains/ethereum.yml" ]; then
       ORIG_ETH_WALLET=$(grep "^defaultWallet:" "$HOST_CONF_PATH/chains/ethereum.yml" | cut -d' ' -f2- | tr -d "'\"")
-      # Check for rpcProvider with valid API key
-      ETH_RPC=$(grep "^rpcProvider:" "$HOST_CONF_PATH/chains/ethereum.yml" | cut -d' ' -f2- | tr -d "'\"")
-      if [ -n "$ETH_RPC" ] && [ "$ETH_RPC" != "url" ] && [ -f "$HOST_CONF_PATH/apiKeys.yml" ]; then
-        API_KEY=$(grep "^${ETH_RPC}:" "$HOST_CONF_PATH/apiKeys.yml" 2>/dev/null | cut -d"'" -f2)
-        if [ -n "$API_KEY" ]; then
-          ORIG_ETH_RPC_PROVIDER="$ETH_RPC"
-        fi
-      fi
     fi
 
     # Copy the chains folder
@@ -255,16 +236,6 @@ copy_configs () {
       echo "   Kept original Ethereum defaultWallet: $ORIG_ETH_WALLET"
     fi
 
-    # Restore rpcProvider values if they had valid API keys
-    if [ -n "$ORIG_SOLANA_RPC_PROVIDER" ]; then
-      perl -pi -e "s|^rpcProvider:.*|rpcProvider: $ORIG_SOLANA_RPC_PROVIDER|" "$HOST_CONF_PATH/chains/solana.yml"
-      echo "   Kept original Solana rpcProvider: $ORIG_SOLANA_RPC_PROVIDER"
-    fi
-
-    if [ -n "$ORIG_ETH_RPC_PROVIDER" ]; then
-      perl -pi -e "s|^rpcProvider:.*|rpcProvider: $ORIG_ETH_RPC_PROVIDER|" "$HOST_CONF_PATH/chains/ethereum.yml"
-      echo "   Kept original Ethereum rpcProvider: $ORIG_ETH_RPC_PROVIDER"
-    fi
   fi
   
   # Copy tokens folder if selected
@@ -435,7 +406,7 @@ if [ "$UPDATE_POOLS" = "Y" ]; then
   echo "   - pools/ (default pool lists for each DEX connector)"
 fi
 if [ "$UPDATE_APIKEYS" = "Y" ]; then
-  echo "   - apiKeys.yml (API keys for Helius, Infura, etc.)"
+  echo "   - apiKeys.yml (API keys for external services)"
 fi
 echo "   - root.yml (always updated - essential file)"
 echo "   - namespaces/ (always updated - config schemas)"
@@ -451,23 +422,14 @@ if [ "$UPDATE_APIKEYS" != "Y" ] && [ -f "$HOST_CONF_PATH/apiKeys.yml" ]; then
   echo "✅ Existing apiKeys.yml will be preserved"
 fi
 
-# Check for existing defaultWallet and rpcProvider values if chains will be updated
+# Check for existing defaultWallet values if chains will be updated
 if [ "$UPDATE_CHAINS" = "Y" ]; then
   EXISTING_WALLETS=""
-  EXISTING_RPC_PROVIDERS=""
 
   if [ -f "$HOST_CONF_PATH/chains/solana.yml" ]; then
     SOLANA_WALLET=$(grep "^defaultWallet:" "$HOST_CONF_PATH/chains/solana.yml" | cut -d' ' -f2- | tr -d "'\"")
     if [ -n "$SOLANA_WALLET" ] && [ "$SOLANA_WALLET" != "<solana-wallet-address>" ]; then
       EXISTING_WALLETS="Solana"
-    fi
-    # Check for rpcProvider with valid API key
-    SOLANA_RPC=$(grep "^rpcProvider:" "$HOST_CONF_PATH/chains/solana.yml" | cut -d' ' -f2- | tr -d "'\"")
-    if [ -n "$SOLANA_RPC" ] && [ "$SOLANA_RPC" != "url" ] && [ -f "$HOST_CONF_PATH/apiKeys.yml" ]; then
-      API_KEY=$(grep "^${SOLANA_RPC}:" "$HOST_CONF_PATH/apiKeys.yml" 2>/dev/null | cut -d"'" -f2)
-      if [ -n "$API_KEY" ]; then
-        EXISTING_RPC_PROVIDERS="Solana ($SOLANA_RPC)"
-      fi
     fi
   fi
 
@@ -480,25 +442,10 @@ if [ "$UPDATE_CHAINS" = "Y" ]; then
         EXISTING_WALLETS="Ethereum"
       fi
     fi
-    # Check for rpcProvider with valid API key
-    ETH_RPC=$(grep "^rpcProvider:" "$HOST_CONF_PATH/chains/ethereum.yml" | cut -d' ' -f2- | tr -d "'\"")
-    if [ -n "$ETH_RPC" ] && [ "$ETH_RPC" != "url" ] && [ -f "$HOST_CONF_PATH/apiKeys.yml" ]; then
-      API_KEY=$(grep "^${ETH_RPC}:" "$HOST_CONF_PATH/apiKeys.yml" 2>/dev/null | cut -d"'" -f2)
-      if [ -n "$API_KEY" ]; then
-        if [ -n "$EXISTING_RPC_PROVIDERS" ]; then
-          EXISTING_RPC_PROVIDERS="$EXISTING_RPC_PROVIDERS and Ethereum ($ETH_RPC)"
-        else
-          EXISTING_RPC_PROVIDERS="Ethereum ($ETH_RPC)"
-        fi
-      fi
-    fi
   fi
 
   if [ -n "$EXISTING_WALLETS" ]; then
     echo "✅ Existing defaultWallet values will be preserved ($EXISTING_WALLETS)"
-  fi
-  if [ -n "$EXISTING_RPC_PROVIDERS" ]; then
-    echo "✅ Existing rpcProvider values will be preserved ($EXISTING_RPC_PROVIDERS)"
   fi
 fi
 
