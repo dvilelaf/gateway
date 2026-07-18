@@ -1,4 +1,11 @@
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Connection, PublicKey } from '@solana/web3.js';
+
+jest.mock('../../../src/services/logger', () => ({
+  logger: {
+    error: jest.fn(),
+  },
+}));
 
 import { createRateLimitAwareSolanaConnection } from '../../../src/rpc/rpc-connection-interceptor';
 
@@ -11,6 +18,7 @@ describe('Solana Rate Limit Interceptor', () => {
     // Create a mock Connection
     mockConnection = {
       getBalance: jest.fn(),
+      getTokenAccountsByOwner: jest.fn(),
       getParsedTokenAccountsByOwner: jest.fn(),
       getSignatureStatuses: jest.fn(),
       getTransaction: jest.fn(),
@@ -141,6 +149,102 @@ describe('Solana Rate Limit Interceptor', () => {
       const result = await wrappedConnection.getBalance(new PublicKey('11111111111111111111111111111112'));
 
       expect(result).toBe(balance);
+    });
+  });
+
+  describe('getTokenAccountsByOwner pacing', () => {
+    const publicKey = new PublicKey('11111111111111111111111111111112');
+    const legacyFilter = { programId: TOKEN_PROGRAM_ID };
+    const token2022Filter = { programId: TOKEN_2022_PROGRAM_ID };
+    const emptyResult = { context: { slot: 0 }, value: [] } as any;
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('spaces concurrent calls by at least 300ms without delaying other methods', async () => {
+      const tokenCallTimes: number[] = [];
+      const balanceCallTimes: number[] = [];
+      const legacyResult = { context: { slot: 1 }, value: [] } as any;
+      const token2022Result = { context: { slot: 2 }, value: [] } as any;
+      mockConnection.getTokenAccountsByOwner.mockImplementation(async () => {
+        tokenCallTimes.push(Date.now());
+        return tokenCallTimes.length === 1 ? legacyResult : token2022Result;
+      });
+      mockConnection.getBalance.mockImplementation(async () => {
+        balanceCallTimes.push(Date.now());
+        return 1000000000;
+      });
+      const firstTokenCall = wrappedConnection.getTokenAccountsByOwner(publicKey, legacyFilter);
+      const secondTokenCall = wrappedConnection.getTokenAccountsByOwner(publicKey, token2022Filter);
+      const unrelatedCall = wrappedConnection.getBalance(publicKey);
+      await Promise.resolve();
+
+      expect(tokenCallTimes).toHaveLength(1);
+      expect(balanceCallTimes).toEqual([tokenCallTimes[0]]);
+      await jest.advanceTimersByTimeAsync(299);
+      expect(tokenCallTimes).toHaveLength(1);
+
+      await jest.advanceTimersByTimeAsync(1);
+      await Promise.all([firstTokenCall, secondTokenCall, unrelatedCall]);
+      expect(tokenCallTimes).toHaveLength(2);
+      expect(tokenCallTimes[1] - tokenCallTimes[0]).toBeGreaterThanOrEqual(300);
+      await expect(Promise.all([firstTokenCall, secondTokenCall])).resolves.toEqual([legacyResult, token2022Result]);
+    });
+
+    it('preserves non-429 rejection identity for a queued call', async () => {
+      const networkError = new Error('Network connection failed');
+      mockConnection.getTokenAccountsByOwner.mockResolvedValueOnce(emptyResult).mockRejectedValueOnce(networkError);
+      const firstCall = wrappedConnection.getTokenAccountsByOwner(publicKey, legacyFilter);
+      const secondCall = wrappedConnection.getTokenAccountsByOwner(publicKey, token2022Filter);
+      const rejection = expect(secondCall).rejects.toBe(networkError);
+      await jest.advanceTimersByTimeAsync(300);
+      await Promise.all([firstCall, rejection]);
+    });
+
+    it('paces from actual starts after delayed timers', async () => {
+      const callTimes: number[] = [];
+      mockConnection.getTokenAccountsByOwner.mockImplementation(async () => {
+        callTimes.push(Date.now());
+        return emptyResult;
+      });
+
+      const calls = [
+        wrappedConnection.getTokenAccountsByOwner(publicKey, legacyFilter),
+        wrappedConnection.getTokenAccountsByOwner(publicKey, token2022Filter),
+        wrappedConnection.getTokenAccountsByOwner(publicKey, legacyFilter),
+      ];
+      await Promise.resolve();
+
+      jest.setSystemTime(callTimes[0] + 1000);
+      await jest.runOnlyPendingTimersAsync();
+      expect(callTimes).toHaveLength(2);
+
+      await jest.advanceTimersByTimeAsync(299);
+      expect(callTimes).toHaveLength(2);
+      await jest.advanceTimersByTimeAsync(1);
+      await Promise.all(calls);
+      expect(callTimes[2] - callTimes[1]).toBeGreaterThanOrEqual(300);
+    });
+
+    it('does not share pacing between wrapped connections', async () => {
+      const otherConnection = { getTokenAccountsByOwner: jest.fn().mockResolvedValue(emptyResult) } as any;
+      const otherWrappedConnection = createRateLimitAwareSolanaConnection(otherConnection, testRpcUrl);
+      mockConnection.getTokenAccountsByOwner.mockResolvedValue(emptyResult);
+
+      const firstCall = wrappedConnection.getTokenAccountsByOwner(publicKey, legacyFilter);
+      const queuedCall = wrappedConnection.getTokenAccountsByOwner(publicKey, token2022Filter);
+      const independentCall = otherWrappedConnection.getTokenAccountsByOwner(publicKey, legacyFilter);
+      await Promise.resolve();
+
+      expect(mockConnection.getTokenAccountsByOwner).toHaveBeenCalledTimes(1);
+      expect(otherConnection.getTokenAccountsByOwner).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(300);
+      await Promise.all([firstCall, queuedCall, independentCall]);
     });
   });
 

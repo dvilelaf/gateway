@@ -59,6 +59,8 @@ function createRateLimitErrorMessage(rpcUrl: string, chainType: 'solana' | 'ethe
   }
 }
 
+const TOKEN_ACCOUNTS_BY_OWNER_MIN_INTERVAL_MS = 300;
+
 /**
  * Create a rate-limit aware Solana Connection using Proxy pattern
  *
@@ -67,6 +69,22 @@ function createRateLimitErrorMessage(rpcUrl: string, chainType: 'solana' | 'ethe
  * @returns Proxied Connection that throws errors with statusCode 429 on rate limits
  */
 export function createRateLimitAwareSolanaConnection(connection: Connection, rpcUrl: string): Connection {
+  let tokenAccountsByOwnerStartQueue = Promise.resolve();
+  const paceTokenAccountsByOwner = <T>(invoke: () => T): Promise<T> => {
+    let releaseNextStart!: () => void;
+    const previousStart = tokenAccountsByOwnerStartQueue;
+    tokenAccountsByOwnerStartQueue = new Promise<void>((resolve) => {
+      releaseNextStart = resolve;
+    });
+    return previousStart.then(() => {
+      try {
+        return invoke();
+      } finally {
+        setTimeout(releaseNextStart, TOKEN_ACCOUNTS_BY_OWNER_MIN_INTERVAL_MS);
+      }
+    });
+  };
+
   return new Proxy(connection, {
     get(target: Connection, prop: string | symbol): any {
       const value = target[prop as keyof Connection];
@@ -79,6 +97,11 @@ export function createRateLimitAwareSolanaConnection(connection: Connection, rpc
       // Return wrapped async function that catches 429 errors
       return async function (this: Connection, ...args: any[]) {
         try {
+          if (prop === 'getTokenAccountsByOwner') {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+            return await paceTokenAccountsByOwner(() => (value as (...args: any[]) => any).apply(target, args));
+          }
+
           // eslint-disable-next-line @typescript-eslint/no-unsafe-return
           return await (value as (...args: any[]) => any).apply(target, args);
         } catch (error: any) {
