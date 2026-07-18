@@ -59,7 +59,7 @@ function createRateLimitErrorMessage(rpcUrl: string, chainType: 'solana' | 'ethe
   }
 }
 
-const TOKEN_ACCOUNTS_BY_OWNER_MIN_INTERVAL_MS = 300;
+const TOKEN_ACCOUNTS_BY_OWNER_MIN_INTERVAL_MS = 1000;
 
 /**
  * Create a rate-limit aware Solana Connection using Proxy pattern

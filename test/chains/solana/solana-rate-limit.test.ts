@@ -165,7 +165,7 @@ describe('Solana Rate Limit Interceptor', () => {
       jest.useRealTimers();
     });
 
-    it('spaces concurrent calls by at least 300ms without delaying other methods', async () => {
+    it('spaces concurrent calls by at least 1000ms without delaying other methods', async () => {
       const tokenCallTimes: number[] = [];
       const balanceCallTimes: number[] = [];
       const legacyResult = { context: { slot: 1 }, value: [] } as any;
@@ -185,13 +185,13 @@ describe('Solana Rate Limit Interceptor', () => {
 
       expect(tokenCallTimes).toHaveLength(1);
       expect(balanceCallTimes).toEqual([tokenCallTimes[0]]);
-      await jest.advanceTimersByTimeAsync(299);
+      await jest.advanceTimersByTimeAsync(999);
       expect(tokenCallTimes).toHaveLength(1);
 
       await jest.advanceTimersByTimeAsync(1);
       await Promise.all([firstTokenCall, secondTokenCall, unrelatedCall]);
       expect(tokenCallTimes).toHaveLength(2);
-      expect(tokenCallTimes[1] - tokenCallTimes[0]).toBeGreaterThanOrEqual(300);
+      expect(tokenCallTimes[1] - tokenCallTimes[0]).toBeGreaterThanOrEqual(1000);
       await expect(Promise.all([firstTokenCall, secondTokenCall])).resolves.toEqual([legacyResult, token2022Result]);
     });
 
@@ -201,7 +201,7 @@ describe('Solana Rate Limit Interceptor', () => {
       const firstCall = wrappedConnection.getTokenAccountsByOwner(publicKey, legacyFilter);
       const secondCall = wrappedConnection.getTokenAccountsByOwner(publicKey, token2022Filter);
       const rejection = expect(secondCall).rejects.toBe(networkError);
-      await jest.advanceTimersByTimeAsync(300);
+      await jest.advanceTimersByTimeAsync(1000);
       await Promise.all([firstCall, rejection]);
     });
 
@@ -219,15 +219,15 @@ describe('Solana Rate Limit Interceptor', () => {
       ];
       await Promise.resolve();
 
-      jest.setSystemTime(callTimes[0] + 1000);
+      jest.setSystemTime(callTimes[0] + 3000);
       await jest.runOnlyPendingTimersAsync();
       expect(callTimes).toHaveLength(2);
 
-      await jest.advanceTimersByTimeAsync(299);
+      await jest.advanceTimersByTimeAsync(999);
       expect(callTimes).toHaveLength(2);
       await jest.advanceTimersByTimeAsync(1);
       await Promise.all(calls);
-      expect(callTimes[2] - callTimes[1]).toBeGreaterThanOrEqual(300);
+      expect(callTimes[2] - callTimes[1]).toBeGreaterThanOrEqual(1000);
     });
 
     it('does not share pacing between wrapped connections', async () => {
@@ -243,7 +243,7 @@ describe('Solana Rate Limit Interceptor', () => {
       expect(mockConnection.getTokenAccountsByOwner).toHaveBeenCalledTimes(1);
       expect(otherConnection.getTokenAccountsByOwner).toHaveBeenCalledTimes(1);
 
-      await jest.advanceTimersByTimeAsync(300);
+      await jest.advanceTimersByTimeAsync(1000);
       await Promise.all([firstCall, queuedCall, independentCall]);
     });
   });
