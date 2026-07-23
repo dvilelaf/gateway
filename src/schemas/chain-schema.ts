@@ -96,6 +96,7 @@ export const PollResponseSchema = Type.Object(
     currentBlock: Type.Number(),
     signature: Type.String(),
     txBlock: Type.Union([Type.Number(), Type.Null()]),
+    blockTimestamp: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
     txStatus: Type.Number({ description: 'Transaction status: 1 = confirmed, 0 = pending, -1 = failed' }),
     fee: Type.Union([Type.Number(), Type.Null()]),
     error: Type.Union([Type.String({ description: 'Error info if failed: "TYPE (code): message"' }), Type.Null()]),

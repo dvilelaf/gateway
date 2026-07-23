@@ -38,6 +38,7 @@ export async function pollEthereumTransaction(
     const currentBlock = await ethereum.getCurrentBlockNumber();
     let txData = await ethereum.getTransaction(signature);
     let txBlock, txReceipt, txStatus;
+    let blockTimestamp: number | null = null;
     if (!txData) {
       const MAX_RETRIES = 3;
       const RETRY_DELAY_MS = 1000;
@@ -86,6 +87,8 @@ export async function pollEthereumTransaction(
       } else {
         // tx has been processed
         txBlock = txReceipt.blockNumber;
+        const block = await ethereum.provider.getBlock(txReceipt.blockNumber);
+        blockTimestamp = block?.timestamp ?? null;
         txStatus = typeof txReceipt.status === 'number' ? 1 : -1;
 
         // decode logs
@@ -108,6 +111,7 @@ export async function pollEthereumTransaction(
       currentBlock,
       signature,
       txBlock,
+      blockTimestamp,
       txStatus,
       fee: null,
       error: null,
