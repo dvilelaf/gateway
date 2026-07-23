@@ -38,6 +38,16 @@ describe('Ethereum poll route', () => {
     expect(mockInstance.provider.getBlock).toHaveBeenCalledWith(42);
   });
 
+  it('does not report a reverted receipt as confirmed', async () => {
+    mockInstance.getTransaction.mockResolvedValue(transaction);
+    mockInstance.getTransactionReceipt.mockResolvedValue({ blockNumber: 42, status: 0, logs: [] });
+    mockInstance.provider.getBlock.mockResolvedValue({ timestamp: 1_700_000_123 });
+
+    await expect(pollEthereumTransaction({} as any, 'mainnet', '0xreverted')).resolves.toMatchObject({
+      txStatus: -1,
+    });
+  });
+
   it('returns null for pending and not-found transactions', async () => {
     jest.useFakeTimers();
     try {

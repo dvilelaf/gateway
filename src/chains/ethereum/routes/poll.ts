@@ -89,7 +89,7 @@ export async function pollEthereumTransaction(
         txBlock = txReceipt.blockNumber;
         const block = await ethereum.provider.getBlock(txReceipt.blockNumber);
         blockTimestamp = block?.timestamp ?? null;
-        txStatus = typeof txReceipt.status === 'number' ? 1 : -1;
+        txStatus = txReceipt.status === 1 ? 1 : -1;
 
         // decode logs
         if (connector) {
