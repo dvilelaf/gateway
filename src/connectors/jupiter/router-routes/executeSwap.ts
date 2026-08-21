@@ -1,3 +1,4 @@
+import { Decimal } from 'decimal.js';
 import { FastifyPluginAsync } from 'fastify';
 
 import { ExecuteSwapRequestType, SwapExecuteResponseType, SwapExecuteResponse } from '../../../schemas/router-schema';
@@ -36,6 +37,36 @@ async function executeSwap(
 ): Promise<SwapExecuteResponseType> {
   // Step 1: Get a fresh quote using the quoteSwap function
   const quoteResult = await quoteSwap(network, baseToken, quoteToken, amount, side, slippagePct);
+  if (side === 'BUY' && liveActionAuthorization) {
+    const inputTokenDecimals = quoteResult.inputTokenDecimals;
+    if (
+      quoteResult.quoteResponse.swapMode !== 'ExactOut' ||
+      !Number.isFinite(inputTokenDecimals) ||
+      !Number.isInteger(inputTokenDecimals) ||
+      inputTokenDecimals < 0 ||
+      inputTokenDecimals > 18
+    ) {
+      throw httpErrors.forbidden('Jupiter exact-output quote exceeds authorized notional');
+    }
+    let authorizedNotional: Decimal;
+    try {
+      authorizedNotional = new Decimal(String(liveActionAuthorization.notional));
+    } catch {
+      throw httpErrors.forbidden('Jupiter exact-output quote exceeds authorized notional');
+    }
+    const rawThresholdText = String(quoteResult.quoteResponse.otherAmountThreshold);
+    if (!authorizedNotional.isFinite() || !authorizedNotional.gt(0) || !/^\d+$/.test(rawThresholdText)) {
+      throw httpErrors.forbidden('Jupiter exact-output quote exceeds authorized notional');
+    }
+    const authorizedAtomic = BigInt(
+      authorizedNotional.toFixed(inputTokenDecimals, Decimal.ROUND_FLOOR).replace('.', ''),
+    );
+    const rawThreshold = BigInt(rawThresholdText);
+    if (rawThreshold <= 0n || rawThreshold > authorizedAtomic) {
+      throw httpErrors.forbidden('Jupiter exact-output quote exceeds authorized notional');
+    }
+    guardContext = { ...guardContext, expectedNotional: liveActionAuthorization.notional };
+  }
 
   // Step 2: Execute the quote immediately using executeQuote function
   const executeResult = await executeQuote(
@@ -115,7 +146,7 @@ export const executeSwapRoute: FastifyPluginAsync = async (fastify) => {
           internalProviderIntentSource,
           {
             expectedConnectorId: 'jupiter',
-            expectedNotional: amount,
+            expectedNotional: side === 'BUY' ? (liveActionAuthorization?.notional ?? amount) : amount,
             expectedSlippageBps: (slippagePct ?? JupiterConfig.config.slippagePct) * 100,
             expectedWalletAddress: walletAddress,
           },

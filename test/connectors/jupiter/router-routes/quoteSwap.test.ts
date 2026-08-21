@@ -1,3 +1,5 @@
+import '../../../mocks/app-mocks';
+
 import { Solana } from '../../../../src/chains/solana/solana';
 import { Jupiter } from '../../../../src/connectors/jupiter/jupiter';
 import { fastifyWithTypeProvider } from '../../../utils/testUtils';
@@ -102,7 +104,7 @@ describe('GET /quote-swap', () => {
 
   it('should return a price quote for BUY side', async () => {
     const mockSolanaInstance = {
-      getToken: jest.fn().mockResolvedValueOnce(mockSOL).mockResolvedValueOnce(mockUSDC),
+      getToken: jest.fn().mockImplementation((token) => Promise.resolve(token === 'SOL' ? mockSOL : mockUSDC)),
     };
     (Solana.getInstance as jest.Mock).mockResolvedValue(mockSolanaInstance);
 
@@ -113,9 +115,15 @@ describe('GET /quote-swap', () => {
         priceImpactPct: '0.001',
         marketInfos: [],
         slippageBps: 50,
+        otherAmountThreshold: '15075000',
+        swapMode: 'ExactOut',
       }),
     };
     (Jupiter.getInstance as jest.Mock).mockResolvedValue(mockJupiterInstance);
+
+    const { quoteSwap } = await import('../../../../src/connectors/jupiter/router-routes/quoteSwap');
+    const internalQuote = await quoteSwap('mainnet-beta', 'SOL', 'USDC', 0.1, 'BUY', 0.5);
+    expect(internalQuote.inputTokenDecimals).toBe(mockUSDC.decimals);
 
     const response = await server.inject({
       method: 'GET',
@@ -141,6 +149,7 @@ describe('GET /quote-swap', () => {
     expect(body.quoteResponse).toHaveProperty('priceImpactPct', '0.001');
     expect(body).toHaveProperty('tokenIn', mockUSDC.address);
     expect(body).toHaveProperty('tokenOut', mockSOL.address);
+    expect(body).not.toHaveProperty('inputTokenDecimals');
   });
 
   it('should return 400 if token not found', async () => {
@@ -214,6 +223,8 @@ describe('GET /quote-swap', () => {
         amount: '0.1',
         side: 'BUY',
         slippagePct: '0.5',
+        onlyDirectRoutes: false,
+        restrictIntermediateTokens: true,
       },
     });
 

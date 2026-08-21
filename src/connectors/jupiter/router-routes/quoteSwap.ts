@@ -21,7 +21,7 @@ export async function quoteSwap(
   slippagePct: number = JupiterConfig.config.slippagePct,
   onlyDirectRoutes?: boolean,
   restrictIntermediateTokens?: boolean,
-): Promise<Static<typeof JupiterQuoteSwapResponse>> {
+): Promise<Static<typeof JupiterQuoteSwapResponse> & { inputTokenDecimals: number }> {
   const solana = await Solana.getInstance(network);
   const jupiter = await Jupiter.getInstance(network);
 
@@ -101,6 +101,7 @@ export async function quoteSwap(
     priceImpactPct: parseFloat(quoteResponse.priceImpactPct || '0'),
     minAmountOut,
     maxAmountIn,
+    inputTokenDecimals: inputToken.decimals,
     // Jupiter-specific fields
     quoteResponse: {
       inputMint: inputToken.address,
